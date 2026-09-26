@@ -33,4 +33,10 @@ private:
     double map_max_y_;
     double robot_z_min_;
     double robot_z_max_;
+
+    // コストパラメータを保持するメンバ変数
+    int cost_wall_;
+    int cost_partition_;
+    int cost_obstacle_;
+    int cost_default_;
 };

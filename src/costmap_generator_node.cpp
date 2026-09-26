@@ -23,7 +23,6 @@ void CostmapGeneratorNode::declareAndGetParameters()
     this->declare_parameter("team_color", "red");
     this->declare_parameter("map_source_type", "json");
     this->declare_parameter("map_file_path", "");
-    this->declare_parameter("map_objects", std::vector<std::string>{});
 
     // コストマップの範囲・解像度設定
     this->declare_parameter("resolution", 0.05);        // 5cm/cell
@@ -34,10 +33,15 @@ void CostmapGeneratorNode::declareAndGetParameters()
     this->declare_parameter("robot_clearance.z_min", 0.03); // ロボットが乗り越えられる高さ閾値
     this->declare_parameter("robot_clearance.z_max", 1.00);
 
-    team_color_       = this->get_parameter("team_color").as_string();
-    map_source_type_  = this->get_parameter("map_source_type").as_string();
-    map_file_path_    = this->get_parameter("map_file_path").as_string();
-    map_objects_params_ = this->get_parameter("map_objects").as_string_array();
+    // オブジェクト別コスト定義のパラメータ化
+    this->declare_parameter("costs.wall", 120);         // 外壁
+    this->declare_parameter("costs.partition", 200);    // 中央仕切り・教壇
+    this->declare_parameter("costs.obstacle", 254);     // バケツ・机・椅子・旗など（絶対接触NG）
+    this->declare_parameter("costs.default_cost", 254); // デフォルト
+
+    team_color_      = this->get_parameter("team_color").as_string();
+    map_source_type_ = this->get_parameter("map_source_type").as_string();
+    map_file_path_   = this->get_parameter("map_file_path").as_string();
 
     resolution_  = this->get_parameter("resolution").as_double();
     map_min_x_   = this->get_parameter("map_bounds.min_x").as_double();
@@ -47,6 +51,12 @@ void CostmapGeneratorNode::declareAndGetParameters()
     robot_z_min_ = this->get_parameter("robot_clearance.z_min").as_double();
     robot_z_max_ = this->get_parameter("robot_clearance.z_max").as_double();
 
+    // コストパラメータの取得
+    cost_wall_      = static_cast<int>(this->get_parameter("costs.wall").as_int());
+    cost_partition_ = static_cast<int>(this->get_parameter("costs.partition").as_int());
+    cost_obstacle_  = static_cast<int>(this->get_parameter("costs.obstacle").as_int());
+    cost_default_   = static_cast<int>(this->get_parameter("costs.default_cost").as_int());
+
     // 小文字化
     std::transform(team_color_.begin(), team_color_.end(), team_color_.begin(), ::tolower);
     RCLCPP_INFO(this->get_logger(), "Team Color set to: %s", team_color_.c_str());
@@ -54,18 +64,17 @@ void CostmapGeneratorNode::declareAndGetParameters()
 
 int CostmapGeneratorNode::getObjectCost(const std::string& comment, ObjectType /*type*/) const
 {
-    // コスト定義（0: 自由領域, 120: 外壁(接触許容), 200: 中央仕切り, 254: 障害物・絶対接触NG）
     if (comment.find("外壁") != std::string::npos) {
-        return 120;
+        return cost_wall_;
     } else if (comment.find("仕切り板") != std::string::npos || comment.find("教壇") != std::string::npos) {
-        return 200;
+        return cost_partition_;
     } else if (comment.find("バケツ") != std::string::npos || 
                comment.find("机") != std::string::npos || 
                comment.find("椅子") != std::string::npos ||
                comment.find("旗") != std::string::npos) {
-        return 254; // 絶対接触NG
+        return cost_obstacle_;
     }
-    return 254; // デフォルトは最高リスク
+    return cost_default_;
 }
 
 void CostmapGeneratorNode::generateAndPublishCostmap()
@@ -82,12 +91,11 @@ void CostmapGeneratorNode::generateAndPublishCostmap()
     }
 
     if (map_objects.empty()) {
-        RCLCPP_WARN(this->get_logger(), "Map is empty. Falling back to default map.");
+        RCLCPP_WARN(this->get_logger(), "Map is empty or failed to load.");
         return;
     }
 
     // チームゾーンに応じたマップフィルタリング/展開範囲の設定
-    // NHK2026等の配置で領域A(Y>0) / 領域B(Y<0) などが分かれている場合に最適化
     std::string target_zone_comment = (team_color_ == "red") ? "領域A" : "領域B";
 
     nav_msgs::msg::OccupancyGrid costmap_msg;
@@ -116,14 +124,6 @@ void CostmapGeneratorNode::generateAndPublishCostmap()
         if (obj.z_max < robot_z_min_ || obj.z_min > robot_z_max_) {
             continue;
         }
-
-        // チームゾーン判定: 自チーム以外の領域オブジェクトを除外する場合などのフィルタ
-        // (全領域を共通で表示しつつ、自陣固有オブジェクトのみ判定したい場合に使用)
-        /*
-        if (obj.comment.find("領域") != std::string::npos && obj.comment.find(target_zone_comment) == std::string::npos) {
-            continue; // 相手チーム専用オブジェクトを判定から外す場合はコメント解除
-        }
-        */
 
         int cost = getObjectCost(obj.comment, obj.type);
 
