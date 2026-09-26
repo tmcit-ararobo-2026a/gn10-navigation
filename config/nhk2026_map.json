@@ -1,0 +1,45 @@
+[
+  {"comment": "外壁 (上) 土台", "type": "VISUAL_BOX", "x": 0.0, "y": 5.775, "z_min": 0.0, "z_max": 0.024, "param1": 5.4, "param2": 0.075},
+  {"comment": "外壁 (下) 土台", "type": "VISUAL_BOX", "x": 0.0, "y": -5.775, "z_min": 0.0, "z_max": 0.024, "param1": 5.4, "param2": 0.075},
+  {"comment": "外壁 (左) 土台", "type": "VISUAL_BOX", "x": -5.325, "y": 0.0, "z_min": 0.0, "z_max": 0.024, "param1": 0.075, "param2": 5.7},
+  {"comment": "外壁 (右) 土台", "type": "VISUAL_BOX", "x": 5.325, "y": 0.0, "z_min": 0.0, "z_max": 0.024, "param1": 0.075, "param2": 5.7},
+  {"comment": "外壁 (上) 立上り", "type": "BOX", "x": 0.0, "y": 5.712, "z_min": 0.024, "z_max": 0.15, "param1": 5.4, "param2": 0.012},
+  {"comment": "外壁 (下) 立上り", "type": "BOX", "x": 0.0, "y": -5.712, "z_min": 0.024, "z_max": 0.15, "param1": 5.4, "param2": 0.012},
+  {"comment": "外壁 (左) 立上り", "type": "BOX", "x": -5.262, "y": 0.0, "z_min": 0.024, "z_max": 0.15, "param1": 0.012, "param2": 5.7},
+  {"comment": "外壁 (右) 立上り", "type": "BOX", "x": 5.262, "y": 0.0, "z_min": 0.024, "z_max": 0.15, "param1": 0.012, "param2": 5.7},
+
+  {"comment": "教壇 (中央仕切り板)", "type": "BOX", "x": 0.0, "y": 0.0, "z_min": 0.0, "z_max": 0.20, "param1": 5.25, "param2": 0.30},
+
+  {"comment": "固定バケツ① (領域A)", "type": "CYLINDER", "x": 0.55, "y": 0.87, "z_min": 0.0, "z_max": 0.255, "param1": 0.1365, "param2": 0.0},
+  {"comment": "固定バケツ① (領域B)", "type": "CYLINDER", "x": 0.55, "y": -0.87, "z_min": 0.0, "z_max": 0.255, "param1": 0.1365, "param2": 0.0},
+
+  {"comment": "固定バケツ② 台座 (領域A)", "type": "BOX", "x": -1.27, "y": 1.48, "z_min": 0.0, "z_max": 0.60, "param1": 0.15, "param2": 0.15},
+  {"comment": "固定バケツ② 本体 (領域A)", "type": "CYLINDER", "x": -1.27, "y": 1.48, "z_min": 0.60, "z_max": 0.855, "param1": 0.1365, "param2": 0.0},
+  {"comment": "固定バケツ② 台座 (領域B)", "type": "BOX", "x": -1.27, "y": -1.48, "z_min": 0.0, "z_max": 0.60, "param1": 0.15, "param2": 0.15},
+  {"comment": "固定バケツ② 本体 (領域B)", "type": "CYLINDER", "x": -1.27, "y": -1.48, "z_min": 0.60, "z_max": 0.855, "param1": 0.1365, "param2": 0.0},
+
+  {"comment": "固定バケツ③ 台座 (領域A)", "type": "BOX", "x": 2.37, "y": 1.48, "z_min": 0.0, "z_max": 0.30, "param1": 0.15, "param2": 0.15},
+  {"comment": "固定バケツ③ 本体 (領域A)", "type": "CYLINDER", "x": 2.37, "y": 1.48, "z_min": 0.30, "z_max": 0.555, "param1": 0.1365, "param2": 0.0},
+  {"comment": "固定バケツ③ 台座 (領域B)", "type": "BOX", "x": 2.37, "y": -1.48, "z_min": 0.0, "z_max": 0.30, "param1": 0.15, "param2": 0.15},
+  {"comment": "固定バケツ③ 本体 (領域B)", "type": "CYLINDER", "x": 2.37, "y": -1.48, "z_min": 0.30, "z_max": 0.555, "param1": 0.1365, "param2": 0.0},
+
+  {"comment": "椅子 (領域A)", "type": "BOX", "x": 0.55, "y": 4.98, "z_min": 0.0, "z_max": 0.807, "param1": 0.18, "param2": 0.20},
+  {"comment": "椅子 (領域B)", "type": "BOX", "x": 0.55, "y": -4.98, "z_min": 0.0, "z_max": 0.807, "param1": 0.18, "param2": 0.20},
+
+  {"comment": "机1 (領域A)", "type": "BOX", "x": -2.295, "y": 3.855, "z_min": 0.0, "z_max": 0.76, "param1": 0.325, "param2": 0.225},
+  {"comment": "机1 (領域B)", "type": "BOX", "x": -2.295, "y": -3.855, "z_min": 0.0, "z_max": 0.76, "param1": 0.325, "param2": 0.225},
+  {"comment": "机2 (領域A)", "type": "BOX", "x": 3.395, "y": 3.855, "z_min": 0.0, "z_max": 0.76, "param1": 0.325, "param2": 0.225},
+  {"comment": "机2 (領域B)", "type": "BOX", "x": 3.395, "y": -3.855, "z_min": 0.0, "z_max": 0.76, "param1": 0.325, "param2": 0.225},
+  {"comment": "コントロールステーションの机 (領域A)", "type": "BOX", "x": -4.895, "y": 5.445, "z_min": 0.0, "z_max": 0.76, "param1": 0.325, "param2": 0.225},
+  {"comment": "コントロールステーションの机 (領域B)", "type": "BOX", "x": -4.895, "y": -5.445, "z_min": 0.0, "z_max": 0.76, "param1": 0.325, "param2": 0.225},
+  {"comment": "補充スポットの机 (領域A)", "type": "BOX", "x": -4.750, "y": 1.105, "z_min": 0.0, "z_max": 0.76, "param1": 0.325, "param2": 0.225},
+  {"comment": "補充スポットの机 (領域B)", "type": "BOX", "x": -4.750, "y": -1.105, "z_min": 0.0, "z_max": 0.76, "param1": 0.325, "param2": 0.225},
+
+  {"comment": "旗 土台 (領域A)", "type": "BOX", "x": 0.55, "y": 3.025, "z_min": 0.0, "z_max": 0.18, "param1": 0.195, "param2": 0.195},
+  {"comment": "旗 支柱 (領域A)", "type": "CYLINDER", "x": 0.55, "y": 3.025, "z_min": 0.18, "z_max": 3.0, "param1": 0.03, "param2": 0.0},
+  {"comment": "旗 布部分 (領域A)", "type": "BOX", "x": 0.85, "y": 3.025, "z_min": 1.20, "z_max": 3.0, "param1": 0.30, "param2": 0.02},
+
+  {"comment": "旗 土台 (領域B)", "type": "BOX", "x": 0.55, "y": -3.025, "z_min": 0.0, "z_max": 0.18, "param1": 0.195, "param2": 0.195},
+  {"comment": "旗 支柱 (領域B)", "type": "CYLINDER", "x": 0.55, "y": -3.025, "z_min": 0.18, "z_max": 3.0, "param1": 0.03, "param2": 0.0},
+  {"comment": "旗 布部分 (領域B)", "type": "BOX", "x": 0.85, "y": -3.025, "z_min": 1.20, "z_max": 3.0, "param1": 0.30, "param2": 0.02}
+]
