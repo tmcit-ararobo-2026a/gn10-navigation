@@ -16,14 +16,10 @@ find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_eigen REQUIRED)
-find_package(Ceres REQUIRED)
-find_package(Eigen3 REQUIRED)
 find_package(nlohmann_json REQUIRED)
 
 include_directories(
   include
-  ${EIGEN3_INCLUDE_DIRS}
-  ${CERES_INCLUDE_DIRS}
 )
 
 # C++ ノードのビルド
