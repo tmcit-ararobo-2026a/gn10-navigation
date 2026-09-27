@@ -30,8 +30,8 @@ void CostmapGeneratorNode::declareAndGetParameters()
     this->declare_parameter("map_bounds.max_x", 6.0);
     this->declare_parameter("map_bounds.min_y", -6.5);
     this->declare_parameter("map_bounds.max_y", 6.5);
-    this->declare_parameter("robot_clearance.z_min", 0.03); // ロボットが乗り越えられる高さ閾値
-    this->declare_parameter("robot_clearance.z_max", 1.00);
+    this->declare_parameter("robot_clearance.z_min", 0.00); // ロボットが乗り越えられる高さ閾値
+    this->declare_parameter("robot_clearance.z_max", 1.40); // ロボットの高さ
 
     // オブジェクト別コスト定義のパラメータ化
     this->declare_parameter("costs.wall", 120);         // 外壁
