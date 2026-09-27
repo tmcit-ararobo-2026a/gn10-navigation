@@ -13,12 +13,6 @@ def generate_launch_description():
     default_params_file = os.path.join(pkg_share, 'config', 'costmap_params.yaml')
 
     # Launch 引数の定義
-    team_color_arg = DeclareLaunchArgument(
-        'team_color',
-        default_value='red',
-        description='Team color: "red" or "blue"'
-    )
-
     params_file_arg = DeclareLaunchArgument(
         'params_file',
         default_value=default_params_file,
@@ -31,15 +25,12 @@ def generate_launch_description():
         executable='costmap_generator_node',
         name='costmap_generator_node',
         output='screen',
-        # YAMLファイルを読み込んだ上で、team_color パラメータだけ Launch の引数で上書きする
         parameters=[
-            LaunchConfiguration('params_file'),
-            {'team_color': LaunchConfiguration('team_color')}
+            LaunchConfiguration('params_file')
         ]
     )
 
     return LaunchDescription([
-        team_color_arg,
         params_file_arg,
         costmap_node
     ])

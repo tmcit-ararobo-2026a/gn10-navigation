@@ -19,8 +19,6 @@ CostmapGeneratorNode::CostmapGeneratorNode() : Node("costmap_generator_node")
 
 void CostmapGeneratorNode::declareAndGetParameters()
 {
-    // チームカラー指定 ("red" または "blue")
-    this->declare_parameter("team_color", "red");
     this->declare_parameter("map_source_type", "json");
     this->declare_parameter("map_file_path", "");
 
@@ -39,7 +37,6 @@ void CostmapGeneratorNode::declareAndGetParameters()
     this->declare_parameter("costs.obstacle", 254);     // バケツ・机・椅子・旗など（絶対接触NG）
     this->declare_parameter("costs.default_cost", 254); // デフォルト
 
-    team_color_      = this->get_parameter("team_color").as_string();
     map_source_type_ = this->get_parameter("map_source_type").as_string();
     map_file_path_   = this->get_parameter("map_file_path").as_string();
 
@@ -56,10 +53,6 @@ void CostmapGeneratorNode::declareAndGetParameters()
     cost_partition_ = static_cast<int>(this->get_parameter("costs.partition").as_int());
     cost_obstacle_  = static_cast<int>(this->get_parameter("costs.obstacle").as_int());
     cost_default_   = static_cast<int>(this->get_parameter("costs.default_cost").as_int());
-
-    // 小文字化
-    std::transform(team_color_.begin(), team_color_.end(), team_color_.begin(), ::tolower);
-    RCLCPP_INFO(this->get_logger(), "Team Color set to: %s", team_color_.c_str());
 }
 
 int CostmapGeneratorNode::getObjectCost(const std::string& comment, ObjectType /*type*/) const
@@ -94,9 +87,6 @@ void CostmapGeneratorNode::generateAndPublishCostmap()
         RCLCPP_WARN(this->get_logger(), "Map is empty or failed to load.");
         return;
     }
-
-    // チームゾーンに応じたマップフィルタリング/展開範囲の設定
-    std::string target_zone_comment = (team_color_ == "red") ? "領域A" : "領域B";
 
     nav_msgs::msg::OccupancyGrid costmap_msg;
     costmap_msg.header.stamp    = this->now();
@@ -170,7 +160,7 @@ void CostmapGeneratorNode::generateAndPublishCostmap()
     }
 
     costmap_pub_->publish(costmap_msg);
-    RCLCPP_INFO(this->get_logger(), "Published Costmap for team: %s (%dx%d)", team_color_.c_str(), width, height);
+    RCLCPP_INFO(this->get_logger(), "Published Costmap (%dx%d)", width, height);
 }
 
 int main(int argc, char** argv)

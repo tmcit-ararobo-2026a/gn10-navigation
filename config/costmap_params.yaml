@@ -1,6 +1,5 @@
 costmap_generator_node:
   ros__parameters:
-    team_color: "red"
     resolution: 0.05
     map_bounds:
       min_x: -6.0

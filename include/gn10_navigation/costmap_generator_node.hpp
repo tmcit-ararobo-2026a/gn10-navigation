@@ -20,7 +20,6 @@ private:
 
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_pub_;
 
-    std::string team_color_;
     std::string map_source_type_;
     std::string map_file_path_;
     std::vector<std::string> map_objects_params_;
