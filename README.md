@@ -47,6 +47,16 @@ colcon build --symlink-install --package-select gn10_navigation
 source install/setup.bash
 ```
 
+コストマップ生成ノードの起動
+
+```bash
+# Blue チームとして起動
+ros2 launch gn10_navigation costmap_generator.launch.py team_color:=blue
+
+# Red チームとして起動
+ros2 launch gn10_navigation costmap_generator.launch.py team_color:=red
+```
+
 ## 4. システム構成
 
 <!-- ROS2ノード構成・STM32との通信方式・ハードウェア構成 等 -->
