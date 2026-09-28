@@ -24,6 +24,18 @@ PathPlannerNode::PathPlannerNode()
             )
         );
 
+    goal_pose_sub_ = 
+        this->create_subscription<geometry_msgs::msg::PoseStamped>(
+            "/goal_pose",
+            10,
+            std::bind(
+                &PathPlannerNode::getGoalPose,
+                this,
+                std::placeholders::_1
+            )
+
+        );   
+
     tf_buffer_ =
         std::make_shared<tf2_ros::Buffer>(
             this->get_clock());
@@ -170,6 +182,31 @@ void PathPlannerNode::getRobotPose()
             ex.what()
         );
     }
+}
+
+void PathPlannerNode::getGoalPose(
+    const geometry_msgs::msg::PoseStamped::SharedPtr msg)
+{
+    // Goalの座標系を確認
+    if (msg->header.frame_id != "map") {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "Goal frame is not map: %s",
+            msg->header.frame_id.c_str()
+        );
+        return;
+    }
+
+    // Goal座標を保存
+    goal_x_ = msg->pose.position.x;
+    goal_y_ = msg->pose.position.y;
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Goal received: x=%.3f, y=%.3f",
+        goal_x_,
+        goal_y_
+    );
 }
 
 int main(int argc, char** argv)
