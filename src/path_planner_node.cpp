@@ -1,10 +1,38 @@
 #include "gn10_navigation/path_planner_node.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <functional>
+#include <limits>
 #include <map>
+#include <queue>
+#include <unordered_map>
+#include <vector>
 
 #include "tf2/exceptions.h"
+
+double heuristic(
+    int x,
+    int y,
+    int goal_x,
+    int goal_y)
+{
+    const double dx = x - goal_x;
+    const double dy = y - goal_y;
+
+    return std::sqrt(dx * dx + dy * dy);
+}
+
+struct CompareAStarNode
+{
+    bool operator()(
+        const AStarNode& a,
+        const AStarNode& b) const
+    {
+        return a.f > b.f;
+    }
+};
 
 PathPlannerNode::PathPlannerNode()
     : Node("path_planner_node")
@@ -259,6 +287,19 @@ void PathPlannerNode::getGoalPose(
         grid_x,
         grid_y
     );
+    
+    // 現在のロボット位置をGrid座標へ変換
+    auto [start_x, start_y] =
+        worldToGrid(robot_x_, robot_y_);
+
+    // A*を実行
+    auto path =
+        aStar(
+            start_x,
+            start_y,
+            grid_x,
+            grid_y
+        );
 }
 
 std::pair<int, int> PathPlannerNode::worldToGrid(
@@ -294,6 +335,221 @@ bool PathPlannerNode::isPassable(int x, int y)
     }
 
     return grid_[y][x] == 0;
+}
+
+std::vector<std::pair<int, int>> PathPlannerNode::aStar(
+    int start_x,
+    int start_y,
+    int goal_x,
+    int goal_y)
+{
+    std::vector<std::pair<int, int>> path;
+
+    // StartとGoalがマップ内か確認
+    if (!isInsideGrid(start_x, start_y) ||
+        !isInsideGrid(goal_x, goal_y)) {
+
+        RCLCPP_WARN(
+            this->get_logger(),
+            "A*: Start or Goal is outside the grid."
+        );
+
+        return path;
+    }
+
+    // StartとGoalが通行可能か確認
+    if (!isPassable(start_x, start_y) ||
+        !isPassable(goal_x, goal_y)) {
+
+        RCLCPP_WARN(
+            this->get_logger(),
+            "A*: Start or Goal is not passable."
+        );
+
+        return path;
+    }
+
+    std::priority_queue<
+        AStarNode,
+        std::vector<AStarNode>,
+        CompareAStarNode
+    > open_list;
+
+    // 各セルまでの最短コスト
+    std::vector<std::vector<double>> g_cost(
+        height_,
+        std::vector<double>(
+            width_,
+            std::numeric_limits<double>::infinity()
+        )
+    );
+
+    // 親ノード
+    std::vector<std::vector<std::pair<int, int>>> parent(
+        height_,
+        std::vector<std::pair<int, int>>(
+            width_,
+            {-1, -1}
+        )
+    );
+
+    // Start
+    const double start_h =
+        heuristic(
+            start_x,
+            start_y,
+            goal_x,
+            goal_y
+        );
+
+    AStarNode start_node{
+        start_x,
+        start_y,
+        0.0,
+        start_h,
+        start_h,
+        -1,
+        -1
+    };
+
+    open_list.push(start_node);
+
+    g_cost[start_y][start_x] = 0.0;
+
+    // 8方向
+    const int dx[8] = {
+        -1,  0,  1,
+        -1,       1,
+        -1,  0,  1
+    };
+
+    const int dy[8] = {
+        -1, -1, -1,
+         0,      0,
+         1,  1,  1
+    };
+
+    bool found = false;
+
+    while (!open_list.empty()) {
+
+        AStarNode current = open_list.top();
+        open_list.pop();
+
+        // Goalに到達
+        if (current.x == goal_x &&
+            current.y == goal_y) {
+
+            found = true;
+            break;
+        }
+
+        // 周囲8方向を探索
+        for (int i = 0; i < 8; ++i) {
+
+            const int next_x = current.x + dx[i];
+            const int next_y = current.y + dy[i];
+
+            // 範囲外
+            if (!isInsideGrid(next_x, next_y)) {
+                continue;
+            }
+
+            // 障害物
+            if (!isPassable(next_x, next_y)) {
+                continue;
+            }
+
+            // 斜め移動なら √2、上下左右なら 1
+            const double move_cost =
+                (dx[i] != 0 && dy[i] != 0)
+                    ? std::sqrt(2.0)
+                    : 1.0;
+
+            const double new_g =
+                current.g + move_cost;
+
+            // 既にもっと良い経路がある
+            if (new_g >= g_cost[next_y][next_x]) {
+                continue;
+            }
+
+            const double new_h =
+                heuristic(
+                    next_x,
+                    next_y,
+                    goal_x,
+                    goal_y
+                );
+
+            const double new_f =
+                new_g + new_h;
+
+            AStarNode next_node{
+                next_x,
+                next_y,
+                new_g,
+                new_h,
+                new_f,
+                current.x,
+                current.y
+            };
+
+            g_cost[next_y][next_x] = new_g;
+
+            parent[next_y][next_x] =
+                {current.x, current.y};
+
+            open_list.push(next_node);
+        }
+    }
+
+    if (!found) {
+
+        RCLCPP_WARN(
+            this->get_logger(),
+            "A*: Path not found."
+        );
+
+        return path;
+    }
+
+    // Goalから親を逆にたどる
+    int current_x = goal_x;
+    int current_y = goal_y;
+
+    while (!(current_x == start_x &&
+             current_y == start_y)) {
+
+        path.push_back(
+            {current_x, current_y}
+        );
+
+        const auto [parent_x, parent_y] =
+            parent[current_y][current_x];
+
+        current_x = parent_x;
+        current_y = parent_y;
+    }
+
+    // Startも追加
+    path.push_back(
+        {start_x, start_y}
+    );
+
+    // Goal → Start になっているので逆順にする
+    std::reverse(
+        path.begin(),
+        path.end()
+    );
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "A*: Path found. Length=%zu",
+        path.size()
+    );
+
+    return path;
 }
 
 int main(int argc, char** argv)

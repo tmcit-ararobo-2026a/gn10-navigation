@@ -11,6 +11,21 @@
 #include "tf2_ros/transform_listener.h"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 
+struct AStarNode
+{
+    int x;
+    int y;
+
+    double g;
+    double h;
+    double f;
+
+    int parent_x;
+    int parent_y;
+};
+
+
+
 class PathPlannerNode : public rclcpp::Node
 {
 public:
@@ -73,4 +88,12 @@ private:
     // ゴールの情報
     double goal_x_ = 0.0;
     double goal_y_ = 0.0;
+
+    // A*
+    std::vector<std::pair<int, int>> aStar(
+    int start_x,
+    int start_y,
+    int goal_x,
+    int goal_y
+);
 };
