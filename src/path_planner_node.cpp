@@ -197,6 +197,18 @@ void PathPlannerNode::getRobotPose()
         return;
     }
 
+    if (isPassable(grid_x, grid_y)) {
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Robot cell is walkable."
+        );
+    } else {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "Robot cell is occupied."
+        );
+    }
+
     RCLCPP_INFO(
         this->get_logger(),
         "Robot grid position: x=%d, y=%d",
@@ -273,6 +285,15 @@ bool PathPlannerNode::isInsideGrid(int x, int y)
         x < static_cast<int>(width_) &&
         y >= 0 &&
         y < static_cast<int>(height_);
+}
+
+bool PathPlannerNode::isPassable(int x, int y)
+{
+    if (!isInsideGrid(x, y)) {
+        return false;
+    }
+
+    return grid_[y][x] == 0;
 }
 
 int main(int argc, char** argv)

@@ -49,6 +49,9 @@ private:
     // 座標が範囲内に収まっているかどうかcheckする関数
     bool isInsideGrid(int x, int y);
 
+    // 通行可能化checkする関数
+    bool isPassable(int x, int y);
+
     //TF
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
