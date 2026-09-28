@@ -12,6 +12,6 @@ costmap_generator_node:
       cost_scale_factor: 1.0
     costs:
       wall: 120
-      partition: 120
+      partition: 77
       obstacle: 254
       default_cost: 254
