@@ -19,9 +19,6 @@ struct AStarNode {
     double g;
     double h;
     double f;
-
-    int parent_x;
-    int parent_y;
 };
 
 class PathPlannerNode : public rclcpp::Node
@@ -96,5 +93,5 @@ private:
     double goal_y_ = 0.0;
 
     // セーフティーゾーンの設定
-    int safety_zone_cells_ = 6;
+    double safety_zone_radius_ = 0.50;
 };

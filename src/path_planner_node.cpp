@@ -7,7 +7,6 @@
 #include <limits>
 #include <map>
 #include <queue>
-#include <unordered_map>
 #include <vector>
 
 #include "tf2/exceptions.h"
@@ -213,6 +212,7 @@ void PathPlannerNode::getRobotPose()
         RCLCPP_INFO(this->get_logger(), "Robot position: x=%.3f, y=%.3f", robot_x_, robot_y_);
     } catch (const tf2::TransformException& ex) {
         RCLCPP_WARN(this->get_logger(), "Could not get transform: %s", ex.what());
+        return;
     }
 
     auto [grid_x, grid_y] = worldToGrid(robot_x_, robot_y_);
@@ -268,7 +268,10 @@ bool PathPlannerNode::isPassable(int x, int y)
 void PathPlannerNode::generateSafetyZone()
 {
     // 元のCostmapを基準にSafety Zoneを生成する
-    // planning_grid_:Safety Zoneを反映したA*用Costmap
+    // planning_grid_:afety Zoneを反映したA*用Costmap
+
+    // Safety Zoneの半径をGridセル数に変換
+    const int radius_cells = static_cast<int>(std::ceil(safety_zone_radius_ / resolution_));
 
     for (int y = 0; y < static_cast<int>(height_); ++y) {
         for (int x = 0; x < static_cast<int>(width_); ++x) {
@@ -277,8 +280,17 @@ void PathPlannerNode::generateSafetyZone()
                 continue;
             }
 
-            for (int dy = -safety_zone_cells_; dy <= safety_zone_cells_; ++dy) {
-                for (int dx = -safety_zone_cells_; dx <= safety_zone_cells_; ++dx) {
+            // 障害物セルを中心に円形Safety Zoneを生成
+            for (int dy = -radius_cells; dy <= radius_cells; ++dy) {
+                for (int dx = -radius_cells; dx <= radius_cells; ++dx) {
+                    // 円の外側なら無視
+                    const double distance =
+                        std::sqrt(static_cast<double>(dx * dx + dy * dy)) * resolution_;
+
+                    if (distance > safety_zone_radius_) {
+                        continue;
+                    }
+
                     const int nx = x + dx;
                     const int ny = y + dy;
 
@@ -287,14 +299,14 @@ void PathPlannerNode::generateSafetyZone()
                         continue;
                     }
 
-                    // Safety Zoneを254（侵入禁止）にする
+                    // Safety Zoneを侵入禁止にする
                     planning_grid_[ny][nx] = 254;
                 }
             }
         }
     }
 
-    RCLCPP_INFO(this->get_logger(), "Safety Zone generated: %d cells", safety_zone_cells_);
+    RCLCPP_INFO(this->get_logger(), "Safety Zone generated: radius=%.2f m", safety_zone_radius_);
 }
 
 /**
@@ -303,10 +315,17 @@ void PathPlannerNode::generateSafetyZone()
 
 double heuristic(int x, int y, int goal_x, int goal_y)
 {
-    const double dx = x - goal_x;
-    const double dy = y - goal_y;
+    const double dx = std::abs(x - goal_x);
+    const double dy = std::abs(y - goal_y);
 
-    return std::sqrt(dx * dx + dy * dy);
+    // 斜めに進める回数
+    const double diagonal = std::min(dx, dy);
+
+    // 残りの上下左右移動の回数
+    const double straight = std::max(dx, dy) - diagonal;
+
+    // 斜め移動は √2、上下左右は 1
+    return diagonal * std::sqrt(2.0) + straight;
 }
 
 struct CompareAStarNode {
@@ -351,7 +370,7 @@ std::vector<std::pair<int, int>> PathPlannerNode::aStar(
     // Start
     const double start_h = heuristic(start_x, start_y, goal_x, goal_y);
 
-    AStarNode start_node{start_x, start_y, 0.0, start_h, start_h, -1, -1};
+    AStarNode start_node{start_x, start_y, 0.0, start_h, start_h};
 
     open_list.push(start_node);
 
@@ -367,6 +386,10 @@ std::vector<std::pair<int, int>> PathPlannerNode::aStar(
     while (!open_list.empty()) {
         AStarNode current = open_list.top();
         open_list.pop();
+
+        if (current.g > g_cost[current.y][current.x]) {
+            continue;
+        }
 
         // Goalに到達
         if (current.x == goal_x && current.y == goal_y) {
@@ -422,7 +445,13 @@ std::vector<std::pair<int, int>> PathPlannerNode::aStar(
 
             const double new_f = new_g + new_h;
 
-            AStarNode next_node{next_x, next_y, new_g, new_h, new_f, current.x, current.y};
+            AStarNode next_node{
+                next_x,
+                next_y,
+                new_g,
+                new_h,
+                new_f,
+            };
 
             g_cost[next_y][next_x] = new_g;
 
