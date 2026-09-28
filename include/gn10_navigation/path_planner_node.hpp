@@ -73,6 +73,9 @@ private:
     // 通行可能化checkする関数
     bool isPassable(int x, int y);
 
+    // mergin
+    void inflateObstacles();
+
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
 
     //TF
@@ -96,6 +99,10 @@ private:
     // ゴールの情報
     double goal_x_ = 0.0;
     double goal_y_ = 0.0;
+
+    // マージン
+    double robot_radius_;
+    double safety_margin_;
 
     // A*
     std::vector<std::pair<int, int>> aStar(

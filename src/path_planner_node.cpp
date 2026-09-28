@@ -15,6 +15,12 @@
 PathPlannerNode::PathPlannerNode()
     : Node("path_planner_node")
 {
+    robot_radius_ =
+    this->declare_parameter<double>("robot_radius", 0.30);
+
+    safety_margin_ =
+        this->declare_parameter<double>("safety_margin", 0.10);
+
     rclcpp::QoS map_qos(rclcpp::KeepLast(1));
     map_qos.reliable();
     map_qos.transient_local();
@@ -47,7 +53,7 @@ PathPlannerNode::PathPlannerNode()
         "/planned_path",
         10
     );
-
+    
     tf_buffer_ =
         std::make_shared<tf2_ros::Buffer>(
             this->get_clock());
@@ -99,6 +105,8 @@ void PathPlannerNode::getCostmapMsg(
                 static_cast<uint8_t>(grid_msg->data[index]);
         }
     }
+
+    inflateObstacles();
 
     // ③ 受信結果を表示
     RCLCPP_INFO(
@@ -375,6 +383,69 @@ bool PathPlannerNode::isPassable(int x, int y)
     }
 
     return grid_[y][x] == 0;
+}
+
+void PathPlannerNode::inflateObstacles()
+{
+    if (grid_.empty()) {
+        return;
+    }
+
+    // ロボット半径 + 安全マージン
+    const double inflation_radius =
+        robot_radius_ + safety_margin_;
+
+    // メートル → セル
+    const int inflation_cells =
+        static_cast<int>(
+            std::ceil(inflation_radius / resolution_)
+        );
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Inflation radius: %.2f m (%d cells)",
+        inflation_radius,
+        inflation_cells
+    );
+
+    // 膨張前のグリッドをコピー
+    const auto original_grid = grid_;
+
+    for (int y = 0; y < static_cast<int>(height_); ++y) {
+        for (int x = 0; x < static_cast<int>(width_); ++x) {
+
+            // 元々障害物ではないなら何もしない
+            if (original_grid[y][x] == 0) {
+                continue;
+            }
+
+            // この障害物セルの周囲を膨張させる
+            for (int dy = -inflation_cells;
+                 dy <= inflation_cells;
+                 ++dy) {
+
+                for (int dx = -inflation_cells;
+                     dx <= inflation_cells;
+                     ++dx) {
+
+                    // 円形に膨張させる
+                    if (dx * dx + dy * dy >
+                        inflation_cells * inflation_cells) {
+                        continue;
+                    }
+
+                    const int nx = x + dx;
+                    const int ny = y + dy;
+
+                    if (!isInsideGrid(nx, ny)) {
+                        continue;
+                    }
+
+                    grid_[ny][nx] = 254;
+                }
+            }
+        }
+    }
 }
 
 /**
