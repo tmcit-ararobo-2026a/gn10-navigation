@@ -10,7 +10,7 @@
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 #include "geometry_msgs/msg/pose_stamped.hpp"
-
+#include "nav_msgs/msg/path.hpp"
 
 struct AStarNode
 {
@@ -72,6 +72,8 @@ private:
 
     // 通行可能化checkする関数
     bool isPassable(int x, int y);
+
+    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
 
     //TF
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;

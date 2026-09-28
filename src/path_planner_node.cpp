@@ -41,6 +41,12 @@ PathPlannerNode::PathPlannerNode()
             )
 
         );   
+    
+    path_pub_ =
+    this->create_publisher<nav_msgs::msg::Path>(
+        "/planned_path",
+        10
+    );
 
     tf_buffer_ =
         std::make_shared<tf2_ros::Buffer>(
@@ -278,11 +284,38 @@ void PathPlannerNode::getGoalPose(
             grid_x,
             grid_y
         );
+    nav_msgs::msg::Path path_msg;
+
+    path_msg.header.stamp = this->now();
+    path_msg.header.frame_id = "map";
+
     for (const auto &cell : path)
     {
         auto [world_x, world_y] =
             gridToWorld(cell.first, cell.second);
-    
+
+        geometry_msgs::msg::PoseStamped pose;
+
+        pose.header = path_msg.header;
+
+        pose.pose.position.x = world_x;
+        pose.pose.position.y = world_y;
+        pose.pose.position.z = 0.0;
+
+        pose.pose.orientation.x = 0.0;
+        pose.pose.orientation.y = 0.0;
+        pose.pose.orientation.z = 0.0;
+        pose.pose.orientation.w = 1.0;
+
+        path_msg.poses.push_back(pose);
+    }
+    path_pub_->publish(path_msg);
+
+    for (const auto &cell : path)
+    {
+        auto [world_x, world_y] =
+            gridToWorld(cell.first, cell.second);
+
         RCLCPP_INFO(
             this->get_logger(),
             "Path: grid=(%d,%d) -> world=(%.2f,%.2f)",
