@@ -17,6 +17,7 @@ private:
     void declareAndGetParameters();
     void generateAndPublishCostmap();
     int getObjectCost(const std::string& comment, ObjectType type) const;
+    void applyInflation(nav_msgs::msg::OccupancyGrid& costmap_msg);
 
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_pub_;
 
@@ -32,6 +33,11 @@ private:
     double map_max_y_;
     double robot_z_min_;
     double robot_z_max_;
+
+    // 膨張コスト（インフレーション）パラメータ
+    double robot_radius_;       // ロボットの物理半径 (254: 侵入禁止) [m]
+    double inflation_margin_;   // 膨張マージン (グラデーション領域) [m]
+    int max_inflation_cost_;    // 膨張領域の最大コスト値 (1〜253)
 
     // コストパラメータを保持するメンバ変数
     int cost_wall_;

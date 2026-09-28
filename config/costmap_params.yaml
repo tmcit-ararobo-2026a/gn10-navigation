@@ -6,6 +6,10 @@ costmap_generator_node:
       max_x: 6.0
       min_y: -6.5
       max_y: 6.5
+    inflation:
+      robot_radius: 0.35
+      margin: 0.7
+      max_cost: 150
     costs:
       wall: 120
       partition: 200
