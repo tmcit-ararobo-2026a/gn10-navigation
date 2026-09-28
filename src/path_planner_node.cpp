@@ -12,28 +12,6 @@
 
 #include "tf2/exceptions.h"
 
-double heuristic(
-    int x,
-    int y,
-    int goal_x,
-    int goal_y)
-{
-    const double dx = x - goal_x;
-    const double dy = y - goal_y;
-
-    return std::sqrt(dx * dx + dy * dy);
-}
-
-struct CompareAStarNode
-{
-    bool operator()(
-        const AStarNode& a,
-        const AStarNode& b) const
-    {
-        return a.f > b.f;
-    }
-};
-
 PathPlannerNode::PathPlannerNode()
     : Node("path_planner_node")
 {
@@ -300,6 +278,20 @@ void PathPlannerNode::getGoalPose(
             grid_x,
             grid_y
         );
+    for (const auto &cell : path)
+    {
+        auto [world_x, world_y] =
+            gridToWorld(cell.first, cell.second);
+    
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Path: grid=(%d,%d) -> world=(%.2f,%.2f)",
+            cell.first,
+            cell.second,
+            world_x,
+            world_y
+        );
+    }
 }
 
 std::pair<int, int> PathPlannerNode::worldToGrid(
@@ -351,6 +343,34 @@ bool PathPlannerNode::isPassable(int x, int y)
 
     return grid_[y][x] == 0;
 }
+
+/**
+ *  A*
+ */
+
+double heuristic(
+    int x,
+    int y,
+    int goal_x,
+    int goal_y)
+{
+    const double dx = x - goal_x;
+    const double dy = y - goal_y;
+
+    return std::sqrt(dx * dx + dy * dy);
+}
+
+struct CompareAStarNode
+{
+    bool operator()(
+        const AStarNode& a,
+        const AStarNode& b) const
+    {
+        return a.f > b.f;
+    }
+};
+
+
 
 std::vector<std::pair<int, int>> PathPlannerNode::aStar(
     int start_x,

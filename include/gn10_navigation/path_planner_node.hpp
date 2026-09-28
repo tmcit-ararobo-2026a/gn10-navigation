@@ -11,6 +11,7 @@
 #include "tf2_ros/transform_listener.h"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 
+
 struct AStarNode
 {
     int x;
@@ -50,6 +51,7 @@ private:
     double world_x,
     double world_y);
 
+    // grid座標系からWorld座標に変換する関数
     std::pair<double, double> gridToWorld(
     int grid_x,
     int grid_y);
