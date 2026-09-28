@@ -17,9 +17,9 @@ PathPlannerNode::PathPlannerNode()
 {
     // ロボットの大きさ情報とマージンを入力
     robot_radius_ =
-        this->declare_parameter<double>("robot_radius", 0.80);
+        this->declare_parameter<double>("robot_radius", 0.50);
     safety_margin_ =
-        this->declare_parameter<double>("safety_margin", 0.10);
+        this->declare_parameter<double>("safety_margin", 0.05);
 
     // QOSの設定
     rclcpp::QoS map_qos(rclcpp::KeepLast(1));
