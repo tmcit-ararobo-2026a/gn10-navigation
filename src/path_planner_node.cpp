@@ -162,17 +162,17 @@ void PathPlannerNode::getRobotPose()
                 tf2::TimePointZero
             );
 
-        double x =
+        robot_x_ =
             transform.transform.translation.x;
 
-        double y =
+        robot_y_ =
             transform.transform.translation.y;
 
         RCLCPP_INFO(
             this->get_logger(),
             "Robot position: x=%.3f, y=%.3f",
-            x,
-            y
+            robot_x_,
+            robot_y_
         );
     }
     catch (const tf2::TransformException &ex) {
@@ -182,12 +182,21 @@ void PathPlannerNode::getRobotPose()
             ex.what()
         );
     }
+
+    auto [grid_x, grid_y] =
+    worldToGrid(robot_x_, robot_y_);
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Robot grid position: x=%d, y=%d",
+        grid_x,
+        grid_y
+    );
 }
 
 void PathPlannerNode::getGoalPose(
     const geometry_msgs::msg::PoseStamped::SharedPtr msg)
 {
-    // Goalの座標系を確認
     if (msg->header.frame_id != "map") {
         RCLCPP_WARN(
             this->get_logger(),
@@ -197,7 +206,6 @@ void PathPlannerNode::getGoalPose(
         return;
     }
 
-    // Goal座標を保存
     goal_x_ = msg->pose.position.x;
     goal_y_ = msg->pose.position.y;
 
@@ -207,6 +215,33 @@ void PathPlannerNode::getGoalPose(
         goal_x_,
         goal_y_
     );
+
+    auto [grid_x, grid_y] =
+        worldToGrid(goal_x_, goal_y_);
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Goal grid position: x=%d, y=%d",
+        grid_x,
+        grid_y
+    );
+}
+
+std::pair<int, int> PathPlannerNode::worldToGrid(
+    double world_x,
+    double world_y)
+{
+    int grid_x =
+        static_cast<int>(
+            (world_x - origin_x_) / resolution_
+        );
+
+    int grid_y =
+        static_cast<int>(
+            (world_y - origin_y_) / resolution_
+        );
+
+    return {grid_x, grid_y};
 }
 
 int main(int argc, char** argv)

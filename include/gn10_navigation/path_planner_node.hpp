@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
+#include <utility>
 
 #include "rclcpp/rclcpp.hpp"
 #include "nav_msgs/msg/occupancy_grid.hpp"
@@ -29,6 +30,11 @@ private:
     // map上のロボット座標系を受け取る関数(tfより)
     void getRobotPose();
 
+    // World座標系からGrid座標に変換する関数
+    std::pair<int, int> worldToGrid(
+    double world_x,
+    double world_y);
+
     // コストマップのSubscriber
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr
         costmap_sub_;
@@ -53,6 +59,10 @@ private:
     double resolution_ = 0.0;
     double origin_x_ = 0.0;
     double origin_y_ = 0.0;
+    
+    // robotの情報
+    double robot_x_ = 0.0;
+    double robot_y_ = 0.0;
 
     // ゴールの情報
     double goal_x_ = 0.0;
