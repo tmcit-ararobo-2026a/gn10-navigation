@@ -33,6 +33,29 @@ public:
     PathPlannerNode();
 
 private:
+
+    // コストマップのSubscriber
+    rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr
+        costmap_sub_;
+
+    // goalの座標系を受信するsubscriber
+    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr
+        goal_pose_sub_;
+
+    // 2次元コストマップ grid_[y][x]
+    std::vector<std::vector<int>> grid_;
+
+
+    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
+
+    //TF
+    std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+    std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+
+    // timer
+    rclcpp::TimerBase::SharedPtr timer_;
+
+
     // コストマップを受信するコールバック
     void getCostmapMsg(
         const nav_msgs::msg::OccupancyGrid::SharedPtr grid_msg
@@ -56,34 +79,22 @@ private:
     int grid_x,
     int grid_y);
 
-    // コストマップのSubscriber
-    rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr
-        costmap_sub_;
-
-    // goalの座標系を受信するsubscriber
-    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr
-        goal_pose_sub_;
-
-    // 2次元コストマップ grid_[y][x]
-    std::vector<std::vector<int>> grid_;
-
     // 座標が範囲内に収まっているかどうかcheckする関数
     bool isInsideGrid(int x, int y);
 
     // 通行可能化checkする関数
     bool isPassable(int x, int y);
 
-    // mergin
+    // マージン
     void inflateObstacles();
 
-    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
-
-    //TF
-    std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
-    std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
-
-    // timer
-    rclcpp::TimerBase::SharedPtr timer_;
+    // A*
+    std::vector<std::pair<int, int>> aStar(
+    int start_x,
+    int start_y,
+    int goal_x,
+    int goal_y
+    );
 
     // マップの情報
     unsigned int width_ = 0;
@@ -104,11 +115,5 @@ private:
     double robot_radius_;
     double safety_margin_;
 
-    // A*
-    std::vector<std::pair<int, int>> aStar(
-    int start_x,
-    int start_y,
-    int goal_x,
-    int goal_y
-);
+
 };

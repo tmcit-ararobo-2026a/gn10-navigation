@@ -15,16 +15,18 @@
 PathPlannerNode::PathPlannerNode()
     : Node("path_planner_node")
 {
+    // ロボットの大きさ情報とマージンを入力
     robot_radius_ =
-    this->declare_parameter<double>("robot_radius", 0.30);
-
+        this->declare_parameter<double>("robot_radius", 0.30);
     safety_margin_ =
         this->declare_parameter<double>("safety_margin", 0.10);
 
+    // QOSの設定
     rclcpp::QoS map_qos(rclcpp::KeepLast(1));
     map_qos.reliable();
     map_qos.transient_local();
 
+    // pubとsubの設定
     costmap_sub_ =
         this->create_subscription<nav_msgs::msg::OccupancyGrid>(
             "/costmap",
@@ -54,6 +56,7 @@ PathPlannerNode::PathPlannerNode()
         10
     );
     
+    // tfの設定
     tf_buffer_ =
         std::make_shared<tf2_ros::Buffer>(
             this->get_clock());
@@ -62,6 +65,7 @@ PathPlannerNode::PathPlannerNode()
         std::make_shared<tf2_ros::TransformListener>(
             *tf_buffer_);
 
+    // timerの設定
     timer_ = this->create_wall_timer(
         std::chrono::milliseconds(500),
         std::bind(
@@ -172,71 +176,6 @@ void PathPlannerNode::getCostmapMsg(
     }
 }
 
-void PathPlannerNode::getRobotPose()
-{
-    try {
-        auto transform =
-            tf_buffer_->lookupTransform(
-                "map",
-                "base_link",
-                tf2::TimePointZero
-            );
-
-        robot_x_ =
-            transform.transform.translation.x;
-
-        robot_y_ =
-            transform.transform.translation.y;
-
-        RCLCPP_INFO(
-            this->get_logger(),
-            "Robot position: x=%.3f, y=%.3f",
-            robot_x_,
-            robot_y_
-        );
-    }
-    catch (const tf2::TransformException &ex) {
-        RCLCPP_WARN(
-            this->get_logger(),
-            "Could not get transform: %s",
-            ex.what()
-        );
-    }
-
-    auto [grid_x, grid_y] =
-    worldToGrid(robot_x_, robot_y_);
-
-    if (!isInsideGrid(grid_x, grid_y)) {
-        RCLCPP_WARN(
-            this->get_logger(),
-            "Robot is outside the costmap: x=%d, y=%d",
-            grid_x,
-            grid_y
-        );
-    
-        return;
-    }
-
-    if (isPassable(grid_x, grid_y)) {
-        RCLCPP_INFO(
-            this->get_logger(),
-            "Robot cell is walkable."
-        );
-    } else {
-        RCLCPP_WARN(
-            this->get_logger(),
-            "Robot cell is occupied."
-        );
-    }
-
-    RCLCPP_INFO(
-        this->get_logger(),
-        "Robot grid position: x=%d, y=%d",
-        grid_x,
-        grid_y
-    );
-}
-
 void PathPlannerNode::getGoalPose(
     const geometry_msgs::msg::PoseStamped::SharedPtr msg)
 {
@@ -333,6 +272,71 @@ void PathPlannerNode::getGoalPose(
             world_y
         );
     }
+}
+
+void PathPlannerNode::getRobotPose()
+{
+    try {
+        auto transform =
+            tf_buffer_->lookupTransform(
+                "map",
+                "base_link",
+                tf2::TimePointZero
+            );
+
+        robot_x_ =
+            transform.transform.translation.x;
+
+        robot_y_ =
+            transform.transform.translation.y;
+
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Robot position: x=%.3f, y=%.3f",
+            robot_x_,
+            robot_y_
+        );
+    }
+    catch (const tf2::TransformException &ex) {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "Could not get transform: %s",
+            ex.what()
+        );
+    }
+
+    auto [grid_x, grid_y] =
+    worldToGrid(robot_x_, robot_y_);
+
+    if (!isInsideGrid(grid_x, grid_y)) {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "Robot is outside the costmap: x=%d, y=%d",
+            grid_x,
+            grid_y
+        );
+    
+        return;
+    }
+
+    if (isPassable(grid_x, grid_y)) {
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Robot cell is walkable."
+        );
+    } else {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "Robot cell is occupied."
+        );
+    }
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Robot grid position: x=%d, y=%d",
+        grid_x,
+        grid_y
+    );
 }
 
 std::pair<int, int> PathPlannerNode::worldToGrid(
