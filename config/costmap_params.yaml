@@ -9,6 +9,7 @@ costmap_generator_node:
     inflation:
       robot_radius: 0.35
       margin: 0.4
+      cost_scale_factor: 1.0
     costs:
       wall: 120
       partition: 120

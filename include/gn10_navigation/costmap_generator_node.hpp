@@ -37,7 +37,7 @@ private:
     // 膨張コスト（インフレーション）パラメータ
     double robot_radius_;       // ロボットの物理半径 (254: 侵入禁止) [m]
     double inflation_margin_;   // 膨張マージン (グラデーション領域) [m]
-    int max_inflation_cost_;    // 膨張領域の最大コスト値 (1〜253)
+    double cost_scale_factor_;  // コストによるマージン変化の度合い (0.0〜2.0程度)
 
     // コストパラメータを保持するメンバ変数
     int cost_wall_;
