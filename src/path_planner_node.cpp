@@ -186,6 +186,17 @@ void PathPlannerNode::getRobotPose()
     auto [grid_x, grid_y] =
     worldToGrid(robot_x_, robot_y_);
 
+    if (!isInsideGrid(grid_x, grid_y)) {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "Robot is outside the costmap: x=%d, y=%d",
+            grid_x,
+            grid_y
+        );
+    
+        return;
+    }
+
     RCLCPP_INFO(
         this->get_logger(),
         "Robot grid position: x=%d, y=%d",
@@ -219,6 +230,17 @@ void PathPlannerNode::getGoalPose(
     auto [grid_x, grid_y] =
         worldToGrid(goal_x_, goal_y_);
 
+    if (!isInsideGrid(grid_x, grid_y)) {
+    RCLCPP_WARN(
+        this->get_logger(),
+        "Goal is outside the costmap: x=%d, y=%d",
+        grid_x,
+        grid_y
+    );
+
+    return;
+    }
+
     RCLCPP_INFO(
         this->get_logger(),
         "Goal grid position: x=%d, y=%d",
@@ -242,6 +264,15 @@ std::pair<int, int> PathPlannerNode::worldToGrid(
         );
 
     return {grid_x, grid_y};
+}
+
+bool PathPlannerNode::isInsideGrid(int x, int y)
+{
+    return
+        x >= 0 &&
+        x < static_cast<int>(width_) &&
+        y >= 0 &&
+        y < static_cast<int>(height_);
 }
 
 int main(int argc, char** argv)

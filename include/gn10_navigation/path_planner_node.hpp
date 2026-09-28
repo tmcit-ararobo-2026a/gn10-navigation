@@ -46,6 +46,9 @@ private:
     // 2次元コストマップ grid_[y][x]
     std::vector<std::vector<int>> grid_;
 
+    // 座標が範囲内に収まっているかどうかcheckする関数
+    bool isInsideGrid(int x, int y);
+
     //TF
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
