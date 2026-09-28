@@ -50,6 +50,10 @@ private:
     double world_x,
     double world_y);
 
+    std::pair<double, double> gridToWorld(
+    int grid_x,
+    int grid_y);
+
     // コストマップのSubscriber
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr
         costmap_sub_;

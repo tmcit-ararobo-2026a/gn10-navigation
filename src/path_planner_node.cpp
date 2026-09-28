@@ -287,7 +287,7 @@ void PathPlannerNode::getGoalPose(
         grid_x,
         grid_y
     );
-    
+
     // 現在のロボット位置をGrid座標へ変換
     auto [start_x, start_y] =
         worldToGrid(robot_x_, robot_y_);
@@ -317,6 +317,21 @@ std::pair<int, int> PathPlannerNode::worldToGrid(
         );
 
     return {grid_x, grid_y};
+}
+
+std::pair<double, double> PathPlannerNode::gridToWorld(
+    int grid_x,
+    int grid_y)
+{
+    double world_x =
+        origin_x_ +
+        static_cast<double>(grid_x) * resolution_;
+
+    double world_y =
+        origin_y_ +
+        static_cast<double>(grid_y) * resolution_;
+
+    return {world_x, world_y};
 }
 
 bool PathPlannerNode::isInsideGrid(int x, int y)
