@@ -33,12 +33,7 @@ private:
     // goalの座標系を受信するsubscriber
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_pose_sub_;
 
-    // 元のCostmap
-    // Costmap Generatorから受け取った値をそのまま保持する
-    std::vector<std::vector<int>> raw_grid_;
-
-    // A*が実際に使用するCostmap
-    // Safety Zoneなどを反映した後の値
+    // A*が使用するCostmap（costmap_generator_node から受信した最新マップ）
     std::vector<std::vector<int>> planning_grid_;
 
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
@@ -68,11 +63,8 @@ private:
     // 座標が範囲内に収まっているかどうかcheckする関数
     bool isInsideGrid(int x, int y);
 
-    // 通行可能化checkする関数
+    // 通行可能かcheckする関数 (254未満を通行可能と判定)
     bool isPassable(int x, int y);
-
-    // 障害物周りのセーフティーゾーン作成
-    void generateSafetyZone();
 
     // A*
     std::vector<std::pair<int, int>> aStar(int start_x, int start_y, int goal_x, int goal_y);
@@ -92,6 +84,6 @@ private:
     double goal_x_ = 0.0;
     double goal_y_ = 0.0;
 
-    // セーフティーゾーンの設定
-    double safety_zone_radius_ = 0.50;
+    // A*探索におけるコストマップペナルティの重み（パラメーター化）
+    double cost_factor_ = 0.05;
 };
