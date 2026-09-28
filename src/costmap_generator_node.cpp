@@ -32,9 +32,8 @@ void CostmapGeneratorNode::declareAndGetParameters()
     this->declare_parameter("robot_clearance.z_max", 1.40); // ロボットの高さ
 
     // 膨張コスト（インフレーション）のパラメータ設定
-    this->declare_parameter("inflation.robot_radius", 0.35);      // ロボット物理半径 [m] (254エリア)
+    this->declare_parameter("inflation.robot_radius", 0.35);      // ロボット物理半径 [m] (絶対侵入不可領域)
     this->declare_parameter("inflation.margin", 0.50);            // グラデーションの膨張余白 [m]
-    this->declare_parameter("inflation.max_cost", 200);           // 障害物直近の膨張コスト上限
 
     // オブジェクト別コスト定義のパラメータ化
     this->declare_parameter("costs.wall", 120);         // 外壁
@@ -54,9 +53,8 @@ void CostmapGeneratorNode::declareAndGetParameters()
     robot_z_max_ = this->get_parameter("robot_clearance.z_max").as_double();
 
     // 膨張パラメータの取得
-    robot_radius_       = this->get_parameter("inflation.robot_radius").as_double();
-    inflation_margin_   = this->get_parameter("inflation.margin").as_double();
-    max_inflation_cost_ = static_cast<int>(this->get_parameter("inflation.max_cost").as_int());
+    robot_radius_     = this->get_parameter("inflation.robot_radius").as_double();
+    inflation_margin_ = this->get_parameter("inflation.margin").as_double();
 
     // コストパラメータの取得
     cost_wall_      = static_cast<int>(this->get_parameter("costs.wall").as_int());
@@ -119,9 +117,8 @@ void CostmapGeneratorNode::generateAndPublishCostmap()
     const int width       = static_cast<int>(costmap_msg.info.width);
     const int height      = static_cast<int>(costmap_msg.info.height);
 
-    // 原理障害物（254などの静的オブジェクト）のレイアウト配置
+    // ① 原理障害物のレイアウト配置 (各オブジェクトの基準コストを設定)
     for (const auto& obj : map_objects) {
-        // ロボットの高さ判定 (z軸の範囲外なら読み飛ばす)
         if (obj.z_max < robot_z_min_ || obj.z_min > robot_z_max_) {
             continue;
         }
@@ -129,7 +126,6 @@ void CostmapGeneratorNode::generateAndPublishCostmap()
         int cost = getObjectCost(obj.comment, obj.type);
 
         if (obj.type == BOX || obj.type == VISUAL_BOX) {
-            // param1, param2 は中心からの X/Y 半幅 (extents)
             double min_x = obj.center_x - obj.param1;
             double max_x = obj.center_x + obj.param1;
             double min_y = obj.center_y - obj.param2;
@@ -170,7 +166,7 @@ void CostmapGeneratorNode::generateAndPublishCostmap()
         }
     }
 
-    // 全ての障害物セルから連続的な膨張コスト（Cost Gradient）を生成
+    // ② オブジェクトのコストに応じた膨張（物理半径 254 + グラデーション）の適用
     applyInflation(costmap_msg);
 
     costmap_pub_->publish(costmap_msg);
@@ -188,49 +184,64 @@ void CostmapGeneratorNode::applyInflation(nav_msgs::msg::OccupancyGrid& costmap_
     const double total_radius = robot_radius_ + inflation_margin_;
     const int radius_cells = static_cast<int>(std::ceil(total_radius / resolution_));
 
-    // 膨張前の障害物セル（254）のインデックスを抽出
-    std::vector<std::pair<int, int>> obstacle_cells;
+    // 膨張処理を適用する元セル（コスト > 0）と設定された元コストを抽出
+    struct SourceCell {
+        int x;
+        int y;
+        int cost;
+    };
+    std::vector<SourceCell> obstacle_cells;
+
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
-            if (static_cast<uint8_t>(costmap_msg.data[y * width + x]) >= 254) {
-                obstacle_cells.emplace_back(x, y);
+            int c = static_cast<uint8_t>(costmap_msg.data[y * width + x]);
+            if (c > 0) {
+                obstacle_cells.push_back({x, y, c});
             }
         }
     }
 
-    // 各障害物セルから近傍セルへ距離に応じたコストを膨張
-    for (const auto& [ox, oy] : obstacle_cells) {
-        int min_x = std::max(0, ox - radius_cells);
-        int max_x = std::min(width - 1, ox + radius_cells);
-        int min_y = std::max(0, oy - radius_cells);
-        int max_y = std::min(height - 1, oy + radius_cells);
+    // 膨張結果を保持するバッファ (元データで初期化)
+    std::vector<uint8_t> inflated_data(costmap_msg.data.begin(), costmap_msg.data.end());
+
+    // 各障害物セルから周囲へインフレーションを展開
+    for (const auto& source : obstacle_cells) {
+        int min_x = std::max(0, source.x - radius_cells);
+        int max_x = std::min(width - 1, source.x + radius_cells);
+        int min_y = std::max(0, source.y - radius_cells);
+        int max_y = std::min(height - 1, source.y + radius_cells);
 
         for (int y = min_y; y <= max_y; ++y) {
             for (int x = min_x; x <= max_x; ++x) {
-                int dx = x - ox;
-                int dy = y - oy;
+                int dx = x - source.x;
+                int dy = y - source.y;
                 double dist = std::hypot(dx, dy) * resolution_;
 
-                int cost = 0;
+                int calculated_cost = 0;
                 if (dist <= robot_radius_) {
-                    cost = 254; // ロボットの物理接触領域（絶対不可侵）
+                    // ロボットの物理半径内は「侵入不可 (254)」にする
+                    // これにより外壁や教壇の端からも robot_radius_ 分だけ絶対に進入できない領域が広がる
+                    calculated_cost = 254;
                 } else if (dist <= total_radius && inflation_margin_ > 0.0) {
-                    // 障害物に近づくほど滑らかにコストが高くなる線形勾配
+                    // グラデーション領域：元オブジェクトのコスト(source.cost)に応じてスケーリング
                     double ratio = (total_radius - dist) / inflation_margin_; // 1.0 〜 0.0
-                    cost = static_cast<int>(ratio * max_inflation_cost_);
+                    calculated_cost = static_cast<int>(ratio * source.cost);
                 } else {
                     continue;
                 }
 
                 int idx = y * width + x;
-                int current_cost = static_cast<uint8_t>(costmap_msg.data[idx]);
-                
-                // より高いコストを採用して保持する
-                if (cost > current_cost) {
-                    costmap_msg.data[idx] = static_cast<int8_t>(cost);
+                // 周囲の障害物から伝搬してきたコストのうち最大のものを採用
+                if (calculated_cost > inflated_data[idx]) {
+                    inflated_data[idx] = static_cast<uint8_t>(calculated_cost);
                 }
             }
         }
+    }
+
+    // 元データに反映
+    for (size_t i = 0; i < costmap_msg.data.size(); ++i) {
+        costmap_msg.data[i] = static_cast<int8_t>(inflated_data[i]);
     }
 }
 
