@@ -35,9 +35,19 @@ ament_target_dependencies(costmap_generator_node
   nlohmann_json
 )
 
+add_executable(path_planner_node
+  src/path_planner_node.cpp
+)
+
+ament_target_dependencies(path_planner_node
+  rclcpp
+  nav_msgs
+)
+
 # インストール設定 (Launch, Config, Node)
 install(TARGETS 
   costmap_generator_node
+  path_planner_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
