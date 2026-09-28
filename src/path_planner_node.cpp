@@ -1,12 +1,14 @@
 #include "gn10_navigation/path_planner_node.hpp"
 
+#include <chrono>
 #include <functional>
 #include <map>
+
+#include "tf2/exceptions.h"
 
 PathPlannerNode::PathPlannerNode()
     : Node("path_planner_node")
 {
-    // costmap_generator_node とQoSを合わせる
     rclcpp::QoS map_qos(rclcpp::KeepLast(1));
     map_qos.reliable();
     map_qos.transient_local();
@@ -22,7 +24,26 @@ PathPlannerNode::PathPlannerNode()
             )
         );
 
-    RCLCPP_INFO(this->get_logger(), "Path planner started");
+    tf_buffer_ =
+        std::make_shared<tf2_ros::Buffer>(
+            this->get_clock());
+
+    tf_listener_ =
+        std::make_shared<tf2_ros::TransformListener>(
+            *tf_buffer_);
+
+    timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(500),
+        std::bind(
+            &PathPlannerNode::getRobotPose,
+            this
+        )
+    );
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Path planner started"
+    );
 }
 
 void PathPlannerNode::getCostmapMsg(
@@ -115,6 +136,38 @@ void PathPlannerNode::getCostmapMsg(
             "Cost %d: %d cells",
             value,
             count
+        );
+    }
+}
+
+void PathPlannerNode::getRobotPose()
+{
+    try {
+        auto transform =
+            tf_buffer_->lookupTransform(
+                "map",
+                "base_link",
+                tf2::TimePointZero
+            );
+
+        double x =
+            transform.transform.translation.x;
+
+        double y =
+            transform.transform.translation.y;
+
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Robot position: x=%.3f, y=%.3f",
+            x,
+            y
+        );
+    }
+    catch (const tf2::TransformException &ex) {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "Could not get transform: %s",
+            ex.what()
         );
     }
 }

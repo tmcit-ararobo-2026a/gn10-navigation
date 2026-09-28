@@ -42,6 +42,9 @@ add_executable(path_planner_node
 ament_target_dependencies(path_planner_node
   rclcpp
   nav_msgs
+  geometry_msgs
+  tf2
+  tf2_ros
 )
 
 # インストール設定 (Launch, Config, Node)
