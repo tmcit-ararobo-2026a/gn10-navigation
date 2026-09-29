@@ -31,6 +31,11 @@ void CostmapGeneratorNode::declareAndGetParameters()
     this->declare_parameter("robot_clearance.z_min", 0.00); // ロボットが乗り越えられる高さ閾値
     this->declare_parameter("robot_clearance.z_max", 1.40); // ロボットの高さ
 
+    // 膨張コスト（インフレーション）のパラメータ設定
+    this->declare_parameter("inflation.robot_radius", 0.35);      // ロボット物理半径 [m] (絶対侵入不可領域)
+    this->declare_parameter("inflation.margin", 0.50);            // 基準となる最大の膨張余白 [m]
+    this->declare_parameter("inflation.cost_scale_factor", 1.0);  // コストによるマージン変化の度合い (0.0〜2.0程度)
+
     // オブジェクト別コスト定義のパラメータ化
     this->declare_parameter("costs.wall", 120);         // 外壁
     this->declare_parameter("costs.partition", 200);    // 中央仕切り・教壇
@@ -47,6 +52,11 @@ void CostmapGeneratorNode::declareAndGetParameters()
     map_max_y_   = this->get_parameter("map_bounds.max_y").as_double();
     robot_z_min_ = this->get_parameter("robot_clearance.z_min").as_double();
     robot_z_max_ = this->get_parameter("robot_clearance.z_max").as_double();
+
+    // 膨張パラメータの取得
+    robot_radius_      = this->get_parameter("inflation.robot_radius").as_double();
+    inflation_margin_  = this->get_parameter("inflation.margin").as_double();
+    cost_scale_factor_ = this->get_parameter("inflation.cost_scale_factor").as_double();
 
     // コストパラメータの取得
     cost_wall_      = static_cast<int>(this->get_parameter("costs.wall").as_int());
@@ -109,8 +119,8 @@ void CostmapGeneratorNode::generateAndPublishCostmap()
     const int width       = static_cast<int>(costmap_msg.info.width);
     const int height      = static_cast<int>(costmap_msg.info.height);
 
+    // ① 原理障害物のレイアウト配置 (各オブジェクトの基準コストを設定)
     for (const auto& obj : map_objects) {
-        // ロボットの高さ判定 (z軸の範囲外なら読み飛ばす)
         if (obj.z_max < robot_z_min_ || obj.z_min > robot_z_max_) {
             continue;
         }
@@ -118,7 +128,6 @@ void CostmapGeneratorNode::generateAndPublishCostmap()
         int cost = getObjectCost(obj.comment, obj.type);
 
         if (obj.type == BOX || obj.type == VISUAL_BOX) {
-            // param1, param2 は中心からの X/Y 半幅 (extents)
             double min_x = obj.center_x - obj.param1;
             double max_x = obj.center_x + obj.param1;
             double min_y = obj.center_y - obj.param2;
@@ -159,8 +168,85 @@ void CostmapGeneratorNode::generateAndPublishCostmap()
         }
     }
 
+    // ② コストおよびスケーリングファクターに基づく可変マージン付きインフレーションの適用
+    applyInflation(costmap_msg);
+
     costmap_pub_->publish(costmap_msg);
     RCLCPP_INFO(this->get_logger(), "Published Costmap (%dx%d)", width, height);
+}
+
+void CostmapGeneratorNode::applyInflation(nav_msgs::msg::OccupancyGrid& costmap_msg)
+{
+    if (robot_radius_ <= 0.0 && inflation_margin_ <= 0.0) {
+        return;
+    }
+
+    const int width = static_cast<int>(costmap_msg.info.width);
+    const int height = static_cast<int>(costmap_msg.info.height);
+
+    struct SourceCell {
+        int x;
+        int y;
+        int cost;
+    };
+    std::vector<SourceCell> obstacle_cells;
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            int c = static_cast<uint8_t>(costmap_msg.data[y * width + x]);
+            if (c > 0) {
+                obstacle_cells.push_back({x, y, c});
+            }
+        }
+    }
+
+    std::vector<uint8_t> inflated_data(costmap_msg.data.begin(), costmap_msg.data.end());
+
+    for (const auto& source : obstacle_cells) {
+        // コスト(0〜254)に応じたマージン率の計算 (0.0〜1.0)
+        double cost_ratio = static_cast<double>(source.cost) / 254.0;
+        
+        // cost_scale_factor_ に応じて高コストほどマージンが広くなるよう可変スケール
+        // (例: factor=1.0 のとき、コスト254なら100%マージン、コスト120なら約47%マージン)
+        double scaled_margin = inflation_margin_ * (1.0 - cost_scale_factor_ * (1.0 - cost_ratio));
+        scaled_margin = std::max(0.0, scaled_margin); // 負の値を防ぐ
+
+        double effective_total_radius = robot_radius_ + scaled_margin;
+        int radius_cells = static_cast<int>(std::ceil(effective_total_radius / resolution_));
+
+        int min_x = std::max(0, source.x - radius_cells);
+        int max_x = std::min(width - 1, source.x + radius_cells);
+        int min_y = std::max(0, source.y - radius_cells);
+        int max_y = std::min(height - 1, source.y + radius_cells);
+
+        for (int y = min_y; y <= max_y; ++y) {
+            for (int x = min_x; x <= max_x; ++x) {
+                int dx = x - source.x;
+                int dy = y - source.y;
+                double dist = std::hypot(dx, dy) * resolution_;
+
+                int calculated_cost = 0;
+                if (dist <= robot_radius_) {
+                    calculated_cost = 254; // ロボット物理半径は絶対不可侵
+                } else if (dist <= effective_total_radius && scaled_margin > 0.0) {
+                    // 個別の scaled_margin に基づいてグラデーションコストを計算
+                    double ratio = (effective_total_radius - dist) / scaled_margin;
+                    calculated_cost = static_cast<int>(ratio * source.cost);
+                } else {
+                    continue;
+                }
+
+                int idx = y * width + x;
+                if (calculated_cost > inflated_data[idx]) {
+                    inflated_data[idx] = static_cast<uint8_t>(calculated_cost);
+                }
+            }
+        }
+    }
+
+    for (size_t i = 0; i < costmap_msg.data.size(); ++i) {
+        costmap_msg.data[i] = static_cast<int8_t>(inflated_data[i]);
+    }
 }
 
 int main(int argc, char** argv)
