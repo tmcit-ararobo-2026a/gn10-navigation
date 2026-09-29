@@ -120,19 +120,18 @@ private:
     // B-spline parameters
     double bspline_length_weight_     = 1.0;
     double bspline_curvature_weight_  = 1.0;
-    double bspline_smoothness_weight_ = 100.0;  // 滑らかさを設定する関数
+    double bspline_smoothness_weight_ = 3.0;  // 滑らかさの程度を設定する関数
 
+    int bspline_smoothing_iterations_ = 5;  // 何回平滑化を行うか
+
+    double bspline_control_point_step_   = 0.05;
     int bspline_optimization_iterations_ = 20;
-
-    double bspline_control_point_step_ = 0.05;
-
-    int bspline_samples_per_segment_ = 10;
+    int bspline_samples_per_segment_     = 10;
 
     // A*経路から重要点を抽出する際の閾値
-    double bspline_turning_angle_threshold_ =
-        10.0;  // この値が大きいほど、角度が大きく変わる点を抽出する
+    double bspline_turning_angle_threshold_ = 10.0;
 
-    double bspline_simplification_tolerance_ = 0.10;  // A*の形をどれほど残すか
+    double bspline_simplification_tolerance_ = 0.10;
 
     // A*コスト
     double cost_factor_ = 0.05;
