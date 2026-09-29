@@ -10,6 +10,14 @@ path_follower_node:
     max_lateral_acceleration: 0.7
     max_angular_speed: 2.0
     max_angular_acceleration: 4.0
+    heading_mode: hold  # hold: 開始時の向きを維持、tangent: 経路の接線方向を向く
+    heading_gain: 2.0
+    # 最大車輪角速度が0の間は、車輪ごとの速度制限を無効にする。
+    wheel_radius: 0.0                # 車輪半径 [m]
+    wheel_center_distance: 0.0       # 車体中心から車輪中心まで [m]
+    max_wheel_angular_speed: 0.0     # 車輪の最大角速度 [rad/s]
+    # base_linkの+X軸から反時計回りに測る車輪位置角 [deg]。駆動方向は接線方向。
+    wheel_mount_angles_deg: [0.0, 120.0, 240.0]
     min_lookahead: 0.3
     max_lookahead: 0.9
     lookahead_gain: 0.5

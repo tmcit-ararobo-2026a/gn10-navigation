@@ -47,9 +47,13 @@ private:
     std::string map_frame_;
     std::string base_frame_;
     double progress_ = 0.0;
-    double command_speed_ = 0.0;
-    double command_acceleration_ = 0.0;
+    double command_vx_world_ = 0.0;
+    double command_vy_world_ = 0.0;
+    double command_ax_world_ = 0.0;
+    double command_ay_world_ = 0.0;
     double command_yaw_rate_ = 0.0;
+    double heading_target_ = 0.0;
+    bool heading_locked_ = false;
     std::chrono::steady_clock::time_point last_control_;
 
     double control_rate_;
@@ -60,6 +64,12 @@ private:
     double max_lateral_acceleration_;
     double max_angular_speed_;
     double max_angular_acceleration_;
+    double heading_gain_;
+    std::string heading_mode_;
+    double wheel_radius_;
+    double wheel_center_distance_;
+    double max_wheel_angular_speed_;
+    std::vector<double> wheel_mount_angles_deg_;
     double min_lookahead_;
     double max_lookahead_;
     double lookahead_gain_;
