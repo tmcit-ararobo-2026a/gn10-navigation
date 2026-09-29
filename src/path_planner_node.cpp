@@ -7,74 +7,177 @@
 #include <limits>
 #include <map>
 #include <queue>
+#include <set>
 #include <vector>
 
 #include "tf2/exceptions.h"
 
-PathPlannerNode::PathPlannerNode() : Node("path_planner_node")
+namespace
+{
+
+double calculateAngleDifference(
+    double ax,
+    double ay,
+    double bx,
+    double by)
+{
+    const double a_length = std::hypot(ax, ay);
+    const double b_length = std::hypot(bx, by);
+
+    if (a_length < 1e-9 || b_length < 1e-9) {
+        return 0.0;
+    }
+
+    double cos_angle =
+        (ax * bx + ay * by) / (a_length * b_length);
+
+    cos_angle = std::clamp(cos_angle, -1.0, 1.0);
+
+    return std::acos(cos_angle) * 180.0 / M_PI;
+}
+
+}  // namespace
+
+PathPlannerNode::PathPlannerNode()
+    : Node("path_planner_node")
 {
     this->declare_parameter("cost_factor", 0.05);
 
-    this->declare_parameter("bspline.length_weight", 1.0);
-    this->declare_parameter("bspline.curvature_weight", 1.0);
-    this->declare_parameter("bspline.optimization_iterations", 20);
-    this->declare_parameter("bspline.control_point_step", 0.05);
-    this->declare_parameter("bspline.samples_per_segment", 10);
+    this->declare_parameter(
+        "bspline.length_weight", 1.0);
 
-    cost_factor_ = this->get_parameter("cost_factor").as_double();
+    this->declare_parameter(
+        "bspline.curvature_weight", 1.0);
 
-    bspline_length_weight_ = this->get_parameter("bspline.length_weight").as_double();
+    this->declare_parameter(
+        "bspline.smoothness_weight", 3.0);
 
-    bspline_curvature_weight_ = this->get_parameter("bspline.curvature_weight").as_double();
+    this->declare_parameter(
+        "bspline.optimization_iterations", 20);
+
+    this->declare_parameter(
+        "bspline.control_point_step", 0.05);
+
+    this->declare_parameter(
+        "bspline.samples_per_segment", 10);
+
+    this->declare_parameter(
+        "bspline.turning_angle_threshold", 10.0);
+
+    this->declare_parameter(
+        "bspline.simplification_tolerance", 0.10);
+
+    cost_factor_ =
+        this->get_parameter("cost_factor").as_double();
+
+    bspline_length_weight_ =
+        this->get_parameter(
+            "bspline.length_weight").as_double();
+
+    bspline_curvature_weight_ =
+        this->get_parameter(
+            "bspline.curvature_weight").as_double();
+
+    bspline_smoothness_weight_ =
+        this->get_parameter(
+            "bspline.smoothness_weight").as_double();
 
     bspline_optimization_iterations_ =
-        this->get_parameter("bspline.optimization_iterations").as_int();
+        this->get_parameter(
+            "bspline.optimization_iterations").as_int();
 
-    bspline_control_point_step_ = this->get_parameter("bspline.control_point_step").as_double();
+    bspline_control_point_step_ =
+        this->get_parameter(
+            "bspline.control_point_step").as_double();
 
-    bspline_samples_per_segment_ = this->get_parameter("bspline.samples_per_segment").as_int();
+    bspline_samples_per_segment_ =
+        this->get_parameter(
+            "bspline.samples_per_segment").as_int();
+
+    bspline_turning_angle_threshold_ =
+        this->get_parameter(
+            "bspline.turning_angle_threshold").as_double();
+
+    bspline_simplification_tolerance_ =
+        this->get_parameter(
+            "bspline.simplification_tolerance").as_double();
 
     rclcpp::QoS map_qos(rclcpp::KeepLast(1));
+
     map_qos.reliable();
     map_qos.transient_local();
 
-    costmap_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
-        "/costmap", map_qos, std::bind(&PathPlannerNode::getCostmapMsg, this, std::placeholders::_1)
-    );
+    costmap_sub_ =
+        this->create_subscription<nav_msgs::msg::OccupancyGrid>(
+            "/costmap",
+            map_qos,
+            std::bind(
+                &PathPlannerNode::getCostmapMsg,
+                this,
+                std::placeholders::_1));
 
-    goal_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-        "/goal_pose", 10, std::bind(&PathPlannerNode::getGoalPose, this, std::placeholders::_1)
-    );
+    goal_pose_sub_ =
+        this->create_subscription<geometry_msgs::msg::PoseStamped>(
+            "/goal_pose",
+            10,
+            std::bind(
+                &PathPlannerNode::getGoalPose,
+                this,
+                std::placeholders::_1));
 
-    path_pub_ = this->create_publisher<nav_msgs::msg::Path>("/planned_path", 10);
+    path_pub_ =
+        this->create_publisher<nav_msgs::msg::Path>(
+            "/planned_path",
+            10);
 
-    tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+    tf_buffer_ =
+        std::make_shared<tf2_ros::Buffer>(
+            this->get_clock());
 
-    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+    tf_listener_ =
+        std::make_shared<tf2_ros::TransformListener>(
+            *tf_buffer_);
 
-    timer_ = this->create_wall_timer(
-        std::chrono::milliseconds(500), std::bind(&PathPlannerNode::getRobotPose, this)
-    );
+    timer_ =
+        this->create_wall_timer(
+            std::chrono::milliseconds(500),
+            std::bind(
+                &PathPlannerNode::getRobotPose,
+                this));
 
-    RCLCPP_INFO(this->get_logger(), "Path planner started");
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Path planner started");
 }
 
-void PathPlannerNode::getCostmapMsg(const nav_msgs::msg::OccupancyGrid::SharedPtr grid_msg)
+void PathPlannerNode::getCostmapMsg(
+    const nav_msgs::msg::OccupancyGrid::SharedPtr grid_msg)
 {
-    width_      = grid_msg->info.width;
-    height_     = grid_msg->info.height;
-    resolution_ = grid_msg->info.resolution;
+    width_ = grid_msg->info.width;
+    height_ = grid_msg->info.height;
 
-    origin_x_ = grid_msg->info.origin.position.x;
-    origin_y_ = grid_msg->info.origin.position.y;
+    resolution_ =
+        grid_msg->info.resolution;
 
-    planning_grid_.assign(height_, std::vector<int>(width_, 0));
+    origin_x_ =
+        grid_msg->info.origin.position.x;
+
+    origin_y_ =
+        grid_msg->info.origin.position.y;
+
+    planning_grid_.assign(
+        height_,
+        std::vector<int>(width_, 0));
 
     for (unsigned int y = 0; y < height_; ++y) {
         for (unsigned int x = 0; x < width_; ++x) {
-            const std::size_t index = static_cast<std::size_t>(y) * width_ + x;
 
-            planning_grid_[y][x] = static_cast<uint8_t>(grid_msg->data[index]);
+            const std::size_t index =
+                static_cast<std::size_t>(y) * width_ + x;
+
+            planning_grid_[y][x] =
+                static_cast<uint8_t>(
+                    grid_msg->data[index]);
         }
     }
 
@@ -83,8 +186,7 @@ void PathPlannerNode::getCostmapMsg(const nav_msgs::msg::OccupancyGrid::SharedPt
         "Costmap received: width=%u, height=%u, resolution=%.3f",
         width_,
         height_,
-        resolution_
-    );
+        resolution_);
 
     std::map<int, int> value_count;
 
@@ -95,135 +197,243 @@ void PathPlannerNode::getCostmapMsg(const nav_msgs::msg::OccupancyGrid::SharedPt
     }
 
     for (const auto& [value, count] : value_count) {
-        RCLCPP_INFO(this->get_logger(), "Cost %d: %d cells", value, count);
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Cost %d: %d cells",
+            value,
+            count);
     }
 }
 
-void PathPlannerNode::getGoalPose(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
+void PathPlannerNode::getGoalPose(
+    const geometry_msgs::msg::PoseStamped::SharedPtr msg)
 {
     if (msg->header.frame_id != "map") {
-        RCLCPP_WARN(this->get_logger(), "Goal frame is not map: %s", msg->header.frame_id.c_str());
+        RCLCPP_WARN(
+            this->get_logger(),
+            "Goal frame is not map: %s",
+            msg->header.frame_id.c_str());
+
         return;
     }
 
     if (planning_grid_.empty()) {
-        RCLCPP_WARN(this->get_logger(), "Costmap has not been received yet.");
+        RCLCPP_WARN(
+            this->get_logger(),
+            "Costmap has not been received yet.");
+
         return;
     }
 
-    goal_x_ = msg->pose.position.x;
-    goal_y_ = msg->pose.position.y;
+    goal_x_ =
+        msg->pose.position.x;
 
-    RCLCPP_INFO(this->get_logger(), "Goal received: x=%.3f, y=%.3f", goal_x_, goal_y_);
+    goal_y_ =
+        msg->pose.position.y;
 
-    auto [grid_x, grid_y] = worldToGrid(goal_x_, goal_y_);
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Goal received: x=%.3f, y=%.3f",
+        goal_x_,
+        goal_y_);
+
+    auto [grid_x, grid_y] =
+        worldToGrid(goal_x_, goal_y_);
 
     if (!isInsideGrid(grid_x, grid_y)) {
-        RCLCPP_WARN(this->get_logger(), "Goal is outside the costmap: x=%d, y=%d", grid_x, grid_y);
+        RCLCPP_WARN(
+            this->get_logger(),
+            "Goal is outside the costmap: x=%d, y=%d",
+            grid_x,
+            grid_y);
+
         return;
     }
 
-    RCLCPP_INFO(this->get_logger(), "Goal grid position: x=%d, y=%d", grid_x, grid_y);
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Goal grid position: x=%d, y=%d",
+        grid_x,
+        grid_y);
 
-    auto [start_x, start_y] = worldToGrid(robot_x_, robot_y_);
+    auto [start_x, start_y] =
+        worldToGrid(robot_x_, robot_y_);
 
-    auto path = aStar(start_x, start_y, grid_x, grid_y);
+    auto path =
+        aStar(
+            start_x,
+            start_y,
+            grid_x,
+            grid_y);
 
     if (path.empty()) {
-        RCLCPP_WARN(this->get_logger(), "No A* path available.");
+        RCLCPP_WARN(
+            this->get_logger(),
+            "No A* path available.");
+
         return;
     }
 
-    auto smoothed_path = bsplineSmoothPath(path);
+    auto smoothed_path =
+        bsplineSmoothPath(path);
+
+    if (smoothed_path.empty()) {
+        RCLCPP_WARN(
+            this->get_logger(),
+            "B-spline path generation failed.");
+
+        return;
+    }
 
     nav_msgs::msg::Path path_msg;
-    path_msg.header.stamp    = this->now();
-    path_msg.header.frame_id = "map";
+
+    path_msg.header.stamp =
+        this->now();
+
+    path_msg.header.frame_id =
+        "map";
 
     for (const auto& point : smoothed_path) {
+
         geometry_msgs::msg::PoseStamped pose;
 
-        pose.header = path_msg.header;
+        pose.header =
+            path_msg.header;
 
-        pose.pose.position.x = point.first;
-        pose.pose.position.y = point.second;
-        pose.pose.position.z = 0.0;
+        pose.pose.position.x =
+            point.first;
 
-        pose.pose.orientation.x = 0.0;
-        pose.pose.orientation.y = 0.0;
-        pose.pose.orientation.z = 0.0;
-        pose.pose.orientation.w = 1.0;
+        pose.pose.position.y =
+            point.second;
+
+        pose.pose.position.z =
+            0.0;
+
+        pose.pose.orientation.x =
+            0.0;
+
+        pose.pose.orientation.y =
+            0.0;
+
+        pose.pose.orientation.z =
+            0.0;
+
+        pose.pose.orientation.w =
+            1.0;
 
         path_msg.poses.push_back(pose);
     }
 
     path_pub_->publish(path_msg);
 
-    RCLCPP_INFO(this->get_logger(), "Published Path with %zu points.", path_msg.poses.size());
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Published Path with %zu points.",
+        path_msg.poses.size());
 }
 
 void PathPlannerNode::getRobotPose()
 {
     try {
-        auto transform = tf_buffer_->lookupTransform("map", "base_link", tf2::TimePointZero);
 
-        robot_x_ = transform.transform.translation.x;
+        auto transform =
+            tf_buffer_->lookupTransform(
+                "map",
+                "base_link",
+                tf2::TimePointZero);
 
-        robot_y_ = transform.transform.translation.y;
+        robot_x_ =
+            transform.transform.translation.x;
+
+        robot_y_ =
+            transform.transform.translation.y;
+
     } catch (const tf2::TransformException& ex) {
+
         RCLCPP_WARN_THROTTLE(
-            this->get_logger(), *this->get_clock(), 2000, "Could not get transform: %s", ex.what()
-        );
+            this->get_logger(),
+            *this->get_clock(),
+            2000,
+            "Could not get transform: %s",
+            ex.what());
 
         return;
     }
 
-    auto [grid_x, grid_y] = worldToGrid(robot_x_, robot_y_);
+    auto [grid_x, grid_y] =
+        worldToGrid(robot_x_, robot_y_);
 
     if (!isInsideGrid(grid_x, grid_y)) {
+
         RCLCPP_WARN_THROTTLE(
             this->get_logger(),
             *this->get_clock(),
             2000,
             "Robot is outside the costmap: x=%d, y=%d",
             grid_x,
-            grid_y
-        );
+            grid_y);
 
         return;
     }
 
     if (!isPassable(grid_x, grid_y)) {
+
         RCLCPP_WARN_THROTTLE(
-            this->get_logger(), *this->get_clock(), 2000, "Robot cell is occupied!"
-        );
+            this->get_logger(),
+            *this->get_clock(),
+            2000,
+            "Robot cell is occupied!");
     }
 }
 
-std::pair<int, int> PathPlannerNode::worldToGrid(double world_x, double world_y)
+std::pair<int, int> PathPlannerNode::worldToGrid(
+    double world_x,
+    double world_y)
 {
-    int grid_x = static_cast<int>((world_x - origin_x_) / resolution_);
+    const int grid_x =
+        static_cast<int>(
+            (world_x - origin_x_) /
+            resolution_);
 
-    int grid_y = static_cast<int>((world_y - origin_y_) / resolution_);
+    const int grid_y =
+        static_cast<int>(
+            (world_y - origin_y_) /
+            resolution_);
 
     return {grid_x, grid_y};
 }
 
-std::pair<double, double> PathPlannerNode::gridToWorld(int grid_x, int grid_y)
+std::pair<double, double> PathPlannerNode::gridToWorld(
+    int grid_x,
+    int grid_y)
 {
-    double world_x = origin_x_ + static_cast<double>(grid_x) * resolution_;
+    const double world_x =
+        origin_x_ +
+        static_cast<double>(grid_x) *
+            resolution_;
 
-    double world_y = origin_y_ + static_cast<double>(grid_y) * resolution_;
+    const double world_y =
+        origin_y_ +
+        static_cast<double>(grid_y) *
+            resolution_;
 
     return {world_x, world_y};
 }
 
-bool PathPlannerNode::isInsideGrid(int x, int y)
+bool PathPlannerNode::isInsideGrid(
+    int x,
+    int y)
 {
-    return x >= 0 && x < static_cast<int>(width_) && y >= 0 && y < static_cast<int>(height_);
+    return
+        x >= 0 &&
+        x < static_cast<int>(width_) &&
+        y >= 0 &&
+        y < static_cast<int>(height_);
 }
 
-bool PathPlannerNode::isPassable(int x, int y)
+bool PathPlannerNode::isPassable(
+    int x,
+    int y)
 {
     if (!isInsideGrid(x, y)) {
         return false;
@@ -232,124 +442,212 @@ bool PathPlannerNode::isPassable(int x, int y)
     return planning_grid_[y][x] < 254;
 }
 
-double heuristic(int x, int y, int goal_x, int goal_y)
+double heuristic(
+    int x,
+    int y,
+    int goal_x,
+    int goal_y)
 {
-    const double dx = std::abs(x - goal_x);
+    const double dx =
+        std::abs(x - goal_x);
 
-    const double dy = std::abs(y - goal_y);
+    const double dy =
+        std::abs(y - goal_y);
 
-    const double diagonal = std::min(dx, dy);
+    const double diagonal =
+        std::min(dx, dy);
 
-    const double straight = std::max(dx, dy) - diagonal;
+    const double straight =
+        std::max(dx, dy) - diagonal;
 
-    return diagonal * std::sqrt(2.0) + straight;
+    return
+        diagonal * std::sqrt(2.0) +
+        straight;
 }
 
-struct CompareAStarNode {
-    bool operator()(const AStarNode& a, const AStarNode& b) const
+struct CompareAStarNode
+{
+    bool operator()(
+        const AStarNode& a,
+        const AStarNode& b) const
     {
         return a.f > b.f;
     }
 };
 
-std::vector<std::pair<int, int>> PathPlannerNode::aStar(
-    int start_x, int start_y, int goal_x, int goal_y
-)
+std::vector<std::pair<int, int>>
+PathPlannerNode::aStar(
+    int start_x,
+    int start_y,
+    int goal_x,
+    int goal_y)
 {
     std::vector<std::pair<int, int>> path;
 
-    if (!isInsideGrid(start_x, start_y) || !isInsideGrid(goal_x, goal_y)) {
-        RCLCPP_WARN(this->get_logger(), "A*: Start or Goal is outside the grid.");
+    if (!isInsideGrid(start_x, start_y) ||
+        !isInsideGrid(goal_x, goal_y)) {
+
+        RCLCPP_WARN(
+            this->get_logger(),
+            "A*: Start or Goal is outside the grid.");
 
         return path;
     }
 
-    if (!isPassable(start_x, start_y) || !isPassable(goal_x, goal_y)) {
-        RCLCPP_WARN(this->get_logger(), "A*: Start or Goal is not passable.");
+    if (!isPassable(start_x, start_y) ||
+        !isPassable(goal_x, goal_y)) {
+
+        RCLCPP_WARN(
+            this->get_logger(),
+            "A*: Start or Goal is not passable.");
 
         return path;
     }
 
-    std::priority_queue<AStarNode, std::vector<AStarNode>, CompareAStarNode> open_list;
+    std::priority_queue<
+        AStarNode,
+        std::vector<AStarNode>,
+        CompareAStarNode> open_list;
 
     std::vector<std::vector<double>> g_cost(
-        height_, std::vector<double>(width_, std::numeric_limits<double>::infinity())
-    );
+        height_,
+        std::vector<double>(
+            width_,
+            std::numeric_limits<double>::infinity()));
 
     std::vector<std::vector<std::pair<int, int>>> parent(
-        height_, std::vector<std::pair<int, int>>(width_, {-1, -1})
-    );
+        height_,
+        std::vector<std::pair<int, int>>(
+            width_,
+            {-1, -1}));
 
-    const double start_h = heuristic(start_x, start_y, goal_x, goal_y);
+    const double start_h =
+        heuristic(
+            start_x,
+            start_y,
+            goal_x,
+            goal_y);
 
-    AStarNode start_node{start_x, start_y, 0.0, start_h, start_h};
+    AStarNode start_node{
+        start_x,
+        start_y,
+        0.0,
+        start_h,
+        start_h};
 
     open_list.push(start_node);
+
     g_cost[start_y][start_x] = 0.0;
 
-    const int dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
+    const int dx[8] =
+        {-1, 0, 1, -1, 1, -1, 0, 1};
 
-    const int dy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+    const int dy[8] =
+        {-1, -1, -1, 0, 0, 1, 1, 1};
 
     bool found = false;
 
     while (!open_list.empty()) {
-        AStarNode current = open_list.top();
+
+        AStarNode current =
+            open_list.top();
 
         open_list.pop();
 
-        if (current.g > g_cost[current.y][current.x]) {
+        if (current.g >
+            g_cost[current.y][current.x]) {
+
             continue;
         }
 
-        if (current.x == goal_x && current.y == goal_y) {
+        if (current.x == goal_x &&
+            current.y == goal_y) {
+
             found = true;
             break;
         }
 
         for (int i = 0; i < 8; ++i) {
-            const int next_x = current.x + dx[i];
 
-            const int next_y = current.y + dy[i];
+            const int next_x =
+                current.x + dx[i];
 
-            if (!isInsideGrid(next_x, next_y) || !isPassable(next_x, next_y)) {
+            const int next_y =
+                current.y + dy[i];
+
+            if (!isInsideGrid(next_x, next_y) ||
+                !isPassable(next_x, next_y)) {
+
                 continue;
             }
 
-            if (dx[i] != 0 && dy[i] != 0) {
-                if (!isPassable(current.x + dx[i], current.y) ||
-                    !isPassable(current.x, current.y + dy[i])) {
+            if (dx[i] != 0 &&
+                dy[i] != 0) {
+
+                if (!isPassable(
+                        current.x + dx[i],
+                        current.y) ||
+                    !isPassable(
+                        current.x,
+                        current.y + dy[i])) {
+
                     continue;
                 }
             }
 
-            const double move_cost = (dx[i] != 0 && dy[i] != 0) ? std::sqrt(2.0) : 1.0;
+            const double move_cost =
+                (dx[i] != 0 && dy[i] != 0)
+                    ? std::sqrt(2.0)
+                    : 1.0;
 
             const double cost_penalty =
-                static_cast<double>(planning_grid_[next_y][next_x]) * cost_factor_;
+                static_cast<double>(
+                    planning_grid_[next_y][next_x]) *
+                cost_factor_;
 
-            const double new_g = current.g + move_cost + cost_penalty;
+            const double new_g =
+                current.g +
+                move_cost +
+                cost_penalty;
 
-            if (new_g >= g_cost[next_y][next_x]) {
+            if (new_g >=
+                g_cost[next_y][next_x]) {
+
                 continue;
             }
 
-            const double new_h = heuristic(next_x, next_y, goal_x, goal_y);
+            const double new_h =
+                heuristic(
+                    next_x,
+                    next_y,
+                    goal_x,
+                    goal_y);
 
-            const double new_f = new_g + new_h;
+            const double new_f =
+                new_g + new_h;
 
-            AStarNode next_node{next_x, next_y, new_g, new_h, new_f};
+            AStarNode next_node{
+                next_x,
+                next_y,
+                new_g,
+                new_h,
+                new_f};
 
-            g_cost[next_y][next_x] = new_g;
+            g_cost[next_y][next_x] =
+                new_g;
 
-            parent[next_y][next_x] = {current.x, current.y};
+            parent[next_y][next_x] =
+                {current.x, current.y};
 
             open_list.push(next_node);
         }
     }
 
     if (!found) {
-        RCLCPP_WARN(this->get_logger(), "A*: Path not found.");
+
+        RCLCPP_WARN(
+            this->get_logger(),
+            "A*: Path not found.");
 
         return path;
     }
@@ -357,28 +655,414 @@ std::vector<std::pair<int, int>> PathPlannerNode::aStar(
     int current_x = goal_x;
     int current_y = goal_y;
 
-    while (!(current_x == start_x && current_y == start_y)) {
-        path.push_back({current_x, current_y});
+    while (!(current_x == start_x &&
+             current_y == start_y)) {
 
-        const auto [parent_x, parent_y] = parent[current_y][current_x];
+        path.push_back(
+            {current_x, current_y});
+
+        const auto [
+            parent_x,
+            parent_y] =
+            parent[current_y][current_x];
 
         current_x = parent_x;
         current_y = parent_y;
     }
 
-    path.push_back({start_x, start_y});
+    path.push_back(
+        {start_x, start_y});
 
-    std::reverse(path.begin(), path.end());
+    std::reverse(
+        path.begin(),
+        path.end());
 
-    RCLCPP_INFO(this->get_logger(), "A*: Path found. Length=%zu", path.size());
+    RCLCPP_INFO(
+        this->get_logger(),
+        "A*: Path found. Length=%zu",
+        path.size());
 
     return path;
 }
 
-// b spline
-std::vector<std::pair<double, double>> PathPlannerNode::bsplineSmoothPath(
-    const std::vector<std::pair<int, int>>& path
-)
+std::vector<std::pair<double, double>>
+PathPlannerNode::extractImportantPoints(
+    const std::vector<std::pair<int, int>>& path)
+{
+    using Point = std::pair<double, double>;
+
+    std::vector<Point> points;
+
+    if (path.empty()) {
+        return points;
+    }
+
+    for (const auto& cell : path) {
+        points.push_back(
+            gridToWorld(
+                cell.first,
+                cell.second));
+    }
+
+    if (points.size() <= 2) {
+        return points;
+    }
+
+    std::vector<bool> keep(
+        points.size(),
+        false);
+
+    keep.front() = true;
+    keep.back() = true;
+
+    simplifyPathRecursive(
+        points,
+        0,
+        static_cast<int>(points.size()) - 1,
+        bspline_simplification_tolerance_,
+        keep);
+
+    for (std::size_t i = 1;
+         i + 1 < points.size();
+         ++i) {
+
+        const double v1x =
+            points[i].first -
+            points[i - 1].first;
+
+        const double v1y =
+            points[i].second -
+            points[i - 1].second;
+
+        const double v2x =
+            points[i + 1].first -
+            points[i].first;
+
+        const double v2y =
+            points[i + 1].second -
+            points[i].second;
+
+        const double angle =
+            calculateAngleDifference(
+                v1x,
+                v1y,
+                v2x,
+                v2y);
+
+        if (angle >=
+            bspline_turning_angle_threshold_) {
+
+            keep[i] = true;
+        }
+    }
+
+    for (std::size_t i = 0;
+         i < keep.size();
+         ++i) {
+
+        if (keep[i]) {
+            points.push_back({});
+        }
+    }
+
+    std::vector<Point> important_points;
+
+    for (std::size_t i = 0;
+         i < keep.size();
+         ++i) {
+
+        if (keep[i]) {
+            important_points.push_back(
+                points[i]);
+        }
+    }
+
+    if (important_points.size() < 4 &&
+        points.size() >= 4) {
+
+        important_points.clear();
+
+        important_points.push_back(
+            points.front());
+
+        const std::size_t count =
+            points.size();
+
+        const std::size_t target =
+            std::min<std::size_t>(6, count);
+
+        for (std::size_t k = 1;
+             k + 1 < target;
+             ++k) {
+
+            const double ratio =
+                static_cast<double>(k) /
+                static_cast<double>(target - 1);
+
+            const std::size_t index =
+                static_cast<std::size_t>(
+                    ratio *
+                    static_cast<double>(count - 1));
+
+            important_points.push_back(
+                points[index]);
+        }
+
+        important_points.push_back(
+            points.back());
+    }
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Important points: %zu / A* points: %zu",
+        important_points.size(),
+        points.size());
+
+    return important_points;
+}
+
+void PathPlannerNode::simplifyPathRecursive(
+    const std::vector<std::pair<double, double>>& points,
+    int start,
+    int end,
+    double tolerance,
+    std::vector<bool>& keep)
+{
+    if (end <= start + 1) {
+        return;
+    }
+
+    double max_distance = 0.0;
+    int max_index = -1;
+
+    for (int i = start + 1;
+         i < end;
+         ++i) {
+
+        const double distance =
+            pointToLineDistance(
+                points[i],
+                points[start],
+                points[end]);
+
+        if (distance > max_distance) {
+            max_distance = distance;
+            max_index = i;
+        }
+    }
+
+    if (max_index >= 0 &&
+        max_distance > tolerance) {
+
+        keep[max_index] = true;
+
+        simplifyPathRecursive(
+            points,
+            start,
+            max_index,
+            tolerance,
+            keep);
+
+        simplifyPathRecursive(
+            points,
+            max_index,
+            end,
+            tolerance,
+            keep);
+    }
+}
+
+double PathPlannerNode::pointToLineDistance(
+    const std::pair<double, double>& point,
+    const std::pair<double, double>& line_start,
+    const std::pair<double, double>& line_end)
+{
+    const double dx =
+        line_end.first -
+        line_start.first;
+
+    const double dy =
+        line_end.second -
+        line_start.second;
+
+    const double length_squared =
+        dx * dx + dy * dy;
+
+    if (length_squared < 1e-12) {
+        return std::hypot(
+            point.first - line_start.first,
+            point.second - line_start.second);
+    }
+
+    double t =
+        ((point.first - line_start.first) * dx +
+         (point.second - line_start.second) * dy) /
+        length_squared;
+
+    t = std::clamp(t, 0.0, 1.0);
+
+    const double closest_x =
+        line_start.first + t * dx;
+
+    const double closest_y =
+        line_start.second + t * dy;
+
+    return std::hypot(
+        point.first - closest_x,
+        point.second - closest_y);
+}
+
+std::vector<std::pair<double, double>>
+PathPlannerNode::evaluateBSplinePath(
+    const std::vector<std::pair<double, double>>& control_points)
+{
+    using Point = std::pair<double, double>;
+
+    std::vector<Point> sampled;
+
+    if (control_points.size() < 4) {
+        return sampled;
+    }
+
+    constexpr int degree = 3;
+
+    const int control_count =
+        static_cast<int>(
+            control_points.size());
+
+    const int max_t =
+        control_count - degree;
+
+    if (max_t <= 0) {
+        return sampled;
+    }
+
+    std::vector<double> knots(
+        control_count + degree + 1);
+
+    for (int i = 0;
+         i < static_cast<int>(knots.size());
+         ++i) {
+
+        if (i <= degree) {
+            knots[i] = 0.0;
+        } else if (i >= control_count) {
+            knots[i] =
+                static_cast<double>(max_t);
+        } else {
+            knots[i] =
+                static_cast<double>(
+                    i - degree);
+        }
+    }
+
+    auto evaluate =
+        [&](double t) -> Point {
+
+        if (t <= 0.0) {
+            return control_points.front();
+        }
+
+        if (t >=
+            static_cast<double>(max_t)) {
+
+            return control_points.back();
+        }
+
+        int span = degree;
+
+        for (int i = degree;
+             i < control_count;
+             ++i) {
+
+            if (t >= knots[i] &&
+                t < knots[i + 1]) {
+
+                span = i;
+                break;
+            }
+        }
+
+        std::vector<Point> d(
+            degree + 1);
+
+        for (int j = 0;
+             j <= degree;
+             ++j) {
+
+            d[j] =
+                control_points[
+                    span - degree + j];
+        }
+
+        for (int r = 1;
+             r <= degree;
+             ++r) {
+
+            for (int j = degree;
+                 j >= r;
+                 --j) {
+
+                const int index =
+                    span - degree + j;
+
+                const double denominator =
+                    knots[
+                        index + degree - r + 1] -
+                    knots[index];
+
+                double alpha = 0.0;
+
+                if (denominator > 0.0) {
+                    alpha =
+                        (t - knots[index]) /
+                        denominator;
+                }
+
+                d[j].first =
+                    (1.0 - alpha) *
+                        d[j - 1].first +
+                    alpha * d[j].first;
+
+                d[j].second =
+                    (1.0 - alpha) *
+                        d[j - 1].second +
+                    alpha * d[j].second;
+            }
+        }
+
+        return d[degree];
+    };
+
+    const int total_samples =
+        std::max(
+            1,
+            max_t *
+                bspline_samples_per_segment_);
+
+    sampled.reserve(
+        total_samples + 1);
+
+    for (int i = 0;
+         i <= total_samples;
+         ++i) {
+
+        const double t =
+            static_cast<double>(max_t) *
+            static_cast<double>(i) /
+            static_cast<double>(
+                total_samples);
+
+        sampled.push_back(
+            evaluate(t));
+    }
+
+    return sampled;
+}
+
+std::vector<std::pair<double, double>>
+PathPlannerNode::bsplineSmoothPath(
+    const std::vector<std::pair<int, int>>& path)
 {
     using Point = std::pair<double, double>;
 
@@ -388,177 +1072,205 @@ std::vector<std::pair<double, double>> PathPlannerNode::bsplineSmoothPath(
         return result;
     }
 
-    for (const auto& cell : path) {
-        result.push_back(gridToWorld(cell.first, cell.second));
-    }
+    auto control_points =
+        extractImportantPoints(path);
 
-    if (result.size() < 4) {
+    if (control_points.size() < 4) {
+
+        for (const auto& cell : path) {
+            result.push_back(
+                gridToWorld(
+                    cell.first,
+                    cell.second));
+        }
+
         return result;
     }
 
-    std::vector<Point> control_points = result;
-
-    const int degree        = 3;
-    const int control_count = static_cast<int>(control_points.size());
-
-    const int max_t = control_count - degree;
-
-    std::vector<double> knots(control_count + degree + 1);
-
-    for (int i = 0; i < static_cast<int>(knots.size()); ++i) {
-        if (i <= degree) {
-            knots[i] = 0.0;
-        } else if (i >= control_count) {
-            knots[i] = static_cast<double>(max_t);
-        } else {
-            knots[i] = static_cast<double>(i - degree);
-        }
-    }
-
-    auto evaluateBSpline = [&](const std::vector<Point>& points, double t) -> Point {
-        if (t <= 0.0) {
-            return points.front();
-        }
-
-        if (t >= static_cast<double>(max_t)) {
-            return points.back();
-        }
-
-        int span = degree;
-
-        for (int i = degree; i < control_count; ++i) {
-            if (t >= knots[i] && t < knots[i + 1]) {
-                span = i;
-                break;
-            }
-        }
-
-        std::vector<Point> d(degree + 1);
-
-        for (int j = 0; j <= degree; ++j) {
-            d[j] = points[span - degree + j];
-        }
-
-        for (int r = 1; r <= degree; ++r) {
-            for (int j = degree; j >= r; --j) {
-                const int i = span - degree + j;
-
-                const double denominator = knots[i + degree - r + 1] - knots[i];
-
-                double alpha = 0.0;
-
-                if (denominator > 0.0) {
-                    alpha = (t - knots[i]) / denominator;
-                }
-
-                d[j].first = (1.0 - alpha) * d[j - 1].first + alpha * d[j].first;
-
-                d[j].second = (1.0 - alpha) * d[j - 1].second + alpha * d[j].second;
-            }
-        }
-
-        return d[degree];
-    };
-
-    auto sampleBSpline = [&](const std::vector<Point>& points) {
-        std::vector<Point> sampled;
-
-        const int total_samples = max_t * bspline_samples_per_segment_;
-
-        sampled.reserve(total_samples + 1);
-
-        for (int i = 0; i <= total_samples; ++i) {
-            const double t = static_cast<double>(max_t) * static_cast<double>(i) /
-                             static_cast<double>(total_samples);
-
-            sampled.push_back(evaluateBSpline(points, t));
-        }
-
-        return sampled;
-    };
-
-    auto initial_path = sampleBSpline(control_points);
+    auto initial_path =
+        evaluateBSplinePath(
+            control_points);
 
     if (!isSmoothPathValid(initial_path)) {
+
+        RCLCPP_WARN(
+            this->get_logger(),
+            "Initial B-spline path is invalid. Using A* path.");
+
+        for (const auto& cell : path) {
+            result.push_back(
+                gridToWorld(
+                    cell.first,
+                    cell.second));
+        }
+
         return result;
     }
 
-    const double base_length = calculatePathLength(initial_path);
+    const double base_length =
+        calculatePathLength(
+            initial_path);
 
-    const double base_curvature = calculateCurvatureCost(initial_path);
+    const double base_curvature =
+        calculateCurvatureCost(
+            initial_path);
 
-    double current_cost = calculatePathCost(initial_path, base_length, base_curvature);
+    const double base_smoothness =
+        calculateSmoothnessCost(
+            initial_path);
 
-    const int iterations = std::max(1, bspline_optimization_iterations_);
+    const double base_control_smoothness =
+        calculateControlPointSmoothnessCost(
+            control_points);
 
-    const double step = std::max(0.001, bspline_control_point_step_);
+    double current_cost =
+        calculatePathCost(
+            initial_path,
+            control_points,
+            base_length,
+            base_curvature,
+            base_smoothness,
+            base_control_smoothness);
 
-    for (int iteration = 0; iteration < iterations; ++iteration) {
+    const int iterations =
+        std::max(
+            1,
+            bspline_optimization_iterations_);
+
+    const double step =
+        std::max(
+            0.001,
+            bspline_control_point_step_);
+
+    for (int iteration = 0;
+         iteration < iterations;
+         ++iteration) {
+
         bool improved = false;
 
-        for (int i = 1; i < control_count - 1; ++i) {
-            const Point current = control_points[i];
+        for (std::size_t i = 1;
+             i + 1 < control_points.size();
+             ++i) {
 
-            const Point previous = control_points[i - 1];
+            const Point original =
+                control_points[i];
 
-            const Point next = control_points[i + 1];
+            const Point previous =
+                control_points[i - 1];
 
-            const Point midpoint{
-                (previous.first + next.first) * 0.5, (previous.second + next.second) * 0.5
-            };
-
-            const double direction_x = midpoint.first - current.first;
-
-            const double direction_y = midpoint.second - current.second;
-
-            const double direction_length = std::hypot(direction_x, direction_y);
-
-            if (direction_length < 1e-9) {
-                continue;
-            }
-
-            const double nx = direction_x / direction_length;
-
-            const double ny = direction_y / direction_length;
+            const Point next =
+                control_points[i + 1];
 
             std::vector<Point> candidates;
 
-            candidates.push_back(current);
+            candidates.push_back(
+                original);
 
-            const double candidate_steps[] = {0.25, 0.5, 0.75, 1.0};
+            const double directions[][2] = {
+                {1.0, 0.0},
+                {-1.0, 0.0},
+                {0.0, 1.0},
+                {0.0, -1.0},
+                {0.70710678, 0.70710678},
+                {0.70710678, -0.70710678},
+                {-0.70710678, 0.70710678},
+                {-0.70710678, -0.70710678}
+            };
 
-            for (double ratio : candidate_steps) {
-                const double distance = std::min(step, direction_length) * ratio;
+            const double midpoint_x =
+                0.5 *
+                (previous.first +
+                 next.first);
 
-                candidates.push_back(
-                    {current.first + nx * distance, current.second + ny * distance}
-                );
+            const double midpoint_y =
+                0.5 *
+                (previous.second +
+                 next.second);
+
+            const double to_mid_x =
+                midpoint_x -
+                original.first;
+
+            const double to_mid_y =
+                midpoint_y -
+                original.second;
+
+            const double to_mid_length =
+                std::hypot(
+                    to_mid_x,
+                    to_mid_y);
+
+            if (to_mid_length > 1e-9) {
+
+                candidates.push_back({
+                    original.first +
+                        to_mid_x /
+                            to_mid_length *
+                            step,
+
+                    original.second +
+                        to_mid_y /
+                            to_mid_length *
+                            step
+                });
             }
 
-            for (const auto& candidate : candidates) {
-                if (candidate == current) {
+            for (const auto& direction :
+                 directions) {
+
+                candidates.push_back({
+                    original.first +
+                        direction[0] * step,
+
+                    original.second +
+                        direction[1] * step
+                });
+            }
+
+            for (const auto& candidate :
+                 candidates) {
+
+                if (candidate == original) {
                     continue;
                 }
 
-                control_points[i] = candidate;
+                control_points[i] =
+                    candidate;
 
-                auto candidate_path = sampleBSpline(control_points);
+                auto candidate_path =
+                    evaluateBSplinePath(
+                        control_points);
 
-                if (!isSmoothPathValid(candidate_path)) {
-                    control_points[i] = current;
+                if (!isSmoothPathValid(
+                        candidate_path)) {
+
+                    control_points[i] =
+                        original;
 
                     continue;
                 }
 
                 const double candidate_cost =
-                    calculatePathCost(candidate_path, base_length, base_curvature);
+                    calculatePathCost(
+                        candidate_path,
+                        control_points,
+                        base_length,
+                        base_curvature,
+                        base_smoothness,
+                        base_control_smoothness);
 
-                if (candidate_cost < current_cost) {
-                    current_cost = candidate_cost;
+                if (candidate_cost <
+                    current_cost) {
+
+                    current_cost =
+                        candidate_cost;
 
                     improved = true;
+
                 } else {
-                    control_points[i] = current;
+
+                    control_points[i] =
+                        original;
                 }
             }
         }
@@ -568,33 +1280,67 @@ std::vector<std::pair<double, double>> PathPlannerNode::bsplineSmoothPath(
         }
     }
 
-    result = sampleBSpline(control_points);
+    result =
+        evaluateBSplinePath(
+            control_points);
 
     if (!isSmoothPathValid(result)) {
+
         result.clear();
 
         for (const auto& cell : path) {
-            result.push_back(gridToWorld(cell.first, cell.second));
+
+            result.push_back(
+                gridToWorld(
+                    cell.first,
+                    cell.second));
         }
 
-        RCLCPP_WARN(this->get_logger(), "Optimized B-spline path is invalid. Using A* path.");
+        RCLCPP_WARN(
+            this->get_logger(),
+            "Optimized B-spline path is invalid. Using A* path.");
 
         return result;
     }
 
+    const double final_length =
+        calculatePathLength(result);
+
+    const double final_curvature =
+        calculateCurvatureCost(result);
+
+    const double final_smoothness =
+        calculateSmoothnessCost(result);
+
+    const double final_control_smoothness =
+        calculateControlPointSmoothnessCost(
+            control_points);
+
     RCLCPP_INFO(
         this->get_logger(),
-        "B-spline optimized: length=%.3f -> %.3f, curvature=%.3f -> %.3f",
+        "B-spline optimized: "
+        "control_points=%zu, "
+        "length %.3f -> %.3f, "
+        "curvature %.6f -> %.6f, "
+        "smoothness %.6f -> %.6f, "
+        "control_smoothness %.6f -> %.6f, "
+        "smoothness_weight=%.3f",
+        control_points.size(),
         base_length,
-        calculatePathLength(result),
+        final_length,
         base_curvature,
-        calculateCurvatureCost(result)
-    );
+        final_curvature,
+        base_smoothness,
+        final_smoothness,
+        base_control_smoothness,
+        final_control_smoothness,
+        bspline_smoothness_weight_);
 
     return result;
 }
 
-double PathPlannerNode::calculatePathLength(const std::vector<std::pair<double, double>>& path)
+double PathPlannerNode::calculatePathLength(
+    const std::vector<std::pair<double, double>>& path)
 {
     if (path.size() < 2) {
         return 0.0;
@@ -602,18 +1348,27 @@ double PathPlannerNode::calculatePathLength(const std::vector<std::pair<double, 
 
     double length = 0.0;
 
-    for (std::size_t i = 1; i < path.size(); ++i) {
-        const double dx = path[i].first - path[i - 1].first;
+    for (std::size_t i = 1;
+         i < path.size();
+         ++i) {
 
-        const double dy = path[i].second - path[i - 1].second;
+        const double dx =
+            path[i].first -
+            path[i - 1].first;
 
-        length += std::hypot(dx, dy);
+        const double dy =
+            path[i].second -
+            path[i - 1].second;
+
+        length +=
+            std::hypot(dx, dy);
     }
 
     return length;
 }
 
-double PathPlannerNode::calculateCurvatureCost(const std::vector<std::pair<double, double>>& path)
+double PathPlannerNode::calculateCurvatureCost(
+    const std::vector<std::pair<double, double>>& path)
 {
     if (path.size() < 3) {
         return 0.0;
@@ -621,106 +1376,334 @@ double PathPlannerNode::calculateCurvatureCost(const std::vector<std::pair<doubl
 
     double cost = 0.0;
 
-    for (std::size_t i = 1; i + 1 < path.size(); ++i) {
-        const double ax = path[i].first - path[i - 1].first;
+    for (std::size_t i = 1;
+         i + 1 < path.size();
+         ++i) {
 
-        const double ay = path[i].second - path[i - 1].second;
+        const double ax =
+            path[i].first -
+            path[i - 1].first;
 
-        const double bx = path[i + 1].first - path[i].first;
+        const double ay =
+            path[i].second -
+            path[i - 1].second;
 
-        const double by = path[i + 1].second - path[i].second;
+        const double bx =
+            path[i + 1].first -
+            path[i].first;
 
-        const double a = std::hypot(ax, ay);
+        const double by =
+            path[i + 1].second -
+            path[i].second;
 
-        const double b = std::hypot(bx, by);
+        const double a =
+            std::hypot(ax, ay);
 
-        const double c = std::hypot(
-            path[i + 1].first - path[i - 1].first, path[i + 1].second - path[i - 1].second
-        );
+        const double b =
+            std::hypot(bx, by);
 
-        if (a < 1e-9 || b < 1e-9 || c < 1e-9) {
+        const double c =
+            std::hypot(
+                path[i + 1].first -
+                    path[i - 1].first,
+                path[i + 1].second -
+                    path[i - 1].second);
+
+        if (a < 1e-9 ||
+            b < 1e-9 ||
+            c < 1e-9) {
+
             continue;
         }
 
-        const double cross = ax * by - ay * bx;
+        const double cross =
+            ax * by -
+            ay * bx;
 
-        const double curvature = (2.0 * std::abs(cross)) / (a * b * c);
+        const double curvature =
+            2.0 *
+            std::abs(cross) /
+            (a * b * c);
 
-        const double ds = 0.5 * (a + b);
+        const double ds =
+            0.5 * (a + b);
 
-        cost += curvature * curvature * ds;
+        cost +=
+            curvature *
+            curvature *
+            ds;
+    }
+
+    return cost;
+}
+
+double PathPlannerNode::calculateSmoothnessCost(
+    const std::vector<std::pair<double, double>>& path)
+{
+    if (path.size() < 4) {
+        return 0.0;
+    }
+
+    std::vector<double> curvature;
+
+    curvature.reserve(
+        path.size() - 2);
+
+    for (std::size_t i = 1;
+         i + 1 < path.size();
+         ++i) {
+
+        const double x0 =
+            path[i - 1].first;
+
+        const double y0 =
+            path[i - 1].second;
+
+        const double x1 =
+            path[i].first;
+
+        const double y1 =
+            path[i].second;
+
+        const double x2 =
+            path[i + 1].first;
+
+        const double y2 =
+            path[i + 1].second;
+
+        const double dx1 =
+            x1 - x0;
+
+        const double dy1 =
+            y1 - y0;
+
+        const double dx2 =
+            x2 - x1;
+
+        const double dy2 =
+            y2 - y1;
+
+        const double a =
+            std::hypot(dx1, dy1);
+
+        const double b =
+            std::hypot(dx2, dy2);
+
+        const double c =
+            std::hypot(
+                x2 - x0,
+                y2 - y0);
+
+        if (a < 1e-6 ||
+            b < 1e-6 ||
+            c < 1e-6) {
+
+            curvature.push_back(0.0);
+            continue;
+        }
+
+        const double cross =
+            dx1 * dy2 -
+            dy1 * dx2;
+
+        const double kappa =
+            2.0 *
+            std::abs(cross) /
+            (a * b * c);
+
+        curvature.push_back(kappa);
+    }
+
+    double smoothness = 0.0;
+
+    for (std::size_t i = 1;
+         i < curvature.size();
+         ++i) {
+
+        const double dkappa =
+            curvature[i] -
+            curvature[i - 1];
+
+        smoothness +=
+            dkappa * dkappa;
+    }
+
+    return smoothness;
+}
+
+double PathPlannerNode::calculateControlPointSmoothnessCost(
+    const std::vector<std::pair<double, double>>& control_points)
+{
+    if (control_points.size() < 3) {
+        return 0.0;
+    }
+
+    double cost = 0.0;
+
+    for (std::size_t i = 1;
+         i + 1 < control_points.size();
+         ++i) {
+
+        const double second_x =
+            control_points[i - 1].first -
+            2.0 * control_points[i].first +
+            control_points[i + 1].first;
+
+        const double second_y =
+            control_points[i - 1].second -
+            2.0 * control_points[i].second +
+            control_points[i + 1].second;
+
+        cost +=
+            second_x * second_x +
+            second_y * second_y;
     }
 
     return cost;
 }
 
 double PathPlannerNode::calculatePathCost(
-    const std::vector<std::pair<double, double>>& path, double base_length, double base_curvature
-)
+    const std::vector<std::pair<double, double>>& path,
+    const std::vector<std::pair<double, double>>& control_points,
+    double base_length,
+    double base_curvature,
+    double base_smoothness,
+    double base_control_smoothness)
 {
-    const double length = calculatePathLength(path);
+    const double length =
+        calculatePathLength(path);
 
-    const double curvature = calculateCurvatureCost(path);
+    const double curvature =
+        calculateCurvatureCost(path);
 
-    const double normalized_length = length / std::max(base_length, 1e-9);
+    const double smoothness =
+        calculateSmoothnessCost(path);
 
-    double normalized_curvature = 0.0;
+    const double control_smoothness =
+        calculateControlPointSmoothnessCost(
+            control_points);
 
-    if (base_curvature > 1e-9) {
-        normalized_curvature = curvature / base_curvature;
-    } else {
-        normalized_curvature = curvature;
-    }
+    const double length_ratio =
+        length /
+        std::max(base_length, 1e-6);
 
-    return bspline_length_weight_ * normalized_length +
-           bspline_curvature_weight_ * normalized_curvature;
+    const double curvature_ratio =
+        curvature /
+        std::max(base_curvature, 1e-6);
+
+    const double smoothness_ratio =
+        smoothness /
+        std::max(base_smoothness, 1e-6);
+
+    const double control_smoothness_ratio =
+        control_smoothness /
+        std::max(
+            base_control_smoothness,
+            1e-6);
+
+    return
+        bspline_length_weight_ *
+            length_ratio +
+
+        bspline_curvature_weight_ *
+            curvature_ratio +
+
+        bspline_smoothness_weight_ *
+            (0.5 * smoothness_ratio +
+             0.5 * control_smoothness_ratio);
 }
 
-bool PathPlannerNode::isSmoothPathValid(const std::vector<std::pair<double, double>>& path)
+bool PathPlannerNode::isSmoothPathValid(
+    const std::vector<std::pair<double, double>>& path)
 {
     if (path.empty()) {
         return false;
     }
 
-    for (std::size_t i = 0; i < path.size(); ++i) {
-        const auto& point = path[i];
+    for (std::size_t i = 0;
+         i < path.size();
+         ++i) {
 
-        auto [grid_x, grid_y] = worldToGrid(point.first, point.second);
+        const auto& point =
+            path[i];
 
-        if (!isInsideGrid(grid_x, grid_y)) {
+        auto [grid_x, grid_y] =
+            worldToGrid(
+                point.first,
+                point.second);
+
+        if (!isInsideGrid(
+                grid_x,
+                grid_y)) {
+
             return false;
         }
 
-        if (!isPassable(grid_x, grid_y)) {
+        if (!isPassable(
+                grid_x,
+                grid_y)) {
+
             return false;
         }
 
         if (i > 0) {
-            const auto& previous = path[i - 1];
 
-            const double dx = point.first - previous.first;
+            const auto& previous =
+                path[i - 1];
 
-            const double dy = point.second - previous.second;
+            const double dx =
+                point.first -
+                previous.first;
 
-            const double distance = std::hypot(dx, dy);
+            const double dy =
+                point.second -
+                previous.second;
+
+            const double distance =
+                std::hypot(dx, dy);
 
             const int samples =
-                std::max(1, static_cast<int>(std::ceil(distance / (resolution_ * 0.5))));
+                std::max(
+                    1,
+                    static_cast<int>(
+                        std::ceil(
+                            distance /
+                            (resolution_ *
+                             0.5))));
 
-            for (int j = 1; j <= samples; ++j) {
-                const double ratio = static_cast<double>(j) / static_cast<double>(samples);
+            for (int j = 1;
+                 j <= samples;
+                 ++j) {
 
-                const double x = previous.first + dx * ratio;
+                const double ratio =
+                    static_cast<double>(j) /
+                    static_cast<double>(
+                        samples);
 
-                const double y = previous.second + dy * ratio;
+                const double x =
+                    previous.first +
+                    dx * ratio;
 
-                auto [sample_x, sample_y] = worldToGrid(x, y);
+                const double y =
+                    previous.second +
+                    dy * ratio;
 
-                if (!isInsideGrid(sample_x, sample_y)) {
+                auto [
+                    sample_x,
+                    sample_y] =
+                    worldToGrid(x, y);
+
+                if (!isInsideGrid(
+                        sample_x,
+                        sample_y)) {
+
                     return false;
                 }
 
-                if (!isPassable(sample_x, sample_y)) {
+                if (!isPassable(
+                        sample_x,
+                        sample_y)) {
+
                     return false;
                 }
             }
@@ -730,11 +1713,16 @@ bool PathPlannerNode::isSmoothPathValid(const std::vector<std::pair<double, doub
     return true;
 }
 
-int main(int argc, char** argv)
+int main(
+    int argc,
+    char** argv)
 {
-    rclcpp::init(argc, argv);
+    rclcpp::init(
+        argc,
+        argv);
 
-    auto node = std::make_shared<PathPlannerNode>();
+    auto node =
+        std::make_shared<PathPlannerNode>();
 
     rclcpp::spin(node);
 

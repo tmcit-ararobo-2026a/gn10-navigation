@@ -66,9 +66,30 @@ private:
     // 通行可能かcheckする関数 (254未満を通行可能と判定)
     bool isPassable(int x, int y);
 
-    // bspline
+    // A*
+    std::vector<std::pair<int, int>> aStar(int start_x, int start_y, int goal_x, int goal_y);
+
+    // B-spline
     std::vector<std::pair<double, double>> bsplineSmoothPath(
         const std::vector<std::pair<int, int>>& path
+    );
+
+    std::vector<std::pair<double, double>> extractImportantPoints(
+        const std::vector<std::pair<int, int>>& path
+    );
+
+    void simplifyPathRecursive(
+        const std::vector<std::pair<double, double>>& points,
+        int start,
+        int end,
+        double tolerance,
+        std::vector<bool>& keep
+    );
+
+    double pointToLineDistance(
+        const std::pair<double, double>& point,
+        const std::pair<double, double>& line_start,
+        const std::pair<double, double>& line_end
     );
 
     bool isSmoothPathValid(const std::vector<std::pair<double, double>>& path);
@@ -77,36 +98,59 @@ private:
 
     double calculateCurvatureCost(const std::vector<std::pair<double, double>>& path);
 
-    double calculatePathCost(
-        const std::vector<std::pair<double, double>>& path,
-        double base_length,
-        double base_curvature
+    double calculateSmoothnessCost(const std::vector<std::pair<double, double>>& path);
+
+    double calculateControlPointSmoothnessCost(
+        const std::vector<std::pair<double, double>>& control_points
     );
 
-    double bspline_length_weight_        = 1.0;
-    double bspline_curvature_weight_     = 1.0;
+    double calculatePathCost(
+        const std::vector<std::pair<double, double>>& path,
+        const std::vector<std::pair<double, double>>& control_points,
+        double base_length,
+        double base_curvature,
+        double base_smoothness,
+        double base_control_smoothness
+    );
+
+    std::vector<std::pair<double, double>> evaluateBSplinePath(
+        const std::vector<std::pair<double, double>>& control_points
+    );
+
+    // B-spline parameters
+    double bspline_length_weight_     = 1.0;
+    double bspline_curvature_weight_  = 1.0;
+    double bspline_smoothness_weight_ = 100.0;  // 滑らかさを設定する関数
+
     int bspline_optimization_iterations_ = 20;
-    double bspline_control_point_step_   = 0.05;
-    int bspline_samples_per_segment_     = 10;
 
-    // A*
-    std::vector<std::pair<int, int>> aStar(int start_x, int start_y, int goal_x, int goal_y);
+    double bspline_control_point_step_ = 0.05;
 
-    // マップの情報
+    int bspline_samples_per_segment_ = 10;
+
+    // A*経路から重要点を抽出する際の閾値
+    double bspline_turning_angle_threshold_ =
+        10.0;  // この値が大きいほど、角度が大きく変わる点を抽出する
+
+    double bspline_simplification_tolerance_ = 0.10;  // A*の形をどれほど残すか
+
+    // A*コスト
+    double cost_factor_ = 0.05;
+
+    // Map information
     unsigned int width_  = 0;
     unsigned int height_ = 0;
-    double resolution_   = 0.0;
-    double origin_x_     = 0.0;
-    double origin_y_     = 0.0;
 
-    // robotの情報
+    double resolution_ = 0.0;
+
+    double origin_x_ = 0.0;
+    double origin_y_ = 0.0;
+
+    // Robot
     double robot_x_ = 0.0;
     double robot_y_ = 0.0;
 
-    // ゴールの情報
+    // Goal
     double goal_x_ = 0.0;
     double goal_y_ = 0.0;
-
-    // A*探索におけるコストマップペナルティの重み（パラメーター化）
-    double cost_factor_ = 0.05;
 };
