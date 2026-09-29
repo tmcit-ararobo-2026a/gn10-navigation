@@ -66,6 +66,13 @@ private:
     // 通行可能かcheckする関数 (254未満を通行可能と判定)
     bool isPassable(int x, int y);
 
+    // bspline
+    std::vector<std::pair<double, double>> bsplineSmoothPath(
+        const std::vector<std::pair<int, int>>& path
+    );
+
+    bool isSmoothPathValid(const std::vector<std::pair<double, double>>& path);
+
     // A*
     std::vector<std::pair<int, int>> aStar(int start_x, int start_y, int goal_x, int goal_y);
 
