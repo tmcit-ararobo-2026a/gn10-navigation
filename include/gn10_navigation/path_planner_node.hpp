@@ -1,7 +1,10 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -34,7 +37,8 @@ private:
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_pose_sub_;
 
     // A*が使用するCostmap（costmap_generator_node から受信した最新マップ）
-    std::vector<std::vector<int>> planning_grid_;
+    // 1次元配列 (index = y * width_ + x) で保持する
+    std::vector<uint8_t> planning_grid_;
 
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
 
@@ -52,7 +56,8 @@ private:
     void getGoalPose(const geometry_msgs::msg::PoseStamped::SharedPtr pose_msg);
 
     // map上のロボット座標系を受け取る関数(tfより)
-    void getRobotPose();
+    // 取得に成功し、かつコストマップ内にいる場合に true を返す
+    bool getRobotPose();
 
     // World座標系からGrid座標に変換する関数
     std::pair<int, int> worldToGrid(double world_x, double world_y);
@@ -65,6 +70,12 @@ private:
 
     // 通行可能かcheckする関数 (254未満を通行可能と判定)
     bool isPassable(int x, int y);
+
+    // grid座標を1次元indexに変換する関数
+    std::size_t gridIndex(int x, int y) const;
+
+    // 指定セルから最も近い通行可能セルを探す関数 (max_radius_cells 以内)
+    std::optional<std::pair<int, int>> findNearestPassable(int x, int y, int max_radius_cells);
 
     // A*
     std::vector<std::pair<int, int>> aStar(int start_x, int start_y, int goal_x, int goal_y);
@@ -100,6 +111,9 @@ private:
 
     double calculateSmoothnessCost(const std::vector<std::pair<double, double>>& path);
 
+    // パス上のサンプル点が通るコストマップ値の平均 (0.0〜1.0 に正規化)
+    double calculateObstacleCost(const std::vector<std::pair<double, double>>& path);
+
     double calculateControlPointSmoothnessCost(
         const std::vector<std::pair<double, double>>& control_points
     );
@@ -117,10 +131,25 @@ private:
         const std::vector<std::pair<double, double>>& control_points
     );
 
+    // Frame / Topic names
+    std::string map_frame_     = "map";
+    std::string base_frame_    = "base_link";
+    std::string costmap_topic_ = "costmap";
+    std::string goal_topic_    = "/goal_pose";
+    std::string path_topic_    = "/planned_path";
+
+    // スタート/ゴールが通行不可セルにある場合に、最寄りの通行可能セルを探す半径 [m]
+    // 0.0 にするとスナップしない
+    double start_snap_radius_ = 0.5;
+    double goal_snap_radius_  = 0.3;
+
     // B-spline parameters
     double bspline_length_weight_     = 1.0;
     double bspline_curvature_weight_  = 1.0;
     double bspline_smoothness_weight_ = 3.0;  // 滑らかさの程度を設定する関数
+
+    // 障害物(膨張領域)への近さに対するペナルティの重み
+    double bspline_obstacle_cost_weight_ = 150.0;
 
     int bspline_smoothing_iterations_ = 5;  // 何回平滑化を行うか
 
