@@ -73,6 +73,22 @@ private:
 
     bool isSmoothPathValid(const std::vector<std::pair<double, double>>& path);
 
+    double calculatePathLength(const std::vector<std::pair<double, double>>& path);
+
+    double calculateCurvatureCost(const std::vector<std::pair<double, double>>& path);
+
+    double calculatePathCost(
+        const std::vector<std::pair<double, double>>& path,
+        double base_length,
+        double base_curvature
+    );
+
+    double bspline_length_weight_        = 1.0;
+    double bspline_curvature_weight_     = 1.0;
+    int bspline_optimization_iterations_ = 20;
+    double bspline_control_point_step_   = 0.05;
+    int bspline_samples_per_segment_     = 10;
+
     // A*
     std::vector<std::pair<int, int>> aStar(int start_x, int start_y, int goal_x, int goal_y);
 

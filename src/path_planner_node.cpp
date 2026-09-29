@@ -14,7 +14,25 @@
 PathPlannerNode::PathPlannerNode() : Node("path_planner_node")
 {
     this->declare_parameter("cost_factor", 0.05);
+
+    this->declare_parameter("bspline.length_weight", 1.0);
+    this->declare_parameter("bspline.curvature_weight", 1.0);
+    this->declare_parameter("bspline.optimization_iterations", 20);
+    this->declare_parameter("bspline.control_point_step", 0.05);
+    this->declare_parameter("bspline.samples_per_segment", 10);
+
     cost_factor_ = this->get_parameter("cost_factor").as_double();
+
+    bspline_length_weight_ = this->get_parameter("bspline.length_weight").as_double();
+
+    bspline_curvature_weight_ = this->get_parameter("bspline.curvature_weight").as_double();
+
+    bspline_optimization_iterations_ =
+        this->get_parameter("bspline.optimization_iterations").as_int();
+
+    bspline_control_point_step_ = this->get_parameter("bspline.control_point_step").as_double();
+
+    bspline_samples_per_segment_ = this->get_parameter("bspline.samples_per_segment").as_int();
 
     rclcpp::QoS map_qos(rclcpp::KeepLast(1));
     map_qos.reliable();
@@ -362,27 +380,23 @@ std::vector<std::pair<double, double>> PathPlannerNode::bsplineSmoothPath(
     const std::vector<std::pair<int, int>>& path
 )
 {
-    std::vector<std::pair<double, double>> result;
+    using Point = std::pair<double, double>;
+
+    std::vector<Point> result;
 
     if (path.empty()) {
         return result;
     }
 
-    if (path.size() < 4) {
-        for (const auto& cell : path) {
-            result.push_back(gridToWorld(cell.first, cell.second));
-        }
+    for (const auto& cell : path) {
+        result.push_back(gridToWorld(cell.first, cell.second));
+    }
 
+    if (result.size() < 4) {
         return result;
     }
 
-    std::vector<std::pair<double, double>> control_points;
-
-    control_points.reserve(path.size());
-
-    for (const auto& cell : path) {
-        control_points.push_back(gridToWorld(cell.first, cell.second));
-    }
+    std::vector<Point> control_points = result;
 
     const int degree        = 3;
     const int control_count = static_cast<int>(control_points.size());
@@ -401,13 +415,13 @@ std::vector<std::pair<double, double>> PathPlannerNode::bsplineSmoothPath(
         }
     }
 
-    auto evaluateBSpline = [&](double t) -> std::pair<double, double> {
+    auto evaluateBSpline = [&](const std::vector<Point>& points, double t) -> Point {
         if (t <= 0.0) {
-            return control_points.front();
+            return points.front();
         }
 
         if (t >= static_cast<double>(max_t)) {
-            return control_points.back();
+            return points.back();
         }
 
         int span = degree;
@@ -419,10 +433,10 @@ std::vector<std::pair<double, double>> PathPlannerNode::bsplineSmoothPath(
             }
         }
 
-        std::vector<std::pair<double, double>> d(degree + 1);
+        std::vector<Point> d(degree + 1);
 
         for (int j = 0; j <= degree; ++j) {
-            d[j] = control_points[span - degree + j];
+            d[j] = points[span - degree + j];
         }
 
         for (int r = 1; r <= degree; ++r) {
@@ -446,17 +460,115 @@ std::vector<std::pair<double, double>> PathPlannerNode::bsplineSmoothPath(
         return d[degree];
     };
 
-    const int samples_per_segment = 10;
-    const int total_samples       = max_t * samples_per_segment;
+    auto sampleBSpline = [&](const std::vector<Point>& points) {
+        std::vector<Point> sampled;
 
-    result.reserve(total_samples + 1);
+        const int total_samples = max_t * bspline_samples_per_segment_;
 
-    for (int i = 0; i <= total_samples; ++i) {
-        const double t = static_cast<double>(max_t) * static_cast<double>(i) /
-                         static_cast<double>(total_samples);
+        sampled.reserve(total_samples + 1);
 
-        result.push_back(evaluateBSpline(t));
+        for (int i = 0; i <= total_samples; ++i) {
+            const double t = static_cast<double>(max_t) * static_cast<double>(i) /
+                             static_cast<double>(total_samples);
+
+            sampled.push_back(evaluateBSpline(points, t));
+        }
+
+        return sampled;
+    };
+
+    auto initial_path = sampleBSpline(control_points);
+
+    if (!isSmoothPathValid(initial_path)) {
+        return result;
     }
+
+    const double base_length = calculatePathLength(initial_path);
+
+    const double base_curvature = calculateCurvatureCost(initial_path);
+
+    double current_cost = calculatePathCost(initial_path, base_length, base_curvature);
+
+    const int iterations = std::max(1, bspline_optimization_iterations_);
+
+    const double step = std::max(0.001, bspline_control_point_step_);
+
+    for (int iteration = 0; iteration < iterations; ++iteration) {
+        bool improved = false;
+
+        for (int i = 1; i < control_count - 1; ++i) {
+            const Point current = control_points[i];
+
+            const Point previous = control_points[i - 1];
+
+            const Point next = control_points[i + 1];
+
+            const Point midpoint{
+                (previous.first + next.first) * 0.5, (previous.second + next.second) * 0.5
+            };
+
+            const double direction_x = midpoint.first - current.first;
+
+            const double direction_y = midpoint.second - current.second;
+
+            const double direction_length = std::hypot(direction_x, direction_y);
+
+            if (direction_length < 1e-9) {
+                continue;
+            }
+
+            const double nx = direction_x / direction_length;
+
+            const double ny = direction_y / direction_length;
+
+            std::vector<Point> candidates;
+
+            candidates.push_back(current);
+
+            const double candidate_steps[] = {0.25, 0.5, 0.75, 1.0};
+
+            for (double ratio : candidate_steps) {
+                const double distance = std::min(step, direction_length) * ratio;
+
+                candidates.push_back(
+                    {current.first + nx * distance, current.second + ny * distance}
+                );
+            }
+
+            for (const auto& candidate : candidates) {
+                if (candidate == current) {
+                    continue;
+                }
+
+                control_points[i] = candidate;
+
+                auto candidate_path = sampleBSpline(control_points);
+
+                if (!isSmoothPathValid(candidate_path)) {
+                    control_points[i] = current;
+
+                    continue;
+                }
+
+                const double candidate_cost =
+                    calculatePathCost(candidate_path, base_length, base_curvature);
+
+                if (candidate_cost < current_cost) {
+                    current_cost = candidate_cost;
+
+                    improved = true;
+                } else {
+                    control_points[i] = current;
+                }
+            }
+        }
+
+        if (!improved) {
+            break;
+        }
+    }
+
+    result = sampleBSpline(control_points);
 
     if (!isSmoothPathValid(result)) {
         result.clear();
@@ -465,10 +577,103 @@ std::vector<std::pair<double, double>> PathPlannerNode::bsplineSmoothPath(
             result.push_back(gridToWorld(cell.first, cell.second));
         }
 
-        RCLCPP_WARN(this->get_logger(), "B-spline path intersects an obstacle. Using A* path.");
+        RCLCPP_WARN(this->get_logger(), "Optimized B-spline path is invalid. Using A* path.");
+
+        return result;
     }
 
+    RCLCPP_INFO(
+        this->get_logger(),
+        "B-spline optimized: length=%.3f -> %.3f, curvature=%.3f -> %.3f",
+        base_length,
+        calculatePathLength(result),
+        base_curvature,
+        calculateCurvatureCost(result)
+    );
+
     return result;
+}
+
+double PathPlannerNode::calculatePathLength(const std::vector<std::pair<double, double>>& path)
+{
+    if (path.size() < 2) {
+        return 0.0;
+    }
+
+    double length = 0.0;
+
+    for (std::size_t i = 1; i < path.size(); ++i) {
+        const double dx = path[i].first - path[i - 1].first;
+
+        const double dy = path[i].second - path[i - 1].second;
+
+        length += std::hypot(dx, dy);
+    }
+
+    return length;
+}
+
+double PathPlannerNode::calculateCurvatureCost(const std::vector<std::pair<double, double>>& path)
+{
+    if (path.size() < 3) {
+        return 0.0;
+    }
+
+    double cost = 0.0;
+
+    for (std::size_t i = 1; i + 1 < path.size(); ++i) {
+        const double ax = path[i].first - path[i - 1].first;
+
+        const double ay = path[i].second - path[i - 1].second;
+
+        const double bx = path[i + 1].first - path[i].first;
+
+        const double by = path[i + 1].second - path[i].second;
+
+        const double a = std::hypot(ax, ay);
+
+        const double b = std::hypot(bx, by);
+
+        const double c = std::hypot(
+            path[i + 1].first - path[i - 1].first, path[i + 1].second - path[i - 1].second
+        );
+
+        if (a < 1e-9 || b < 1e-9 || c < 1e-9) {
+            continue;
+        }
+
+        const double cross = ax * by - ay * bx;
+
+        const double curvature = (2.0 * std::abs(cross)) / (a * b * c);
+
+        const double ds = 0.5 * (a + b);
+
+        cost += curvature * curvature * ds;
+    }
+
+    return cost;
+}
+
+double PathPlannerNode::calculatePathCost(
+    const std::vector<std::pair<double, double>>& path, double base_length, double base_curvature
+)
+{
+    const double length = calculatePathLength(path);
+
+    const double curvature = calculateCurvatureCost(path);
+
+    const double normalized_length = length / std::max(base_length, 1e-9);
+
+    double normalized_curvature = 0.0;
+
+    if (base_curvature > 1e-9) {
+        normalized_curvature = curvature / base_curvature;
+    } else {
+        normalized_curvature = curvature;
+    }
+
+    return bspline_length_weight_ * normalized_length +
+           bspline_curvature_weight_ * normalized_curvature;
 }
 
 bool PathPlannerNode::isSmoothPathValid(const std::vector<std::pair<double, double>>& path)
