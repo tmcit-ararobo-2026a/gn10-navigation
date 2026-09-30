@@ -144,6 +144,10 @@ PathPlannerNode::PathPlannerNode() : Node("path_planner_node")
 
     timer_ = this->create_wall_timer(std::chrono::milliseconds(500), [this]() { getRobotPose(); });
 
+    param_cb_handle_ = this->add_on_set_parameters_callback(
+        std::bind(&PathPlannerNode::onSetParameters, this, std::placeholders::_1)
+    );
+
     RCLCPP_INFO(this->get_logger(), "Path planner started");
 }
 
@@ -463,7 +467,7 @@ bool PathPlannerNode::isPassable(int x, int y)
         return false;
     }
 
-    return planning_grid_[gridIndex(x, y)] < 254;
+    return planning_grid_[gridIndex(x, y)] < impassable_cost_;
 }
 
 std::size_t PathPlannerNode::gridIndex(int x, int y) const
@@ -1389,7 +1393,7 @@ double PathPlannerNode::calculateObstacleCost(const std::vector<std::pair<double
         const auto [grid_x, grid_y] = worldToGrid(point.first, point.second);
 
         if (!isInsideGrid(grid_x, grid_y)) {
-            sum += 254.0;
+            sum += static_cast<double>(impassable_cost_);
 
             continue;
         }
@@ -1397,7 +1401,7 @@ double PathPlannerNode::calculateObstacleCost(const std::vector<std::pair<double
         sum += static_cast<double>(planning_grid_[gridIndex(grid_x, grid_y)]);
     }
 
-    return sum / (static_cast<double>(path.size()) * 254.0);
+    return sum / (static_cast<double>(path.size()) * static_cast<double>(impassable_cost_));
 }
 
 double PathPlannerNode::calculateControlPointSmoothnessCost(
@@ -1513,6 +1517,103 @@ bool PathPlannerNode::isSmoothPathValid(const std::vector<std::pair<double, doub
     }
 
     return true;
+}
+
+rcl_interfaces::msg::SetParametersResult PathPlannerNode::onSetParameters(
+    const std::vector<rclcpp::Parameter>& params
+)
+{
+    rcl_interfaces::msg::SetParametersResult result;
+    result.successful = true;
+
+    /*
+     * 1. まず全パラメータを検証する。
+     *    1つでも不正なら、何も反映せずに拒否する (all or nothing)。
+     */
+    for (const auto& p : params) {
+        const std::string& name = p.get_name();
+
+        auto reject = [&](const std::string& reason) {
+            result.successful = false;
+            result.reason     = name + ": " + reason;
+        };
+
+        if (name == "cost_factor" || name == "start_snap_radius" || name == "goal_snap_radius" ||
+            name == "bspline.length_weight" || name == "bspline.curvature_weight" ||
+            name == "bspline.smoothness_weight" || name == "bspline.obstacle_cost_weight" ||
+            name == "bspline.turning_angle_threshold" ||
+            name == "bspline.simplification_tolerance") {
+            if (p.as_double() < 0.0) {
+                reject("must be >= 0");
+            }
+        } else if (name == "bspline.control_point_step") {
+            if (p.as_double() <= 0.0) {
+                reject("must be > 0");
+            }
+        } else if (
+            name == "bspline.smoothing_iterations" || name == "bspline.optimization_iterations"
+        ) {
+            if (p.as_int() < 0) {
+                reject("must be >= 0");
+            }
+        } else if (name == "bspline.samples_per_segment") {
+            if (p.as_int() < 1) {
+                reject("must be >= 1");
+            }
+        } else if (name == "impassable_cost") {
+            if (p.as_int() < 1 || p.as_int() > 255) {
+                reject("must be in [1, 255]");
+            }
+        }
+
+        if (!result.successful) {
+            return result;
+        }
+    }
+
+    /*
+     * 2. 検証を通ったら反映する。
+     *    変更は次のゴール受信時の計画から効く。
+     */
+    for (const auto& p : params) {
+        const std::string& name = p.get_name();
+
+        if (name == "cost_factor") {
+            cost_factor_ = p.as_double();
+        } else if (name == "start_snap_radius") {
+            start_snap_radius_ = p.as_double();
+        } else if (name == "goal_snap_radius") {
+            goal_snap_radius_ = p.as_double();
+        } else if (name == "bspline.length_weight") {
+            bspline_length_weight_ = p.as_double();
+        } else if (name == "bspline.curvature_weight") {
+            bspline_curvature_weight_ = p.as_double();
+        } else if (name == "bspline.smoothness_weight") {
+            bspline_smoothness_weight_ = p.as_double();
+        } else if (name == "bspline.obstacle_cost_weight") {
+            bspline_obstacle_cost_weight_ = p.as_double();
+        } else if (name == "bspline.smoothing_iterations") {
+            bspline_smoothing_iterations_ = static_cast<int>(p.as_int());
+        } else if (name == "bspline.optimization_iterations") {
+            bspline_optimization_iterations_ = static_cast<int>(p.as_int());
+        } else if (name == "bspline.control_point_step") {
+            bspline_control_point_step_ = p.as_double();
+        } else if (name == "bspline.samples_per_segment") {
+            bspline_samples_per_segment_ = static_cast<int>(p.as_int());
+        } else if (name == "bspline.turning_angle_threshold") {
+            bspline_turning_angle_threshold_ = p.as_double();
+        } else if (name == "bspline.simplification_tolerance") {
+            bspline_simplification_tolerance_ = p.as_double();
+        } else if (name == "impassable_cost") {
+            impassable_cost_ = static_cast<int>(p.as_int());
+        } else {
+            continue;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "Parameter updated: %s", name.c_str());
+    }
+
+    return result;
 }
 
 int main(int argc, char** argv)

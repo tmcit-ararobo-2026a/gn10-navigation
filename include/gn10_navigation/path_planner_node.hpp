@@ -40,6 +40,7 @@ private:
     // 1次元配列 (index = y * width_ + x) で保持する
     std::vector<uint8_t> planning_grid_;
 
+    // 計算経路のpublisher
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
 
     // TF
@@ -80,9 +81,16 @@ private:
     // A*
     std::vector<std::pair<int, int>> aStar(int start_x, int start_y, int goal_x, int goal_y);
 
+    // 実行中のパラメータ変更を受け付けるコールバック
+    rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
+
     // B-spline
     std::vector<std::pair<double, double>> bsplineSmoothPath(
         const std::vector<std::pair<int, int>>& path
+    );
+
+    rcl_interfaces::msg::SetParametersResult onSetParameters(
+        const std::vector<rclcpp::Parameter>& params
     );
 
     std::vector<std::pair<double, double>> extractImportantPoints(
@@ -181,4 +189,7 @@ private:
     // Goal
     double goal_x_ = 0.0;
     double goal_y_ = 0.0;
+
+    // 通行不可と判定するコスト値 (この値以上は通行不可)
+    int impassable_cost_ = 254;
 };
