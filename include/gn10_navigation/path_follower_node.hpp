@@ -62,6 +62,7 @@ private:
     double max_deceleration_;
     double max_jerk_;
     double max_lateral_acceleration_;
+    double curvature_window_;
     double max_angular_speed_;
     double max_angular_acceleration_;
     double heading_gain_;
@@ -74,6 +75,7 @@ private:
     double max_lookahead_;
     double lookahead_gain_;
     double goal_tolerance_;
+    double goal_approach_speed_;
     double max_path_error_;
     double max_pose_age_;
 };
