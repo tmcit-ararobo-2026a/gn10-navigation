@@ -113,7 +113,7 @@ bool PathPlannerNode::getRobotPose()
         auto transform = tf_buffer_->lookupTransform(map_frame_, base_frame_, tf2::TimePointZero);
         robot_x_       = transform.transform.translation.x;
         robot_y_       = transform.transform.translation.y;
-        robot_yaw_     = transform.transform.translation.z;
+        robot_yaw_     = tf2::getYaw(transform.transform.rotation);
     } catch (const tf2::TransformException& ex) {
         RCLCPP_WARN_THROTTLE(
             this->get_logger(), *this->get_clock(), 2000, "Could not get transform: %s", ex.what()
@@ -355,4 +355,13 @@ std::optional<std::pair<int, int>> PathPlannerNode::findNearestPassable(
     }
 
     return best;
+}
+
+int main(int argc, char** argv)
+{
+    rclcpp::init(argc, argv);
+    auto node = std::make_shared<PathPlannerNode>();
+    rclcpp::spin(node);
+    rclcpp::shutdown();
+    return 0;
 }
