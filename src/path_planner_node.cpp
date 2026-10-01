@@ -12,13 +12,19 @@ PathPlannerNode::PathPlannerNode() : Node("path_planner_node")
         "/costmap", map_qos, std::bind(&PathPlannerNode::getCostmapMsg, this, std::placeholders::_1)
     );
 
+    goal_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+        "/goal_pose", 10, std::bind(&PathPlannerNode::getGoalPose, this, std::placeholders::_1)
+    );
+
     // パラメータの初期化設定
     this->declare_parameter("map_configs.map_frame", "map");
     this->declare_parameter("map_configs.base_frame", "base_link");
+    this->declare_parameter("snapp_config.start_snap_radius", 1);
 
     // yamlから受信
-    map_frame_  = this->get_parameter("map_configs.map_frame").as_string();
-    base_frame_ = this->get_parameter("map_configs.base_frame").as_string();
+    map_frame_         = this->get_parameter("map_configs.map_frame").as_string();
+    base_frame_        = this->get_parameter("map_configs.base_frame").as_string();
+    start_snap_radius_ = this->get_parameter("snapp_config.start_snap_radius").as_double();
 }
 
 void PathPlannerNode::getCostmapMsg(nav_msgs::msg::OccupancyGrid::SharedPtr grid_msg)
@@ -143,6 +149,83 @@ bool PathPlannerNode::getRobotPose()
     return true;
 }
 
+void PathPlannerNode::getGoalPose(geometry_msgs::msg::PoseStamped::SharedPtr pose_msg)
+{
+    // mapを受信してから
+    if (planning_grid_.empty()) {
+        RCLCPP_WARN(this->get_logger(), "Costmap has not been received yet.");
+        return;
+    }
+
+    // frameが違かったら
+    if (pose_msg->header.frame_id != map_frame_) {
+        RCLCPP_WARN(
+            this->get_logger(), "Goal frame is not map: %s", pose_msg->header.frame_id.c_str()
+        );
+        return;
+    }
+
+    // robotのpositionがわからなかったら
+    if (!getRobotPose()) {
+        RCLCPP_WARN(this->get_logger(), "Robot pose is unavailable. Planning aborted.");
+
+        return;
+    }
+
+    goal_x_ = pose_msg->pose.position.x;
+    goal_y_ = pose_msg->pose.position.y;
+
+    RCLCPP_INFO(this->get_logger(), "Goal received: x=%.3f, y=%.3f", goal_x_, goal_y_);
+
+    auto [goal_grid_x, goal_grid_y] = worldToGrid(goal_x_, goal_y_);
+
+    int grid_x = goal_grid_x;
+    int grid_y = goal_grid_y;
+
+    // 範囲内じゃなかったら
+    if (!isInsideGrid(grid_x, grid_y)) {
+        RCLCPP_WARN(this->get_logger(), "Goal is outside the costmap: x=%d, y=%d", grid_x, grid_y);
+
+        return;
+    }
+    RCLCPP_INFO(this->get_logger(), "Goal grid position: x=%d, y=%d", grid_x, grid_y);
+
+    auto [robot_grid_x, robot_grid_y] = worldToGrid(robot_x_, robot_y_);
+
+    int start_x = robot_grid_x;
+    int start_y = robot_grid_y;
+
+    /*
+     * ロボットが膨張領域内にいる場合は、最寄りの通行可能セルからA*を開始する。
+     */
+    bool start_snapped = false;
+
+    if (!isPassable(start_x, start_y)) {
+        const int radius_cells = static_cast<int>(std::ceil(start_snap_radius_ / resolution_));
+
+        const auto snapped = findNearestPassable(start_x, start_y, radius_cells);
+
+        if (!snapped) {
+            RCLCPP_WARN(
+                this->get_logger(), "Robot is not on a passable cell and no free cell is nearby."
+            );
+
+            return;
+        }
+
+        start_x       = snapped->first;
+        start_y       = snapped->second;
+        start_snapped = true;
+
+        RCLCPP_WARN(
+            this->get_logger(),
+            "Robot cell is occupied. Start snapped to x=%d, y=%d",
+            start_x,
+            start_y
+        );
+    }
+}
+
 // peripheral
 std::pair<int, int> PathPlannerNode::worldToGrid(double wx, double wy)
 {
@@ -169,4 +252,45 @@ bool PathPlannerNode::isPassable(int x, int y)
 std::size_t PathPlannerNode::gridtoIndex(int x, int y) const
 {
     return static_cast<std::size_t>(y) * width_ + static_cast<std::size_t>(x);
+}
+
+std::optional<std::pair<int, int>> PathPlannerNode::findNearestPassable(
+    int x, int y, int max_radius_cells
+)
+{
+    // 半径内の全セルを調べ、ユークリッド距離が最も近い通行可能セルを返す。
+
+    if (max_radius_cells <= 0) {
+        return std::nullopt;
+    }
+
+    double best_distance = std::numeric_limits<double>::infinity();
+
+    std::optional<std::pair<int, int>> best;
+
+    for (int dy = -max_radius_cells; dy <= max_radius_cells; ++dy) {
+        for (int dx = -max_radius_cells; dx <= max_radius_cells; ++dx) {
+            const int nx = x + dx;
+
+            const int ny = y + dy;
+
+            if (!isPassable(nx, ny)) {
+                continue;
+            }
+
+            const double distance = std::hypot(dx, dy);
+
+            if (distance > max_radius_cells) {
+                continue;
+            }
+
+            if (distance < best_distance) {
+                best_distance = distance;
+
+                best = std::make_pair(nx, ny);
+            }
+        }
+    }
+
+    return best;
 }

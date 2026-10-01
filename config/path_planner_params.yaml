@@ -3,3 +3,5 @@ path_planner_node:
     map_configs:
       map_frame: "map"
       base_frame: "base_link"
+    snapp_config:
+      start_snap_radius: 0.3 #[m]
