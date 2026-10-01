@@ -1,0 +1,13 @@
+[
+  {"comment": "外壁 (左) 立上り", "type": "BOX", "x": -0.91, "y": -2.1, "z_min": 0.024, "z_max": 0.15, "param1": 0.012, "param2": 7.0},
+  {"comment": "外壁 (右) 立上り", "type": "BOX", "x": 0.91, "y": -2.1, "z_min": 0.024, "z_max": 0.15, "param1": 0.012, "param2": 7.0},
+
+  {"comment": "教壇", "type": "BOX", "x": 0.0, "y": -0.3, "z_min": 0.0, "z_max": 0.20, "param1": 0.91, "param2": 0.30},
+  {"comment": "教壇", "type": "BOX", "x": 0.0, "y": 4.6, "z_min": 0.0, "z_max": 0.20, "param1": 0.91, "param2": 0.30},
+
+  {"comment": "机", "type": "BOX", "x": -0.71, "y": 2.95, "z_min": 0.0, "z_max": 0.76, "param1": 0.2, "param2": 0.3},
+
+  {"comment": "旗 土台", "type": "BOX", "x": 0.0, "y": -2.1, "z_min": 0.0, "z_max": 0.18, "param1": 0.195, "param2": 0.195},
+  {"comment": "旗 支柱", "type": "CYLINDER", "x": 0.0, "y": -2.1, "z_min": 0.18, "z_max": 3.0, "param1": 0.03, "param2": 0.0},
+  {"comment": "旗 布部分", "type": "BOX", "x": 0.3, "y": -2.1, "z_min": 1.20, "z_max": 3.0, "param1": 0.30, "param2": 0.02}
+]
