@@ -2,6 +2,7 @@
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav_msgs/msg/occupancy_grid.hpp"
+#include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
@@ -14,6 +15,7 @@ public:
 private:
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_sub_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_pose_sub_;
+    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
 
     void getCostmapMsg(nav_msgs::msg::OccupancyGrid::SharedPtr grid_msg);
 
@@ -35,6 +37,17 @@ private:
     // A*が使用するCostmap　1次元配列で保持
     std::vector<uint8_t> planning_grid_;
 
+    // A*
+    std::vector<std::pair<int, int>> aStar(int start_x, int start_y, int goal_x, int goal_y);
+
+    // B-spline
+    std::vector<std::pair<double, double>> bsplineSmoothPath(
+        const std::vector<std::pair<int, int>>& path
+    );
+    std::vector<std::pair<double, double>> extractImportantPoints(
+        const std::vector<std::pair<int, int>>& path
+    );
+
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
@@ -50,8 +63,9 @@ private:
     double origin_y_     = 0.0;
 
     // map座標系から見たrobot座標系の格納場所
-    double robot_x_ = 0.0;
-    double robot_y_ = 0.0;
+    double robot_x_   = 0.0;
+    double robot_y_   = 0.0;
+    double robot_yaw_ = 0.0;
 
     // snap
     double start_snap_radius_;

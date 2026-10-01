@@ -16,6 +16,12 @@ PathPlannerNode::PathPlannerNode() : Node("path_planner_node")
         "/goal_pose", 10, std::bind(&PathPlannerNode::getGoalPose, this, std::placeholders::_1)
     );
 
+    path_pub_ = this->create_publisher<nav_msgs::msg::Path>("/planned_path", 10);
+
+    // tf
+    tf_buffer_   = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+
     // パラメータの初期化設定
     this->declare_parameter("map_configs.map_frame", "map");
     this->declare_parameter("map_configs.base_frame", "base_link");
@@ -107,6 +113,7 @@ bool PathPlannerNode::getRobotPose()
         auto transform = tf_buffer_->lookupTransform(map_frame_, base_frame_, tf2::TimePointZero);
         robot_x_       = transform.transform.translation.x;
         robot_y_       = transform.transform.translation.y;
+        robot_yaw_     = transform.transform.translation.z;
     } catch (const tf2::TransformException& ex) {
         RCLCPP_WARN_THROTTLE(
             this->get_logger(), *this->get_clock(), 2000, "Could not get transform: %s", ex.what()
@@ -177,33 +184,35 @@ void PathPlannerNode::getGoalPose(geometry_msgs::msg::PoseStamped::SharedPtr pos
 
     RCLCPP_INFO(this->get_logger(), "Goal received: x=%.3f, y=%.3f", goal_x_, goal_y_);
 
-    auto [goal_grid_x, goal_grid_y] = worldToGrid(goal_x_, goal_y_);
+    auto [goal_grid_x_, goal_grid_y_] = worldToGrid(goal_x_, goal_y_);
 
-    int grid_x = goal_grid_x;
-    int grid_y = goal_grid_y;
+    int goal_grid_x = goal_grid_x_;
+    int goal_grid_y = goal_grid_y_;
 
     // 範囲内じゃなかったら
-    if (!isInsideGrid(grid_x, grid_y)) {
-        RCLCPP_WARN(this->get_logger(), "Goal is outside the costmap: x=%d, y=%d", grid_x, grid_y);
+    if (!isInsideGrid(goal_grid_x, goal_grid_y)) {
+        RCLCPP_WARN(
+            this->get_logger(), "Goal is outside the costmap: x=%d, y=%d", goal_grid_x, goal_grid_y
+        );
 
         return;
     }
-    RCLCPP_INFO(this->get_logger(), "Goal grid position: x=%d, y=%d", grid_x, grid_y);
+    RCLCPP_INFO(this->get_logger(), "Goal grid position: x=%d, y=%d", goal_grid_x, goal_grid_y);
 
     auto [robot_grid_x, robot_grid_y] = worldToGrid(robot_x_, robot_y_);
 
-    int start_x = robot_grid_x;
-    int start_y = robot_grid_y;
+    int start_grid_x = robot_grid_x;
+    int start_grid_y = robot_grid_y;
 
     /*
      * ロボットが膨張領域内にいる場合は、最寄りの通行可能セルからA*を開始する。
      */
     bool start_snapped = false;
 
-    if (!isPassable(start_x, start_y)) {
+    if (!isPassable(start_grid_x, start_grid_y)) {
         const int radius_cells = static_cast<int>(std::ceil(start_snap_radius_ / resolution_));
 
-        const auto snapped = findNearestPassable(start_x, start_y, radius_cells);
+        const auto snapped = findNearestPassable(start_grid_x, start_grid_y, radius_cells);
 
         if (!snapped) {
             RCLCPP_WARN(
@@ -213,17 +222,70 @@ void PathPlannerNode::getGoalPose(geometry_msgs::msg::PoseStamped::SharedPtr pos
             return;
         }
 
-        start_x       = snapped->first;
-        start_y       = snapped->second;
+        start_grid_x  = snapped->first;
+        start_grid_y  = snapped->second;
         start_snapped = true;
 
         RCLCPP_WARN(
             this->get_logger(),
             "Robot cell is occupied. Start snapped to x=%d, y=%d",
-            start_x,
-            start_y
+            start_grid_x,
+            start_grid_y
         );
     }
+
+    // A*の配列にstartとgoalのgridを代入
+    auto path = aStar(start_grid_x, start_grid_y, goal_grid_x, goal_grid_y);
+
+    if (path.empty()) {
+        RCLCPP_WARN(this->get_logger(), "No A* path available.");
+        return;
+    }
+
+    // b-spineはA*が使う
+    auto smoothed_path = bsplineSmoothPath(path);
+    if (smoothed_path.empty()) {
+        RCLCPP_WARN(this->get_logger(), "B-spline path generation failed.");
+        return;
+    }
+
+    // パスの端点を、セル中心ではなく実際のロボット位置・ゴール位置に合わせる。
+    //(同じセル内なので通行可能性は変わらない。スナップした場合は行わない。)
+    if (!start_snapped && smoothed_path.size() >= 2) {
+        smoothed_path.front() = {robot_x_, robot_y_};
+    }
+
+    nav_msgs::msg::Path path_msg;
+    path_msg.header.stamp    = this->now();
+    path_msg.header.frame_id = map_frame_;
+
+    for (std::size_t i = 0; i < smoothed_path.size(); ++i) {
+        const auto& point = smoothed_path[i];
+
+        geometry_msgs::msg::PoseStamped pose;
+
+        pose.header = path_msg.header;
+
+        pose.pose.position.x = point.first;
+        pose.pose.position.y = point.second;
+        pose.pose.position.z = 0.0;
+
+        if (i + 1 == smoothed_path.size()) {
+            // 最終点だけ、Goalで指定された姿勢にする
+            pose.pose.orientation = pose_msg->pose.orientation;
+        } else {
+            // 移動中はロボットの現在の向きを維持する
+            pose.pose.orientation.x = 0.0;
+            pose.pose.orientation.y = 0.0;
+            pose.pose.orientation.z = std::sin(robot_yaw_ * 0.5);
+            pose.pose.orientation.w = std::cos(robot_yaw_ * 0.5);
+        }
+
+        path_msg.poses.push_back(pose);
+    }
+    path_pub_->publish(path_msg);
+
+    RCLCPP_INFO(this->get_logger(), "Published Path with %zu points.", path_msg.poses.size());
 }
 
 // peripheral
