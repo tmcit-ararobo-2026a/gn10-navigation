@@ -11,6 +11,14 @@ PathPlannerNode::PathPlannerNode() : Node("path_planner_node")
     costmap_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
         "/costmap", map_qos, std::bind(&PathPlannerNode::getCostmapMsg, this, std::placeholders::_1)
     );
+
+    // パラメータの初期化設定
+    this->declare_parameter("map_configs.map_frame", "map");
+    this->declare_parameter("map_configs.base_frame", "base_link");
+
+    // yamlから受信
+    map_frame_  = this->get_parameter("map_configs.map_frame").as_string();
+    base_frame_ = this->get_parameter("map_configs.base_frame").as_string();
 }
 
 void PathPlannerNode::getCostmapMsg(nav_msgs::msg::OccupancyGrid::SharedPtr grid_msg)
@@ -84,4 +92,81 @@ void PathPlannerNode::getCostmapMsg(nav_msgs::msg::OccupancyGrid::SharedPtr grid
     for (const auto& [value, count] : value_count) {
         RCLCPP_INFO(this->get_logger(), "Cost %d: %d cells", value, count);
     }
+}
+
+bool PathPlannerNode::getRobotPose()
+{
+    // tfに例外が発生して受信できなかった場合座標変換しない
+    try {
+        auto transform = tf_buffer_->lookupTransform(map_frame_, base_frame_, tf2::TimePointZero);
+        robot_x_       = transform.transform.translation.x;
+        robot_y_       = transform.transform.translation.y;
+    } catch (const tf2::TransformException& ex) {
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 2000, "Could not get transform: %s", ex.what()
+        );
+
+        return false;
+    }
+
+    // コストマップ未受信(resolution_ = 0)のときに座標変換しない
+    if (planning_grid_.empty()) {
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 2000, "Costmap has not been received yet."
+        );
+
+        return false;
+    }
+
+    auto [grid_x, grid_y] = worldToGrid(robot_x_, robot_y_);
+
+    // 座標が範囲内に収まっているかどうかcheckする関数
+    if (!isInsideGrid(grid_x, grid_y)) {
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(),
+            *this->get_clock(),
+            2000,
+            "Robot is outside the costmap: x=%d, y=%d",
+            grid_x,
+            grid_y
+        );
+        return false;
+    }
+
+    // 通行不可ならコメントを出す
+    if (!isPassable(grid_x, grid_y)) {
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 2000, "Robot cell is occupied!"
+        );
+    }
+
+    return true;
+}
+
+// peripheral
+std::pair<int, int> PathPlannerNode::worldToGrid(double wx, double wy)
+{
+    return {
+        static_cast<int>(std::floor((wx - origin_x_) / resolution_)),
+        static_cast<int>(std::floor((wy - origin_y_) / resolution_))
+    };
+}
+
+bool PathPlannerNode::isInsideGrid(int x, int y)
+{
+    return x >= 0 && x < static_cast<int>(width_) && y >= 0 && y < static_cast<int>(height_);
+}
+
+bool PathPlannerNode::isPassable(int x, int y)
+{
+    if (!isInsideGrid(x, y)) {
+        return false;
+    }
+
+    return planning_grid_[gridtoIndex(x, y)] < 254;
+}
+
+std::size_t PathPlannerNode::gridtoIndex(int x, int y) const
+{
+    return static_cast<std::size_t>(y) * width_ + static_cast<std::size_t>(x);
 }
