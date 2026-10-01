@@ -1,5 +1,49 @@
 #include "gn10_navigation/path_planner_node.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <map>
+#include <queue>
+
+// メンバ関数じゃない計算を行うプログラム
+namespace {
+
+double calculateAngleDifference(double ax, double ay, double bx, double by)
+{
+    const double a_length = std::hypot(ax, ay);
+    const double b_length = std::hypot(bx, by);
+
+    if (a_length < 1e-9 || b_length < 1e-9) {
+        return 0.0;
+    }
+
+    double cos_angle = (ax * bx + ay * by) / (a_length * b_length);
+    cos_angle        = std::clamp(cos_angle, -1.0, 1.0);
+
+    return std::acos(cos_angle) * 180.0 / M_PI;
+}
+
+// 8方向に障害物がないとしたときのゴールまでの最短距離（最小腰コストを求める）
+double heuristic(int x, int y, int goal_x, int goal_y)
+{
+    const double dx       = std::abs(x - goal_x);
+    const double dy       = std::abs(y - goal_y);
+    const double diagonal = std::min(dx, dy);
+    const double straight = std::max(dx, dy) - diagonal;
+
+    return diagonal * std::sqrt(2.0) + straight;
+}
+
+struct CompareAStarNode {
+    bool operator()(const AStarNode& a, const AStarNode& b) const
+    {
+        return a.f > b.f;
+    }
+};
+
+}  // namespace
+
 PathPlannerNode::PathPlannerNode() : Node("path_planner_node")
 {
     // Qos config
@@ -25,12 +69,14 @@ PathPlannerNode::PathPlannerNode() : Node("path_planner_node")
     // パラメータの初期化設定
     this->declare_parameter("map_configs.map_frame", "map");
     this->declare_parameter("map_configs.base_frame", "base_link");
-    this->declare_parameter("snapp_config.start_snap_radius", 1);
+    this->declare_parameter("snapp_config.start_snap_radius", 1.0);
+    this->declare_parameter("a_star.plannning_cost", 3.0);
 
     // yamlから受信
     map_frame_         = this->get_parameter("map_configs.map_frame").as_string();
     base_frame_        = this->get_parameter("map_configs.base_frame").as_string();
     start_snap_radius_ = this->get_parameter("snapp_config.start_snap_radius").as_double();
+    cost_factor_       = this->get_parameter("a_star.plannning_cost").as_double();
 }
 
 void PathPlannerNode::getCostmapMsg(nav_msgs::msg::OccupancyGrid::SharedPtr grid_msg)
@@ -242,12 +288,18 @@ void PathPlannerNode::getGoalPose(geometry_msgs::msg::PoseStamped::SharedPtr pos
         return;
     }
 
-    // b-spineはA*が使う
-    auto smoothed_path = bsplineSmoothPath(path);
-    if (smoothed_path.empty()) {
-        RCLCPP_WARN(this->get_logger(), "B-spline path generation failed.");
-        return;
+    // 一旦コンパイルのために書き換え
+    std::vector<std::pair<double, double>> smoothed_path;
+    for (const auto& cell : path) {
+        smoothed_path.push_back(gridToWorld(cell.first, cell.second));
     }
+    /*
+        // b-spineはA*が使う
+        auto smoothed_path = bsplineSmoothPath(path);
+        if (smoothed_path.empty()) {
+            RCLCPP_WARN(this->get_logger(), "B-spline path generation failed.");
+            return;
+        }*/
 
     // パスの端点を、セル中心ではなく実際のロボット位置・ゴール位置に合わせる。
     //(同じセル内なので通行可能性は変わらない。スナップした場合は行わない。)
@@ -297,6 +349,16 @@ std::pair<int, int> PathPlannerNode::worldToGrid(double wx, double wy)
     };
 }
 
+std::pair<double, double> PathPlannerNode::gridToWorld(int gx, int gy)
+{
+    return {origin_x_ + (gx + 0.5) * resolution_, origin_y_ + (gy + 0.5) * resolution_};
+}
+
+std::size_t PathPlannerNode::gridtoIndex(int x, int y) const
+{
+    return static_cast<std::size_t>(y) * width_ + static_cast<std::size_t>(x);
+}
+
 bool PathPlannerNode::isInsideGrid(int x, int y)
 {
     return x >= 0 && x < static_cast<int>(width_) && y >= 0 && y < static_cast<int>(height_);
@@ -309,11 +371,6 @@ bool PathPlannerNode::isPassable(int x, int y)
     }
 
     return planning_grid_[gridtoIndex(x, y)] < 254;
-}
-
-std::size_t PathPlannerNode::gridtoIndex(int x, int y) const
-{
-    return static_cast<std::size_t>(y) * width_ + static_cast<std::size_t>(x);
 }
 
 std::optional<std::pair<int, int>> PathPlannerNode::findNearestPassable(
@@ -355,6 +412,111 @@ std::optional<std::pair<int, int>> PathPlannerNode::findNearestPassable(
     }
 
     return best;
+}
+
+std::vector<std::pair<int, int>> PathPlannerNode::aStar(
+    int start_x, int start_y, int goal_x, int goal_y
+)
+{
+    std::vector<std::pair<int, int>> path;
+
+    if (!isPassable(start_x, start_y) || !isPassable(goal_x, goal_y)) {
+        RCLCPP_WARN(this->get_logger(), "A*: Start or Goal is not passable.");
+        return path;
+    }
+
+    // 候補セルの待ち行列。合計推定コストが一番小さいやつから出てくる。
+    std::priority_queue<AStarNode, std::vector<AStarNode>, CompareAStarNode> open_list;
+
+    const std::size_t cell_count = static_cast<std::size_t>(width_) * height_;
+    std::vector<double> g_cost(cell_count, std::numeric_limits<double>::infinity());
+    std::vector<int> parent(cell_count, -1);
+
+    const double start_h = heuristic(start_x, start_y, goal_x, goal_y);
+    open_list.push(AStarNode{start_x, start_y, 0.0, start_h, start_h});
+    g_cost[gridtoIndex(start_x, start_y)] = 0.0;
+
+    const int dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
+    const int dy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+
+    bool found = false;
+
+    // listが空になるまで探索 より良いコスト計算
+    while (!open_list.empty()) {
+        AStarNode current = open_list.top();
+        open_list.pop();
+
+        // 古い(より悪いコストで登録された)ノードは捨てる
+        if (current.g > g_cost[gridtoIndex(current.x, current.y)]) {
+            continue;
+        }
+
+        if (current.x == goal_x && current.y == goal_y) {
+            found = true;
+            break;
+        }
+
+        for (int i = 0; i < 8; ++i) {
+            const int next_x = current.x + dx[i];
+            const int next_y = current.y + dy[i];
+
+            if (!isPassable(next_x, next_y)) {
+                continue;
+            }
+
+            // 斜め移動は、角を挟む2セルも通行可能なときだけ許可
+            if (dx[i] != 0 && dy[i] != 0) {
+                if (!isPassable(current.x + dx[i], current.y) ||
+                    !isPassable(current.x, current.y + dy[i])) {
+                    continue;
+                }
+            }
+
+            const double move_cost = (dx[i] != 0 && dy[i] != 0) ? std::sqrt(2.0) : 1.0;
+            const double cost_penalty =
+                static_cast<double>(planning_grid_[gridtoIndex(next_x, next_y)]) * cost_factor_;
+            const double new_g = current.g + move_cost + cost_penalty;
+
+            if (new_g >= g_cost[gridtoIndex(next_x, next_y)]) {
+                continue;
+            }
+
+            const double new_h = heuristic(next_x, next_y, goal_x, goal_y);
+
+            g_cost[gridtoIndex(next_x, next_y)] = new_g;
+            parent[gridtoIndex(next_x, next_y)] =
+                static_cast<int>(gridtoIndex(current.x, current.y));
+
+            open_list.push(AStarNode{next_x, next_y, new_g, new_h, new_g + new_h});
+        }
+    }
+
+    if (!found) {
+        RCLCPP_WARN(this->get_logger(), "A*: Path not found.");
+        return path;
+    }
+
+    const int start_index = static_cast<int>(gridtoIndex(start_x, start_y));
+    int current_index     = static_cast<int>(gridtoIndex(goal_x, goal_y));
+
+    while (current_index != start_index) {
+        if (current_index < 0) {
+            RCLCPP_ERROR(this->get_logger(), "A*: Parent chain is broken.");
+            path.clear();
+            return path;
+        }
+
+        path.push_back(
+            {current_index % static_cast<int>(width_), current_index / static_cast<int>(width_)}
+        );
+        current_index = parent[static_cast<std::size_t>(current_index)];
+    }
+
+    path.push_back({start_x, start_y});
+    std::reverse(path.begin(), path.end());
+
+    RCLCPP_INFO(this->get_logger(), "A*: Path found. Length=%zu", path.size());
+    return path;
 }
 
 int main(int argc, char** argv)

@@ -5,3 +5,5 @@ path_planner_node:
       base_frame: "base_link"
     snapp_config:
       start_snap_radius: 0.3 #[m]
+    a_star:
+      plannning_cost: 3.0 #小さいほどギリギリの経路
