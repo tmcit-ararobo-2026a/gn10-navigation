@@ -8,6 +8,6 @@ path_planner_node:
     a_star:
       plannning_cost: 3.0 #小さいほどギリギリの経路
     bspline:
-      simplification_tolerance: 0.1
-      turning_angle_threshold: 15.0
-      samples_per_segment: 30
+      simplification_tolerance: 0.2 #DRP方で使う許容誤差率。これ以上離れている点は残す
+      turning_angle_threshold: 15.0 #点群をbsplineで残す時どれくらいの角度以上だったら残す点群として扱うか
+      samples_per_segment: 30 #滑らかさの制御（大きいほどなめらか）
