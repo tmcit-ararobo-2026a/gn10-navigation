@@ -45,6 +45,7 @@ ament_target_dependencies(path_planner_node
   geometry_msgs
   tf2
   tf2_ros
+  tf2_geometry_msgs
 )
 
 add_executable(path_follower_node src/path_follower_node.cpp)
