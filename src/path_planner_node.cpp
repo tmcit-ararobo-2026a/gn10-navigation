@@ -135,6 +135,9 @@ PathPlannerNode::PathPlannerNode() : Node("path_planner_node")
     this->declare_parameter("bspline.simplification_tolerance", 0.1);
     this->declare_parameter("bspline.turning_angle_threshold", 15.0);
     this->declare_parameter("bspline.samples_per_segment", 10);
+    this->declare_parameter("bspline.smoothness_weight", 1.0);
+    this->declare_parameter("bspline.control_point_step", 0.05);
+    this->declare_parameter("bspline.smoothing_iterations", 10);
 
     // yamlから受信
     map_frame_         = this->get_parameter("map_configs.map_frame").as_string();
@@ -147,6 +150,10 @@ PathPlannerNode::PathPlannerNode() : Node("path_planner_node")
         this->get_parameter("bspline.turning_angle_threshold").as_double();
     bspline_samples_per_segment_ =
         static_cast<int>(this->get_parameter("bspline.samples_per_segment").as_int());
+    bspline_smoothness_weight_  = this->get_parameter("bspline.smoothness_weight").as_double();
+    bspline_control_point_step_ = this->get_parameter("bspline.control_point_step").as_double();
+    bspline_smoothing_iterations_ =
+        static_cast<int>(this->get_parameter("bspline.smoothing_iterations").as_int());
 
     timer_ = this->create_wall_timer(std::chrono::milliseconds(500), [this]() { getRobotPose(); });
     RCLCPP_INFO(this->get_logger(), "Path planner started");
@@ -881,7 +888,7 @@ std::vector<std::pair<double, double>> PathPlannerNode::bsplineSmoothPath(
         return {};
     }
 
-    const auto control_points = extractImportantPoints(path);
+    auto control_points = extractImportantPoints(path);
 
     // 3次B-splineは制御点が4点以上必要
     if (control_points.size() < 4) {
@@ -889,18 +896,72 @@ std::vector<std::pair<double, double>> PathPlannerNode::bsplineSmoothPath(
         return make_astar_path();
     }
 
+    // 平滑化の前に、まず元の制御点で曲線が有効か確認する
+    if (!isSmoothPathValid(evaluateBSplinePath(control_points))) {
+        RCLCPP_WARN(this->get_logger(), "Initial B-spline path is invalid. Using A* path.");
+        return make_astar_path();
+    }
+
+    // 制御点の平滑化
+    // weightが大きいほどalphaが1に近づき、1回の移動量が増える
+    const double smoothness_weight = std::max(0.0, bspline_smoothness_weight_);
+    const double smoothness_alpha  = smoothness_weight / (smoothness_weight + 1.0);
+    const int smoothing_iterations = std::max(0, bspline_smoothing_iterations_);
+    const double smoothing_step = std::max(0.001, bspline_control_point_step_) * smoothness_alpha;
+
+    for (int iteration = 0; iteration < smoothing_iterations; ++iteration) {
+        bool changed = false;
+
+        // 始点と終点は動かさない
+        for (std::size_t i = 1; i + 1 < control_points.size(); ++i) {
+            const Point original = control_points[i];
+            const Point previous = control_points[i - 1];
+            const Point next     = control_points[i + 1];
+
+            // 両隣の中点へ向かうベクトル
+            const double dx       = 0.5 * (previous.first + next.first) - original.first;
+            const double dy       = 0.5 * (previous.second + next.second) - original.second;
+            const double distance = std::hypot(dx, dy);
+
+            if (distance < 1e-9) {
+                continue;
+            }
+
+            // 中点を行き過ぎないよう、stepと距離の小さい方だけ動く
+            const double move = std::min(smoothing_step, distance);
+
+            control_points[i] = {
+                original.first + dx / distance * move, original.second + dy / distance * move
+            };
+
+            // 動かした結果が障害物に入るなら取り消す
+            if (!isSmoothPathValid(evaluateBSplinePath(control_points))) {
+                control_points[i] = original;
+                continue;
+            }
+
+            changed = true;
+        }
+
+        if (!changed) {
+            break;  // どの点も動かなければ終了
+        }
+    }
+
     auto result = evaluateBSplinePath(control_points);
 
     if (!isSmoothPathValid(result)) {
-        RCLCPP_WARN(this->get_logger(), "B-spline path is invalid. Using A* path.");
+        RCLCPP_WARN(this->get_logger(), "Smoothed B-spline path is invalid. Using A* path.");
         return make_astar_path();
     }
 
     RCLCPP_INFO(
         this->get_logger(),
-        "B-spline: control_points=%zu, samples=%zu",
+        "B-spline: control_points=%zu, samples=%zu, smoothing alpha=%.3f, iterations=%d",
         control_points.size(),
-        result.size()
+        result.size(),
+        smoothness_alpha,
+        smoothing_iterations
     );
 
     return result;

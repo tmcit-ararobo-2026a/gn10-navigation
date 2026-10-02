@@ -98,10 +98,13 @@ private:
     double goal_x_ = 0.0;
     double goal_y_ = 0.0;
 
-    // B-spline用パラメータ
-    double bspline_simplification_tolerance_ = 0.1;   // [m] RDPの許容誤差 どれくらい離れたら残すか
-    double bspline_turning_angle_threshold_  = 15.0;  // [deg] この角度以上曲がる点は残す
-    int bspline_samples_per_segment_         = 10;
+    // B-spline用パラメータ;
+    double bspline_simplification_tolerance_;
+    double bspline_turning_angle_threshold_;
+    int bspline_samples_per_segment_;
+    double bspline_smoothness_weight_;
+    double bspline_control_point_step_;
+    int bspline_smoothing_iterations_;
 
     // 小さいほどギリギリの経路
     double cost_factor_;
