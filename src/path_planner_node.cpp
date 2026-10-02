@@ -42,6 +42,67 @@ struct CompareAStarNode {
     }
 };
 
+// 点pointから線分(line_start, line_end)までの最短距離
+double pointToLineDistance(
+    const std::pair<double, double>& point,
+    const std::pair<double, double>& line_start,
+    const std::pair<double, double>& line_end
+)
+{
+    const double dx = line_end.first - line_start.first;
+    const double dy = line_end.second - line_start.second;
+
+    const double length_squared = dx * dx + dy * dy;
+
+    // 始点と終点がほぼ同じなら、点同士の距離
+    if (length_squared < 1e-12) {
+        return std::hypot(point.first - line_start.first, point.second - line_start.second);
+    }
+
+    // 線分上で一番近い位置を割合t(0〜1)で求める
+    double t = ((point.first - line_start.first) * dx + (point.second - line_start.second) * dy) /
+               length_squared;
+    t        = std::clamp(t, 0.0, 1.0);
+
+    const double closest_x = line_start.first + t * dx;
+    const double closest_y = line_start.second + t * dy;
+
+    return std::hypot(point.first - closest_x, point.second - closest_y);
+}
+
+// RDP: startとendを結ぶ線から最も遠い点が許容誤差より遠ければ残し、その点で2分割して再帰する
+void simplifyPathRecursive(
+    const std::vector<std::pair<double, double>>& points,
+    int start,
+    int end,
+    double tolerance,
+    std::vector<bool>& keep
+)
+{
+    if (end <= start + 1) {
+        return;
+    }
+
+    double max_distance = 0.0;
+    int max_index       = -1;
+
+    for (int i = start + 1; i < end; ++i) {
+        const double distance = pointToLineDistance(points[i], points[start], points[end]);
+
+        if (distance > max_distance) {
+            max_distance = distance;
+            max_index    = i;
+        }
+    }
+
+    if (max_index >= 0 && max_distance > tolerance) {
+        keep[max_index] = true;
+
+        simplifyPathRecursive(points, start, max_index, tolerance, keep);
+        simplifyPathRecursive(points, max_index, end, tolerance, keep);
+    }
+}
+
 }  // namespace
 
 PathPlannerNode::PathPlannerNode() : Node("path_planner_node")
@@ -71,12 +132,24 @@ PathPlannerNode::PathPlannerNode() : Node("path_planner_node")
     this->declare_parameter("map_configs.base_frame", "base_link");
     this->declare_parameter("snapp_config.start_snap_radius", 1.0);
     this->declare_parameter("a_star.plannning_cost", 3.0);
+    this->declare_parameter("bspline.simplification_tolerance", 0.1);
+    this->declare_parameter("bspline.turning_angle_threshold", 15.0);
+    this->declare_parameter("bspline.samples_per_segment", 10);
 
     // yamlから受信
     map_frame_         = this->get_parameter("map_configs.map_frame").as_string();
     base_frame_        = this->get_parameter("map_configs.base_frame").as_string();
     start_snap_radius_ = this->get_parameter("snapp_config.start_snap_radius").as_double();
     cost_factor_       = this->get_parameter("a_star.plannning_cost").as_double();
+    bspline_simplification_tolerance_ =
+        this->get_parameter("bspline.simplification_tolerance").as_double();
+    bspline_turning_angle_threshold_ =
+        this->get_parameter("bspline.turning_angle_threshold").as_double();
+    bspline_samples_per_segment_ =
+        static_cast<int>(this->get_parameter("bspline.samples_per_segment").as_int());
+
+    timer_ = this->create_wall_timer(std::chrono::milliseconds(500), [this]() { getRobotPose(); });
+    RCLCPP_INFO(this->get_logger(), "Path planner started");
 }
 
 void PathPlannerNode::getCostmapMsg(nav_msgs::msg::OccupancyGrid::SharedPtr grid_msg)
@@ -288,18 +361,12 @@ void PathPlannerNode::getGoalPose(geometry_msgs::msg::PoseStamped::SharedPtr pos
         return;
     }
 
-    // 一旦コンパイルのために書き換え
-    std::vector<std::pair<double, double>> smoothed_path;
-    for (const auto& cell : path) {
-        smoothed_path.push_back(gridToWorld(cell.first, cell.second));
+    // b-spineはA*が使う
+    auto smoothed_path = bsplineSmoothPath(path);
+    if (smoothed_path.empty()) {
+        RCLCPP_WARN(this->get_logger(), "B-spline path generation failed.");
+        return;
     }
-    /*
-        // b-spineはA*が使う
-        auto smoothed_path = bsplineSmoothPath(path);
-        if (smoothed_path.empty()) {
-            RCLCPP_WARN(this->get_logger(), "B-spline path generation failed.");
-            return;
-        }*/
 
     // パスの端点を、セル中心ではなく実際のロボット位置・ゴール位置に合わせる。
     //(同じセル内なので通行可能性は変わらない。スナップした場合は行わない。)
@@ -517,6 +584,326 @@ std::vector<std::pair<int, int>> PathPlannerNode::aStar(
 
     RCLCPP_INFO(this->get_logger(), "A*: Path found. Length=%zu", path.size());
     return path;
+}
+
+std::vector<std::pair<double, double>> PathPlannerNode::extractImportantPoints(
+    const std::vector<std::pair<int, int>>& path
+)
+{
+    using Point = std::pair<double, double>;
+
+    std::vector<Point> points;
+    points.reserve(path.size());  // 使う分予約
+
+    for (const auto& cell : path) {
+        points.push_back(gridToWorld(cell.first, cell.second));
+    }
+    if (points.size() <= 2) {
+        return points;
+    }
+
+    const std::size_t n = points.size();
+
+    //  RDPで、直線的な部分の不要な点を削除する
+    std::vector<bool> keep(n, false);
+    keep[0]     = true;
+    keep[n - 1] = true;
+
+    simplifyPathRecursive(
+        points, 0, static_cast<int>(n) - 1, bspline_simplification_tolerance_, keep
+    );
+
+    std::vector<std::size_t> rdp_indices;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (keep[i]) {
+            rdp_indices.push_back(i);
+        }
+    }
+
+    //  RDP後の点列で、一定以上曲がっている点だけ残す
+    struct DroppedCandidate {
+        std::size_t index;
+        double angle;
+    };
+    std::vector<DroppedCandidate> dropped;
+
+    std::vector<bool> final_keep(n, false);
+    final_keep[0]     = true;
+    final_keep[n - 1] = true;
+
+    std::size_t kept_count = 2;
+    std::size_t last_kept  = rdp_indices.front();
+
+    for (std::size_t k = 1; k + 1 < rdp_indices.size(); ++k) {
+        const std::size_t idx  = rdp_indices[k];
+        const std::size_t next = rdp_indices[k + 1];
+
+        const double v1x = points[idx].first - points[last_kept].first;
+        const double v1y = points[idx].second - points[last_kept].second;
+        const double v2x = points[next].first - points[idx].first;
+        const double v2y = points[next].second - points[idx].second;
+
+        const double angle = calculateAngleDifference(v1x, v1y, v2x, v2y);
+
+        if (angle >= bspline_turning_angle_threshold_) {
+            final_keep[idx] = true;
+            ++kept_count;
+            last_kept = idx;
+        } else {
+            dropped.push_back({idx, angle});
+        }
+    }
+
+    // 4点未満なら、落とした点を曲がり角が大きい順に戻す
+    //  (3次B-splineは制御点が4点以上必要)
+    constexpr std::size_t min_points = 4;
+
+    if (kept_count < min_points && !dropped.empty()) {
+        std::sort(
+            dropped.begin(),
+            dropped.end(),
+            [](const DroppedCandidate& a, const DroppedCandidate& b) { return a.angle > b.angle; }
+        );
+
+        for (const auto& candidate : dropped) {
+            if (kept_count >= min_points) {
+                break;
+            }
+            final_keep[candidate.index] = true;
+            ++kept_count;
+        }
+    }
+
+    // それでも足りなければ、現在の折れ線から最も離れた元経路上の点を追加する ---
+    // まっすぐで距離がすべて0なら、最も広い区間の中央を追加する
+    while (kept_count < min_points && kept_count < n) {
+        double best_distance      = -1.0;
+        std::size_t best_index    = 0;
+        std::size_t widest_gap    = 1;
+        std::size_t widest_mid    = 0;
+        std::size_t segment_start = 0;
+
+        for (std::size_t b = 1; b < n; ++b) {
+            if (!final_keep[b]) {
+                continue;
+            }
+
+            for (std::size_t i = segment_start + 1; i < b; ++i) {
+                const double distance =
+                    pointToLineDistance(points[i], points[segment_start], points[b]);
+
+                if (distance > best_distance) {
+                    best_distance = distance;
+                    best_index    = i;
+                }
+            }
+
+            if (b - segment_start > widest_gap) {
+                widest_gap = b - segment_start;
+                widest_mid = segment_start + (b - segment_start) / 2;
+            }
+
+            segment_start = b;
+        }
+
+        const std::size_t chosen = (best_distance > 1e-9) ? best_index : widest_mid;
+
+        final_keep[chosen] = true;
+        ++kept_count;
+    }
+
+    //  元の経路順のまま、残した点だけ取り出す
+    std::vector<Point> important_points;
+    important_points.reserve(kept_count);
+
+    for (std::size_t i = 0; i < n; ++i) {
+        if (final_keep[i]) {
+            important_points.push_back(points[i]);
+        }
+    }
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Important points: %zu (RDP: %zu) / A* points: %zu",
+        important_points.size(),
+        rdp_indices.size(),
+        n
+    );
+
+    return important_points;
+}
+
+bool PathPlannerNode::isSmoothPathValid(const std::vector<std::pair<double, double>>& path)
+{
+    if (path.empty()) {
+        return false;
+    }
+
+    for (std::size_t i = 0; i < path.size(); ++i) {
+        const auto& point = path[i];
+
+        const auto [grid_x, grid_y] = worldToGrid(point.first, point.second);
+
+        if (!isPassable(grid_x, grid_y)) {  // 範囲外もここで弾かれる
+            return false;
+        }
+
+        if (i == 0) {
+            continue;
+        }
+
+        // 前の点との間を、半セル刻みで調べる
+        const auto& previous = path[i - 1];
+
+        const double dx       = point.first - previous.first;
+        const double dy       = point.second - previous.second;
+        const double distance = std::hypot(dx, dy);
+
+        const int samples =
+            std::max(1, static_cast<int>(std::ceil(distance / (resolution_ * 0.5))));
+
+        for (int j = 1; j <= samples; ++j) {
+            const double ratio = static_cast<double>(j) / static_cast<double>(samples);
+
+            const auto [sample_x, sample_y] =
+                worldToGrid(previous.first + dx * ratio, previous.second + dy * ratio);
+
+            if (!isPassable(sample_x, sample_y)) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+std::vector<std::pair<double, double>> PathPlannerNode::evaluateBSplinePath(
+    const std::vector<std::pair<double, double>>& control_points
+)
+{
+    using Point = std::pair<double, double>;
+
+    std::vector<Point> sampled;
+
+    constexpr int degree = 3;
+
+    if (control_points.size() < degree + 1) {
+        return sampled;
+    }
+
+    const int control_count = static_cast<int>(control_points.size());
+    const int max_t         = control_count - degree;  // パラメータtの範囲は0〜max_t
+
+    // ノット列: 両端はdegree+1個重複、間は等間隔
+    std::vector<double> knots(control_count + degree + 1);
+
+    for (int i = 0; i < static_cast<int>(knots.size()); ++i) {
+        if (i <= degree) {
+            knots[i] = 0.0;
+        } else if (i >= control_count) {
+            knots[i] = static_cast<double>(max_t);
+        } else {
+            knots[i] = static_cast<double>(i - degree);
+        }
+    }
+
+    // De Boorのアルゴリズムで、パラメータtの点を求める
+    auto evaluate = [&](double t) -> Point {
+        if (t <= 0.0) {
+            return control_points.front();
+        }
+        if (t >= static_cast<double>(max_t)) {
+            return control_points.back();
+        }
+
+        // tが属するノット区間を探す
+        int span = degree;
+        for (int i = degree; i < control_count; ++i) {
+            if (t >= knots[i] && t < knots[i + 1]) {
+                span = i;
+                break;
+            }
+        }
+
+        std::vector<Point> d(degree + 1);
+        for (int j = 0; j <= degree; ++j) {
+            d[j] = control_points[span - degree + j];
+        }
+
+        for (int r = 1; r <= degree; ++r) {
+            for (int j = degree; j >= r; --j) {
+                const int index          = span - degree + j;
+                const double denominator = knots[index + degree - r + 1] - knots[index];
+
+                double alpha = 0.0;
+                if (denominator > 0.0) {
+                    alpha = (t - knots[index]) / denominator;
+                }
+
+                d[j].first  = (1.0 - alpha) * d[j - 1].first + alpha * d[j].first;
+                d[j].second = (1.0 - alpha) * d[j - 1].second + alpha * d[j].second;
+            }
+        }
+
+        return d[degree];
+    };
+
+    const int total_samples = std::max(1, max_t * bspline_samples_per_segment_);
+
+    sampled.reserve(total_samples + 1);
+
+    for (int i = 0; i <= total_samples; ++i) {
+        const double t = static_cast<double>(max_t) * static_cast<double>(i) /
+                         static_cast<double>(total_samples);
+
+        sampled.push_back(evaluate(t));
+    }
+
+    return sampled;
+}
+
+std::vector<std::pair<double, double>> PathPlannerNode::bsplineSmoothPath(
+    const std::vector<std::pair<int, int>>& path
+)
+{
+    using Point = std::pair<double, double>;
+
+    // 失敗したときに返す、A*経路そのもの
+    auto make_astar_path = [&]() {
+        std::vector<Point> result;
+        for (const auto& cell : path) {
+            result.push_back(gridToWorld(cell.first, cell.second));
+        }
+        return result;
+    };
+
+    if (path.empty()) {
+        return {};
+    }
+
+    const auto control_points = extractImportantPoints(path);
+
+    // 3次B-splineは制御点が4点以上必要
+    if (control_points.size() < 4) {
+        RCLCPP_WARN(this->get_logger(), "Too few control points. Using A* path.");
+        return make_astar_path();
+    }
+
+    auto result = evaluateBSplinePath(control_points);
+
+    if (!isSmoothPathValid(result)) {
+        RCLCPP_WARN(this->get_logger(), "B-spline path is invalid. Using A* path.");
+        return make_astar_path();
+    }
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "B-spline: control_points=%zu, samples=%zu",
+        control_points.size(),
+        result.size()
+    );
+
+    return result;
 }
 
 int main(int argc, char** argv)

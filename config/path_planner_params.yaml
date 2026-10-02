@@ -7,3 +7,7 @@ path_planner_node:
       start_snap_radius: 0.3 #[m]
     a_star:
       plannning_cost: 3.0 #小さいほどギリギリの経路
+    bspline:
+      simplification_tolerance: 0.1
+      turning_angle_threshold: 15.0
+      samples_per_segment: 30

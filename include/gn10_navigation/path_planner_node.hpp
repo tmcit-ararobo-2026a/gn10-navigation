@@ -34,6 +34,7 @@ private:
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_sub_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_pose_sub_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
+    rclcpp::TimerBase::SharedPtr timer_;
 
     void getCostmapMsg(nav_msgs::msg::OccupancyGrid::SharedPtr grid_msg);
 
@@ -59,14 +60,17 @@ private:
     // A*
     std::vector<std::pair<int, int>> aStar(int start_x, int start_y, int goal_x, int goal_y);
 
-    /* 未実装のため、一旦コメントアウト
+    // b spline
     std::vector<std::pair<double, double>> bsplineSmoothPath(
         const std::vector<std::pair<int, int>>& path
     );
     std::vector<std::pair<double, double>> extractImportantPoints(
         const std::vector<std::pair<int, int>>& path
     );
-    */
+    std::vector<std::pair<double, double>> evaluateBSplinePath(
+        const std::vector<std::pair<double, double>>& control_points
+    );
+    bool isSmoothPathValid(const std::vector<std::pair<double, double>>& path);
 
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
@@ -94,5 +98,11 @@ private:
     double goal_x_ = 0.0;
     double goal_y_ = 0.0;
 
+    // B-spline用パラメータ
+    double bspline_simplification_tolerance_ = 0.1;   // [m] RDPの許容誤差 どれくらい離れたら残すか
+    double bspline_turning_angle_threshold_  = 15.0;  // [deg] この角度以上曲がる点は残す
+    int bspline_samples_per_segment_         = 10;
+
+    // 小さいほどギリギリの経路
     double cost_factor_;
 };
