@@ -72,6 +72,23 @@ private:
     );
     bool isSmoothPathValid(const std::vector<std::pair<double, double>>& path);
 
+    // 最適なコストを計算する関数類
+    double calculatePathLength(const std::vector<std::pair<double, double>>& path);
+    double calculateCurvatureCost(const std::vector<std::pair<double, double>>& path);
+    double calculateSmoothnessCost(const std::vector<std::pair<double, double>>& path);
+    double calculateObstacleCost(const std::vector<std::pair<double, double>>& path);
+    double calculateControlPointSmoothnessCost(
+        const std::vector<std::pair<double, double>>& control_points
+    );
+    double calculatePathCost(
+        const std::vector<std::pair<double, double>>& path,
+        const std::vector<std::pair<double, double>>& control_points,
+        double base_length,
+        double base_curvature,
+        double base_smoothness,
+        double base_control_smoothness
+    );
+
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
@@ -105,6 +122,12 @@ private:
     double bspline_smoothness_weight_;
     double bspline_control_point_step_;
     int bspline_smoothing_iterations_;
+
+    // コスト計算パラメータ
+    double bspline_length_weight_;
+    double bspline_curvature_weight_;
+    double bspline_obstacle_cost_weight_;
+    int bspline_optimization_iterations_;
 
     // 小さいほどギリギリの経路
     double cost_factor_;

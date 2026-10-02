@@ -138,6 +138,10 @@ PathPlannerNode::PathPlannerNode() : Node("path_planner_node")
     this->declare_parameter("bspline.smoothness_weight", 1.0);
     this->declare_parameter("bspline.control_point_step", 0.05);
     this->declare_parameter("bspline.smoothing_iterations", 10);
+    this->declare_parameter("cost_caluculate.length_weight", 1.0);
+    this->declare_parameter("cost_caluculate.curvature_weight", 1.0);
+    this->declare_parameter("cost_caluculate.obstacle_cost_weight", 1.0);
+    this->declare_parameter("cost_caluculate.optimization_iterations", 20);
 
     // yamlから受信
     map_frame_         = this->get_parameter("map_configs.map_frame").as_string();
@@ -154,6 +158,12 @@ PathPlannerNode::PathPlannerNode() : Node("path_planner_node")
     bspline_control_point_step_ = this->get_parameter("bspline.control_point_step").as_double();
     bspline_smoothing_iterations_ =
         static_cast<int>(this->get_parameter("bspline.smoothing_iterations").as_int());
+    bspline_length_weight_    = this->get_parameter("cost_caluculate.length_weight").as_double();
+    bspline_curvature_weight_ = this->get_parameter("cost_caluculate.curvature_weight").as_double();
+    bspline_obstacle_cost_weight_ =
+        this->get_parameter("cost_caluculate.obstacle_cost_weight").as_double();
+    bspline_optimization_iterations_ =
+        static_cast<int>(this->get_parameter("cost_caluculate.optimization_iterations").as_int());
 
     timer_ = this->create_wall_timer(std::chrono::milliseconds(500), [this]() { getRobotPose(); });
     RCLCPP_INFO(this->get_logger(), "Path planner started");
@@ -409,6 +419,8 @@ void PathPlannerNode::getGoalPose(geometry_msgs::msg::PoseStamped::SharedPtr pos
 
         path_msg.poses.push_back(pose);
     }
+
+    smoothed_path.back() = {goal_x_, goal_y_};
     path_pub_->publish(path_msg);
 
     RCLCPP_INFO(this->get_logger(), "Published Path with %zu points.", path_msg.poses.size());
@@ -948,10 +960,110 @@ std::vector<std::pair<double, double>> PathPlannerNode::bsplineSmoothPath(
         }
     }
 
-    auto result = evaluateBSplinePath(control_points);
+    // 　 最適化: 基準値(これとの比でコストを測る)
+    const auto initial_path          = evaluateBSplinePath(control_points);
+    const double base_length         = calculatePathLength(initial_path);
+    const double base_curvature      = calculateCurvatureCost(initial_path);
+    const double base_smoothness     = calculateSmoothnessCost(initial_path);
+    const double base_control_smooth = calculateControlPointSmoothnessCost(control_points);
+
+    double current_cost = calculatePathCost(
+        initial_path,
+        control_points,
+        base_length,
+        base_curvature,
+        base_smoothness,
+        base_control_smooth
+    );
+
+    const int iterations = std::max(1, bspline_optimization_iterations_);
+    const double step    = std::max(0.001, bspline_control_point_step_);
+
+    // 8方向
+    const double directions[8][2] = {
+        {        1.0,         0.0},
+        {       -1.0,         0.0},
+        {        0.0,         1.0},
+        {        0.0,        -1.0},
+        { 0.70710678,  0.70710678},
+        { 0.70710678, -0.70710678},
+        {-0.70710678,  0.70710678},
+        {-0.70710678, -0.70710678}
+    };
+
+    for (int iteration = 0; iteration < iterations; ++iteration) {
+        bool improved = false;
+
+        // 始点・終点は動かさない
+        for (std::size_t i = 1; i + 1 < control_points.size(); ++i) {
+            const Point original = control_points[i];
+            const Point previous = control_points[i - 1];
+            const Point next     = control_points[i + 1];
+
+            std::vector<Point> candidates;
+
+            // 候補1: 両隣の中点方向
+            const double mx = 0.5 * (previous.first + next.first) - original.first;
+            const double my = 0.5 * (previous.second + next.second) - original.second;
+            const double ml = std::hypot(mx, my);
+
+            if (ml > 1e-9) {
+                candidates.push_back(
+                    {original.first + mx / ml * step, original.second + my / ml * step}
+                );
+            }
+
+            // 候補2: 8方向
+            for (const auto& d : directions) {
+                candidates.push_back({original.first + d[0] * step, original.second + d[1] * step});
+            }
+
+            Point best_point = original;
+            double best_cost = current_cost;
+
+            for (const auto& candidate : candidates) {
+                control_points[i] = candidate;
+
+                const auto candidate_path = evaluateBSplinePath(control_points);
+
+                // 障害物に入る候補は却下
+                if (!isSmoothPathValid(candidate_path)) {
+                    continue;
+                }
+
+                const double cost = calculatePathCost(
+                    candidate_path,
+                    control_points,
+                    base_length,
+                    base_curvature,
+                    base_smoothness,
+                    base_control_smooth
+                );
+
+                if (cost < best_cost) {
+                    best_cost  = cost;
+                    best_point = candidate;
+                }
+            }
+
+            // 最良の候補だけ採用(なければ元に戻る)
+            control_points[i] = best_point;
+
+            if (best_cost < current_cost) {
+                current_cost = best_cost;
+                improved     = true;
+            }
+        }
+
+        if (!improved) {
+            break;  // どの点も改善しなければ終了
+        }
+    }
+
+    const auto result = evaluateBSplinePath(control_points);
 
     if (!isSmoothPathValid(result)) {
-        RCLCPP_WARN(this->get_logger(), "Smoothed B-spline path is invalid. Using A* path.");
+        RCLCPP_WARN(this->get_logger(), "Optimized B-spline path is invalid. Using A* path.");
         return make_astar_path();
     }
 
@@ -964,7 +1076,182 @@ std::vector<std::pair<double, double>> PathPlannerNode::bsplineSmoothPath(
         smoothing_iterations
     );
 
+    RCLCPP_INFO(
+        this->get_logger(),
+        "len=%.3f curv=%.6f smooth=%.6f ctrl=%.6f obs=%.3f",
+        calculatePathLength(result),
+        calculateCurvatureCost(result),
+        calculateSmoothnessCost(result),
+        calculateControlPointSmoothnessCost(control_points),
+        calculateObstacleCost(result)
+    );
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "B-spline optimized: length %.3f -> %.3f, curvature %.6f -> %.6f, obstacle %.3f -> %.3f",
+        base_length,
+        calculatePathLength(result),
+        base_curvature,
+        calculateCurvatureCost(result),
+        calculateObstacleCost(initial_path),
+        calculateObstacleCost(result)
+    );
+
     return result;
+}
+
+// cost計算関数群
+
+// pathの長さを計算
+double PathPlannerNode::calculatePathLength(const std::vector<std::pair<double, double>>& path)
+{
+    double length = 0.0;
+    for (std::size_t i = 1; i < path.size(); ++i) {
+        length +=
+            std::hypot(path[i].first - path[i - 1].first, path[i].second - path[i - 1].second);
+    }
+    return length;
+}
+
+// 曲率の二乗を、道のり方向に積分したもの(急カーブほど大きい)
+double PathPlannerNode::calculateCurvatureCost(const std::vector<std::pair<double, double>>& path)
+{
+    if (path.size() < 3) {
+        return 0.0;
+    }
+
+    double cost = 0.0;
+
+    for (std::size_t i = 1; i + 1 < path.size(); ++i) {
+        const double ax = path[i].first - path[i - 1].first;
+        const double ay = path[i].second - path[i - 1].second;
+        const double bx = path[i + 1].first - path[i].first;
+        const double by = path[i + 1].second - path[i].second;
+
+        const double a = std::hypot(ax, ay);
+        const double b = std::hypot(bx, by);
+        const double c = std::hypot(
+            path[i + 1].first - path[i - 1].first, path[i + 1].second - path[i - 1].second
+        );
+
+        if (a < 1e-9 || b < 1e-9 || c < 1e-9) {
+            continue;
+        }
+
+        // 3点を通る円の曲率 = 2|cross| / (a*b*c)
+        const double cross     = ax * by - ay * bx;
+        const double curvature = 2.0 * std::abs(cross) / (a * b * c);
+
+        cost += curvature * curvature * 0.5 * (a + b);
+    }
+
+    return cost;
+}
+
+// 曲率の変化量の二乗和(曲がり方が急に変わるほど大きい)
+double PathPlannerNode::calculateSmoothnessCost(const std::vector<std::pair<double, double>>& path)
+{
+    if (path.size() < 4) {
+        return 0.0;
+    }
+
+    std::vector<double> curvature;
+    curvature.reserve(path.size() - 2);
+
+    for (std::size_t i = 1; i + 1 < path.size(); ++i) {
+        const double dx1 = path[i].first - path[i - 1].first;
+        const double dy1 = path[i].second - path[i - 1].second;
+        const double dx2 = path[i + 1].first - path[i].first;
+        const double dy2 = path[i + 1].second - path[i].second;
+
+        const double a = std::hypot(dx1, dy1);
+        const double b = std::hypot(dx2, dy2);
+        const double c = std::hypot(
+            path[i + 1].first - path[i - 1].first, path[i + 1].second - path[i - 1].second
+        );
+
+        if (a < 1e-6 || b < 1e-6 || c < 1e-6) {
+            curvature.push_back(0.0);
+            continue;
+        }
+
+        curvature.push_back(2.0 * std::abs(dx1 * dy2 - dy1 * dx2) / (a * b * c));
+    }
+
+    double smoothness = 0.0;
+    for (std::size_t i = 1; i < curvature.size(); ++i) {
+        const double d = curvature[i] - curvature[i - 1];
+        smoothness += d * d;
+    }
+
+    return smoothness;
+}
+
+// 通る各セルのコスト平均を0〜1に正規化(障害物に近い帯を通るほど大きい)
+double PathPlannerNode::calculateObstacleCost(const std::vector<std::pair<double, double>>& path)
+{
+    if (path.empty()) {
+        return 0.0;
+    }
+
+    double sum = 0.0;
+
+    for (const auto& point : path) {
+        const auto [gx, gy] = worldToGrid(point.first, point.second);
+
+        if (!isInsideGrid(gx, gy)) {
+            sum += 254.0;
+            continue;
+        }
+
+        sum += static_cast<double>(planning_grid_[gridtoIndex(gx, gy)]);
+    }
+
+    return sum / (static_cast<double>(path.size()) * 254.0);
+}
+
+// 制御点の二階差分の二乗和(制御点列のギザギザ)
+double PathPlannerNode::calculateControlPointSmoothnessCost(
+    const std::vector<std::pair<double, double>>& control_points
+)
+{
+    if (control_points.size() < 3) {
+        return 0.0;
+    }
+
+    double cost = 0.0;
+
+    for (std::size_t i = 1; i + 1 < control_points.size(); ++i) {
+        const double sx = control_points[i - 1].first - 2.0 * control_points[i].first +
+                          control_points[i + 1].first;
+        const double sy = control_points[i - 1].second - 2.0 * control_points[i].second +
+                          control_points[i + 1].second;
+        cost += sx * sx + sy * sy;
+    }
+
+    return cost;
+}
+
+// 各項を「最初の値との比」にして重みづけ合計する
+double PathPlannerNode::calculatePathCost(
+    const std::vector<std::pair<double, double>>& path,
+    const std::vector<std::pair<double, double>>& control_points,
+    double base_length,
+    double base_curvature,
+    double base_smoothness,
+    double base_control_smoothness
+)
+{
+    const double length_ratio     = calculatePathLength(path) / std::max(base_length, 1e-4);
+    const double curvature_ratio  = calculateCurvatureCost(path) / std::max(base_curvature, 1e-4);
+    const double smoothness_ratio = calculateSmoothnessCost(path) / std::max(base_smoothness, 1e-4);
+    const double control_ratio    = calculateControlPointSmoothnessCost(control_points) /
+                                    std::max(base_control_smoothness, 1e-4);
+    const double obstacle         = calculateObstacleCost(path);
+
+    return bspline_length_weight_ * length_ratio + bspline_curvature_weight_ * curvature_ratio +
+           bspline_smoothness_weight_ * (0.5 * smoothness_ratio + 0.5 * control_ratio) +
+           bspline_obstacle_cost_weight_ * obstacle;
 }
 
 int main(int argc, char** argv)
