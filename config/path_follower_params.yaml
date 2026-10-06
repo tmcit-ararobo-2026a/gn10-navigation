@@ -1,0 +1,29 @@
+path_follower_node:
+  ros__parameters:
+    map_frame: map
+    base_frame: base_link
+    control_rate: 60.0            # 制御周期 [Hz]
+    max_speed: 2.0                # 最高並進速度 [m/s]。前後・左右の合成速度の上限
+    max_acceleration: 1.8         # 加速度上限 [m/s^2]
+    max_deceleration: 2.5         # 減速度上限 [m/s^2]
+    max_jerk: 12.0                # 加速度の変化率上限 [m/s^3]（S字加減速）
+    max_lateral_acceleration: 0.6 # 曲がり角の横加速度上限 [m/s^2]。機体の張り出しを考慮
+    curvature_window: 0.10        # 曲率を評価する前後の区間 [m]。min_lookahead 以下にする
+    max_angular_speed: 2.0
+    max_angular_acceleration: 4.0
+    # fixed: 回転指令ゼロで平行移動、hold: 開始方位へ補正、tangent: 経路方向へ旋回
+    heading_mode: fixed
+    heading_gain: 2.0
+    # 最大車輪角速度が0の間は、車輪ごとの速度制限を無効にする。
+    wheel_radius: 0.065                # 車輪半径 [m]
+    wheel_center_distance: 0.4       # 車体中心から車輪中心まで [m]
+    max_wheel_angular_speed: 61.0     # 車輪の最大角速度 [rad/s]
+    # base_linkの+X軸から反時計回りに測る車輪位置角 [deg]。駆動方向は接線方向。
+    wheel_mount_angles_deg: [0.0, 120.0, 240.0]
+    min_lookahead: 0.15           # 低速時の追従距離 [m]
+    max_lookahead: 0.40           # 最大追従距離 [m]。狭い通路で角を切りすぎない
+    lookahead_gain: 0.10          # 速度に応じて追従距離を延ばす係数 [s]
+    goal_tolerance: 0.06          # 到達判定距離 [m]
+    goal_approach_speed: 0.30     # 終端の位置誤差を補正する速度上限 [m/s]
+    max_path_error: 0.30          # 経路からの逸脱で停止する距離 [m]
+    max_pose_age: 0.5

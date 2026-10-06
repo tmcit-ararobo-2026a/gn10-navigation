@@ -48,10 +48,21 @@ ament_target_dependencies(path_planner_node
   tf2_geometry_msgs
 )
 
+add_executable(path_follower_node src/path_follower_node.cpp)
+ament_target_dependencies(path_follower_node
+  rclcpp
+  nav_msgs
+  geometry_msgs
+  tf2
+  tf2_geometry_msgs
+  tf2_ros
+)
+
 # インストール設定 (Launch, Config, Node)
 install(TARGETS 
   costmap_generator_node
   path_planner_node
+  path_follower_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

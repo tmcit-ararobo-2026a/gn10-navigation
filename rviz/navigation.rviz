@@ -1,0 +1,112 @@
+Panels:
+- Class: rviz_common/Displays
+  Name: Displays
+- Class: rviz_common/Tool Properties
+  Name: Tool Properties
+Visualization Manager:
+  Class: ''
+  Displays:
+  - Class: rviz_default_plugins/Grid
+    Enabled: true
+    Name: Grid
+    Cell Size: 1
+    Plane Cell Count: 20
+    Reference Frame: <Fixed Frame>
+    Value: true
+  - Class: rviz_default_plugins/Map
+    Enabled: true
+    Name: Costmap
+    Alpha: 0.65
+    Color Scheme: costmap
+    Draw Behind: true
+    Topic:
+      Depth: 1
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /costmap
+    Value: true
+  - Class: rviz_default_plugins/Path
+    Enabled: true
+    Name: Planned path
+    Color: 255; 190; 0
+    Line Style: Lines
+    Line Width: 0.06
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /planned_path
+    Value: true
+  - Class: rviz_default_plugins/Path
+    Enabled: true
+    Name: Speed path
+    Color: 80; 255; 80
+    Line Style: Lines
+    Line Width: 0.025
+    Topic:
+      Depth: 1
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /speed_path
+    Value: true
+  - Class: rviz_default_plugins/TF
+    Enabled: true
+    Name: TF
+    Show Axes: false
+    Show Arrows: false
+    Show Names: false
+    Value: true
+  - Class: rviz_default_plugins/PoseWithCovariance
+    Enabled: true
+    Name: Localization pose
+    Shape: Arrow
+    Color: 0; 220; 255
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Best Effort
+      Value: /platform_constraint
+    Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: map
+    Frame Rate: 30
+  Name: root
+  Tools:
+  - Class: rviz_default_plugins/Interact
+  - Class: rviz_default_plugins/MoveCamera
+  - Class: rviz_default_plugins/Select
+  - Class: rviz_default_plugins/FocusCamera
+  - Class: rviz_default_plugins/SetGoal
+    Topic:
+      Depth: 5
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /goal_pose
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Name: Current View
+      Scale: 45
+      Target Frame: <Fixed Frame>
+      Value: TopDownOrtho (rviz)
+    Saved: null
+Window Geometry:
+  Displays:
+    collapsed: false
+  Tool Properties:
+    collapsed: false
+  Height: 900
+  Width: 1400
+  X: 100
+  Y: 60
