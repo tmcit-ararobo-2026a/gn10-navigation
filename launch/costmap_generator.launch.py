@@ -10,20 +10,13 @@ def generate_launch_description():
     pkg_share = get_package_share_directory('gn10_navigation')
 
     # デフォルトの YAML パラメータファイルのパス
-    default_costmap_params = os.path.join(pkg_share, 'config', 'costmap_params.yaml')
-    default_planner_params = os.path.join(pkg_share, 'config', 'path_planner_params.yaml')
+    default_params_file = os.path.join(pkg_share, 'config', 'costmap_params.yaml')
 
     # Launch 引数の定義
-    costmap_params_arg = DeclareLaunchArgument(
-        'costmap_params_file',
-        default_value=default_costmap_params,
-        description='Full path to the costmap generator parameters YAML file'
-    )
-
-    planner_params_arg = DeclareLaunchArgument(
-        'planner_params_file',
-        default_value=default_planner_params,
-        description='Full path to the path planner parameters YAML file'
+    params_file_arg = DeclareLaunchArgument(
+        'params_file',
+        default_value=default_params_file,
+        description='Full path to the ROS2 parameters YAML file to use'
     )
 
     # Costmap Generator ノードの設定
@@ -32,21 +25,12 @@ def generate_launch_description():
         executable='costmap_generator_node',
         name='costmap_generator_node',
         output='screen',
-        parameters=[LaunchConfiguration('costmap_params_file')]
-    )
-
-    # Path Planner ノードの設定
-    path_planner_node = Node(
-        package='gn10_navigation',
-        executable='path_planner_node',
-        name='path_planner_node',
-        output='screen',
-        parameters=[LaunchConfiguration('planner_params_file')]
+        parameters=[
+            LaunchConfiguration('params_file')
+        ]
     )
 
     return LaunchDescription([
-        costmap_params_arg,
-        planner_params_arg,
-        costmap_node,
-        path_planner_node
+        params_file_arg,
+        costmap_node
     ])
