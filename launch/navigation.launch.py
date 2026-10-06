@@ -16,6 +16,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def start_navigation(context):
     follower_parameters = [LaunchConfiguration('follower_params')]
+    planner_parameters = [LaunchConfiguration('planner_params')]
     speed = LaunchConfiguration('max_speed').perform(context)
     if speed:
         speed = float(speed)
@@ -25,6 +26,7 @@ def start_navigation(context):
     clock = {'use_sim_time': ParameterValue(
         LaunchConfiguration('use_sim_time'), value_type=bool)}
     follower_parameters.append(clock)
+    planner_parameters.append(clock)
     rviz_config = LaunchConfiguration('rviz_config').perform(context)
     nodes = [
         Node(package='gn10_navigation', executable='costmap_generator_node',
@@ -33,7 +35,7 @@ def start_navigation(context):
                          {'map_file_path': ParameterValue(
                              LaunchConfiguration('map_file_path'), value_type=str)}]),
         Node(package='gn10_navigation', executable='path_planner_node',
-             name='path_planner_node', output='screen', parameters=[clock]),
+             name='path_planner_node', output='screen', parameters=planner_parameters),
         Node(package='gn10_navigation', executable='path_follower_node',
              name='path_follower_node', output='screen',
              parameters=follower_parameters),
@@ -55,6 +57,8 @@ def generate_launch_description():
         DeclareLaunchArgument('use_rviz', default_value='true', description='RViz2 を起動する'),
         DeclareLaunchArgument('use_sim_time', default_value='false',
                               description='実機は false、rosbag の /clock 利用時は true'),
+        DeclareLaunchArgument('planner_params',
+                              default_value=str(share / 'config/path_planner_params.yaml')),
         DeclareLaunchArgument('follower_params',
                               default_value=str(share / 'config/path_follower_params.yaml')),
         DeclareLaunchArgument('max_speed', default_value='',
