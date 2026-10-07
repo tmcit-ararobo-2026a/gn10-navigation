@@ -1,0 +1,21 @@
+path_planner_node:
+  ros__parameters:
+    map_configs:
+      map_frame: "map"
+      base_frame: "base_link"
+    snapp_config:
+      start_snap_radius: 0.3 # [m] スタートが通行不可セルのとき、最寄りの通行可能セルを探す半径
+    a_star:
+      plannning_cost: 3.0 # コストマップのコスト値に掛ける係数。大きいほど壁から離れた経路になる
+    bspline:
+      simplification_tolerance: 0.1 # [m] RDP法の許容誤差。これ以上離れている点は残す
+      turning_angle_threshold: 15.0 # [deg] この角度以上曲がっている点は制御点として残す
+      samples_per_segment: 30 # 曲線を区間ごとに何点で区切るか(大きいほど滑らか)
+      smoothness_weight: 1.0 # 大きいほど制御点を両隣の中点へ強く寄せる
+      control_point_step: 0.05 # [m] 制御点を1回で動かす量の基準
+      smoothing_iterations: 0 # 平滑化の反復回数
+    cost_caluculate:
+      length_weight: 1.0 # 大きいほど近道をする。経路が角ばっても許容
+      curvature_weight: 3.0 # 大きいほどカーブがなだらかになる(遠回りも許容)
+      obstacle_cost_weight: 10.0 # 大きいほど壁(高コスト帯)から離れる
+      optimization_iterations: 20 # 最適化の最大反復回数
