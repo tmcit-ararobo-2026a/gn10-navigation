@@ -178,7 +178,7 @@ PathFollowerNode::PathFollowerNode() : Node("path_follower_node")
         "/planned_path", rclcpp::QoS(1),
         std::bind(&PathFollowerNode::onPath, this, std::placeholders::_1));
     speed_path_pub_ = create_publisher<nav_msgs::msg::Path>("/speed_path", rclcpp::QoS(1).transient_local());
-    cmd_pub_ = create_publisher<geometry_msgs::msg::Twist>("/robot/command/cmd_vel", 10);
+    cmd_pub_ = create_publisher<geometry_msgs::msg::Twist>("/robot/operation/cmd_vel", 10);
     last_control_ = std::chrono::steady_clock::now();
     timer_ = create_wall_timer(
         std::chrono::duration<double>(1.0 / control_rate_),
