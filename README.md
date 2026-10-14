@@ -79,3 +79,13 @@ Service・Actionの型と取消・lease対応は同じ作業ブランチで段�
 セル角抜け、境界の両隣、占有終端、開始補正区間の障害物通過を許可しない。
 占有開始位置から最寄り自由セルへの単純snapは安全な接続を保証できないため拒否する。
 同一セル内の短距離も実際の開始・目標座標を使用する。
+
+## ComputePath Service（T07）
+
+`/navigation/compute_path` はmap座標の開始・目標Poseとgenerationを受け、Pathまたは
+NO_MAP / INVALID_START / INVALID_GOAL / START_BLOCKED / GOAL_BLOCKED /
+NO_PATH / PATH_UNSAFE / INTERNAL_ERRORを返す。generationはそのまま返す。
+Quaternion・有限座標・地図サイズ・軸に平行な地図原点を検査する。
+計画失敗は空Pathを公開し、古い計画を残さない。Service自身はTFを要求せず、
+開始Poseの鮮度と遅延結果の世代判定は呼出側が実行前に検査する。
+旧 `/goal_pose` 入力は既定無効で、単独の従来操作時のみ `enable_legacy_goal_input:=true` を指定する。

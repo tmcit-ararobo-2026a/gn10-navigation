@@ -118,9 +118,16 @@ PathPlannerNode::PathPlannerNode() : Node("path_planner_node")
         "/costmap", map_qos, std::bind(&PathPlannerNode::getCostmapMsg, this, std::placeholders::_1)
     );
 
-    goal_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-        "/goal_pose", 10, std::bind(&PathPlannerNode::getGoalPose, this, std::placeholders::_1)
-    );
+    if (declare_parameter<bool>("enable_legacy_goal_input", false)) {
+        goal_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+            "/goal_pose", 10, std::bind(&PathPlannerNode::getGoalPose, this, std::placeholders::_1));
+    }
+    compute_path_service_ = create_service<gn10_navigation::srv::ComputePath>(
+        "/navigation/compute_path",
+        [this](const std::shared_ptr<gn10_navigation::srv::ComputePath::Request> request,
+               std::shared_ptr<gn10_navigation::srv::ComputePath::Response> response) {
+            compute_path(*request, *response);
+        });
 
     path_pub_ = this->create_publisher<nav_msgs::msg::Path>("/planned_path", 10);
 
@@ -176,7 +183,22 @@ void PathPlannerNode::getCostmapMsg(nav_msgs::msg::OccupancyGrid::SharedPtr grid
     const unsigned int new_width  = grid_msg->info.width;
     const unsigned int new_height = grid_msg->info.height;
 
-    if (grid_msg->data.size() < static_cast<std::size_t>(new_width) * new_height) {
+    planning_grid_.clear();
+    resolution_ = 0;
+    const auto & origin = grid_msg->info.origin;
+    const auto cell_count = static_cast<std::size_t>(new_width) * new_height;
+    if (new_width == 0 || new_height == 0 || cell_count > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        !std::isfinite(grid_msg->info.resolution) ||
+        !std::isfinite(origin.position.x) || !std::isfinite(origin.position.y) ||
+        !std::isfinite(origin.position.z) || !std::isfinite(origin.orientation.x) ||
+        !std::isfinite(origin.orientation.y) || !std::isfinite(origin.orientation.z) ||
+        !std::isfinite(origin.orientation.w) || std::abs(std::abs(origin.orientation.w) - 1.0) > 1e-3 ||
+        std::abs(origin.orientation.x) > 1e-6 || std::abs(origin.orientation.y) > 1e-6 ||
+        std::abs(origin.orientation.z) > 1e-6) {
+        RCLCPP_ERROR(get_logger(), "Costmap shape/origin is invalid or rotated");
+        return;
+    }
+    if (grid_msg->data.size() != cell_count) {
         RCLCPP_ERROR(
             this->get_logger(),
             "Costmap data is too small: data=%zu, expected=%zu",
@@ -293,130 +315,120 @@ bool PathPlannerNode::getRobotPose()
     return true;
 }
 
-void PathPlannerNode::getGoalPose(geometry_msgs::msg::PoseStamped::SharedPtr pose_msg)
+void PathPlannerNode::getGoalPose(geometry_msgs::msg::PoseStamped::SharedPtr goal)
 {
-    // mapを受信してから
-    if (planning_grid_.empty()) {
-        RCLCPP_WARN(this->get_logger(), "Costmap has not been received yet.");
-        return;
-    }
-
-    // frameが違かったら
-    if (pose_msg->header.frame_id != map_frame_) {
-        RCLCPP_WARN(
-            this->get_logger(), "Goal frame is not map: %s", pose_msg->header.frame_id.c_str()
-        );
-        return;
-    }
-
-    // robotのpositionがわからなかったら
     if (!getRobotPose()) {
-        RCLCPP_WARN(this->get_logger(), "Robot pose is unavailable. Planning aborted.");
-
+        nav_msgs::msg::Path cleared;
+        cleared.header.frame_id = map_frame_;
+        cleared.header.stamp = now();
+        path_pub_->publish(cleared);
         return;
     }
+    gn10_navigation::srv::ComputePath::Request request;
+    request.goal = *goal;
+    request.start.header.frame_id = map_frame_;
+    request.start.header.stamp = now();
+    request.start.pose.position.x = robot_x_;
+    request.start.pose.position.y = robot_y_;
+    request.start.pose.orientation.z = std::sin(robot_yaw_ * 0.5);
+    request.start.pose.orientation.w = std::cos(robot_yaw_ * 0.5);
+    gn10_navigation::srv::ComputePath::Response response;
+    compute_path(request, response);
+}
 
-    goal_x_ = pose_msg->pose.position.x;
-    goal_y_ = pose_msg->pose.position.y;
-
-    RCLCPP_INFO(this->get_logger(), "Goal received: x=%.3f, y=%.3f", goal_x_, goal_y_);
-
-    auto [goal_grid_x_, goal_grid_y_] = worldToGrid(goal_x_, goal_y_);
-
-    int goal_grid_x = goal_grid_x_;
-    int goal_grid_y = goal_grid_y_;
-
-    // 範囲内じゃなかったら
-    if (!isInsideGrid(goal_grid_x, goal_grid_y)) {
-        RCLCPP_WARN(
-            this->get_logger(), "Goal is outside the costmap: x=%d, y=%d", goal_grid_x, goal_grid_y
-        );
-
-        return;
-    }
-    RCLCPP_INFO(this->get_logger(), "Goal grid position: x=%d, y=%d", goal_grid_x, goal_grid_y);
-
-    auto [robot_grid_x, robot_grid_y] = worldToGrid(robot_x_, robot_y_);
-
-    int start_grid_x = robot_grid_x;
-    int start_grid_y = robot_grid_y;
-
-    /*
-     * ロボットが膨張領域内にいる場合は、最寄りの通行可能セルからA*を開始する。
-     */
-    bool start_snapped = false;
-
-    if (!isPassable(start_grid_x, start_grid_y)) {
-        // A nearest free cell does not certify the traversed correction segment.
-        RCLCPP_WARN(get_logger(), "Occupied start has no safe continuous correction path");
-        return;
-    }
-
-    // A*の配列にstartとgoalのgridを代入
-    auto path = aStar(start_grid_x, start_grid_y, goal_grid_x, goal_grid_y);
-
-    if (path.empty()) {
-        RCLCPP_WARN(this->get_logger(), "No A* path available.");
-        return;
-    }
-
-    // b-spineはA*が使う
-    auto smoothed_path = bsplineSmoothPath(path);
-    if (smoothed_path.empty()) {
-        RCLCPP_WARN(this->get_logger(), "B-spline path generation failed.");
-        return;
-    }
-
-    // パスの端点を、セル中心ではなく実際のロボット位置・ゴール位置に合わせる。
-    //(同じセル内なので通行可能性は変わらない。スナップした場合は行わない。)
-    if (!start_snapped && smoothed_path.size() >= 2) {
-        smoothed_path.front() = {robot_x_, robot_y_};
-    }
-
-    if (smoothed_path.size() == 1) {
-        smoothed_path = {{robot_x_, robot_y_}, {goal_x_, goal_y_}};
-    } else {
-        smoothed_path.front() = {robot_x_, robot_y_};
-        smoothed_path.back() = {goal_x_, goal_y_};
-    }
-    // Validate after endpoint correction, before copying into the published Path.
-    if (!isSmoothPathValid(smoothed_path)) {
-        RCLCPP_WARN(get_logger(), "Corrected path intersects a blocked cell");
-        return;
-    }
-
-    nav_msgs::msg::Path path_msg;
-    path_msg.header.stamp    = this->now();
-    path_msg.header.frame_id = map_frame_;
-
-    for (std::size_t i = 0; i < smoothed_path.size(); ++i) {
-        const auto& point = smoothed_path[i];
-
-        geometry_msgs::msg::PoseStamped pose;
-
-        pose.header = path_msg.header;
-
-        pose.pose.position.x = point.first;
-        pose.pose.position.y = point.second;
-        pose.pose.position.z = 0.0;
-
-        if (i + 1 == smoothed_path.size()) {
-            // 最終点だけ、Goalで指定された姿勢にする
-            pose.pose.orientation = pose_msg->pose.orientation;
-        } else {
-            // 移動中はロボットの現在の向きを維持する
-            pose.pose.orientation.x = 0.0;
-            pose.pose.orientation.y = 0.0;
-            pose.pose.orientation.z = std::sin(robot_yaw_ * 0.5);
-            pose.pose.orientation.w = std::cos(robot_yaw_ * 0.5);
+void PathPlannerNode::compute_path(const gn10_navigation::srv::ComputePath::Request & request,
+                                  gn10_navigation::srv::ComputePath::Response & response)
+{
+    using Response = gn10_navigation::srv::ComputePath::Response;
+    response.generation = request.generation;
+    response.success = false;
+    response.path.header.frame_id = map_frame_;
+    response.path.header.stamp = now();
+    // Clear visualization/legacy path on every failure; never leave a previous plan active.
+    const auto fail = [&](uint8_t code, const std::string & reason) {
+        response.error_code = code;
+        response.reason = reason;
+        response.path.poses.clear();
+        path_pub_->publish(response.path);
+    };
+    const auto valid_pose = [&](const geometry_msgs::msg::PoseStamped & pose) {
+        const auto & position = pose.pose.position;
+        const auto & rotation = pose.pose.orientation;
+        const double norm = rotation.x * rotation.x + rotation.y * rotation.y +
+                            rotation.z * rotation.z + rotation.w * rotation.w;
+        return pose.header.frame_id == map_frame_ && std::isfinite(position.x) &&
+               std::isfinite(position.y) && std::isfinite(position.z) &&
+               std::isfinite(norm) && std::abs(norm - 1.0) < 1e-3;
+    };
+    try {
+        if (planning_grid_.empty()) {
+            fail(Response::NO_MAP, "No validated costmap");
+            return;
         }
-
-        path_msg.poses.push_back(pose);
+        const gn10_navigation::GridSafety grid(planning_grid_, width_, height_, resolution_,
+                                              origin_x_, origin_y_);
+        if (!valid_pose(request.start)) {
+            fail(Response::INVALID_START, "Invalid start pose/frame/quaternion");
+            return;
+        }
+        if (!valid_pose(request.goal)) {
+            fail(Response::INVALID_GOAL, "Invalid goal pose/frame/quaternion");
+            return;
+        }
+        robot_x_ = request.start.pose.position.x;
+        robot_y_ = request.start.pose.position.y;
+        robot_yaw_ = tf2::getYaw(request.start.pose.orientation);
+        goal_x_ = request.goal.pose.position.x;
+        goal_y_ = request.goal.pose.position.y;
+        if (!grid.point_passable(robot_x_, robot_y_)) {
+            fail(Response::START_BLOCKED, "Start outside grid or blocked; no unverified snap");
+            return;
+        }
+        if (!grid.point_passable(goal_x_, goal_y_)) {
+            fail(Response::GOAL_BLOCKED, "Goal outside grid or blocked");
+            return;
+        }
+        const auto [start_x, start_y] = worldToGrid(robot_x_, robot_y_);
+        const auto [goal_x, goal_y] = worldToGrid(goal_x_, goal_y_);
+        const auto discrete = aStar(start_x, start_y, goal_x, goal_y);
+        if (discrete.empty()) {
+            fail(Response::NO_PATH, "No A* path");
+            return;
+        }
+        auto points = bsplineSmoothPath(discrete);
+        if (points.empty()) {
+            fail(Response::NO_PATH, "No smoothed path");
+            return;
+        }
+        if (points.size() == 1) {
+            points = {{robot_x_, robot_y_}, {goal_x_, goal_y_}};
+        } else {
+            points.front() = {robot_x_, robot_y_};
+            points.back() = {goal_x_, goal_y_};
+        }
+        if (!isSmoothPathValid(points)) {
+            fail(Response::PATH_UNSAFE, "Corrected path intersects blocked cells");
+            return;
+        }
+        for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
+            geometry_msgs::msg::PoseStamped pose;
+            pose.header = response.path.header;
+            pose.pose.position.x = points[point_index].first;
+            pose.pose.position.y = points[point_index].second;
+            if (point_index + 1 == points.size()) {
+                pose.pose.orientation = request.goal.pose.orientation;
+            } else {
+                pose.pose.orientation = request.start.pose.orientation;
+            }
+            response.path.poses.push_back(pose);
+        }
+        response.success = true;
+        response.error_code = Response::SUCCESS;
+        response.reason = "Path computed";
+        path_pub_->publish(response.path);
+    } catch (const std::exception & error) {
+        fail(Response::INTERNAL_ERROR, error.what());
     }
-
-    path_pub_->publish(path_msg);
-
-    RCLCPP_INFO(this->get_logger(), "Published Path with %zu points.", path_msg.poses.size());
 }
 
 // peripheral

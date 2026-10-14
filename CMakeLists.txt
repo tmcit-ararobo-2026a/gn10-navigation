@@ -27,6 +27,11 @@ include_directories(
   include
 )
 
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "srv/ComputePath.srv"
+  DEPENDENCIES geometry_msgs nav_msgs builtin_interfaces)
+rosidl_get_typesupport_target(cpp_typesupport ${PROJECT_NAME} "rosidl_typesupport_cpp")
+
 if(BUILD_RUNTIME_NODES)
 # C++ ノードのビルド
 add_executable(costmap_generator_node
@@ -45,6 +50,7 @@ ament_target_dependencies(costmap_generator_node
 add_executable(path_planner_node
   src/path_planner_node.cpp
 )
+target_link_libraries(path_planner_node "${cpp_typesupport}")
 
 ament_target_dependencies(path_planner_node
   rclcpp
@@ -84,6 +90,11 @@ if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_gtest(grid_safety_test test/grid_safety_test.cpp)
   target_include_directories(grid_safety_test PRIVATE include)
+  if(BUILD_RUNTIME_NODES)
+    ament_add_pytest_test(compute_path_integration_test test/compute_path_integration_test.py
+      ENV PLANNER_EXECUTABLE=$<TARGET_FILE:path_planner_node>
+      TIMEOUT 60)
+  endif()
 endif()
 ament_export_dependencies(rosidl_default_runtime)
 ament_package()
