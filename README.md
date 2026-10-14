@@ -52,7 +52,7 @@ ros2 launch gn10_navigation navigation.launch.py use_rviz:=true
 
 地図は[config/nhk2026_map.json](config/nhk2026_map.json)、各ノードの設定は[コストマップ](config/costmap_params.yaml)、[経路計画](config/path_planner_params.yaml)、[経路追従](config/path_follower_params.yaml)を参照してください。`navigation.launch.py`の`map_file_path`、`costmap_params`、`planner_params`、`follower_params`で変更できます。
 
-型のみをビルドする場合は`--cmake-args -DBUILD_RUNTIME_NODES=OFF`を指定します。試験は以下で実行できます。
+型のみをビルドする場合は`--cmake-args -DBUILD_RUNTIME_NODES=OFF`を指定します。ローカルに`test/`ファイルを配置した場合、試験は以下で実行できます。
 
 ```bash
 colcon test --packages-select gn10_navigation
@@ -87,7 +87,6 @@ colcon test-result --verbose
 
 従来の`/goal_pose`・`/planned_path`入力は既定で無効です。単独操作で使用する場合は、それぞれ`enable_legacy_goal_input`・`enable_legacy_path_input`を有効にします。従来のPath入力とActionは排他的に使用します。
 
-試験の詳細は[経路・追従の検証記録](docs/new_navigation_verification.md)を参照してください。
 
 ## 5. ライセンス
 

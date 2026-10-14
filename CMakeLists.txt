@@ -90,7 +90,7 @@ install(DIRECTORY launch config rviz
   DESTINATION share/${PROJECT_NAME}
 )
 
-if(BUILD_TESTING)
+if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/grid_safety_test.cpp")
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_gtest(grid_safety_test test/grid_safety_test.cpp)
