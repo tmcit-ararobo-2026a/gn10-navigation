@@ -5,6 +5,7 @@
 #include <limits>
 #include <map>
 #include <queue>
+#include "gn10_navigation/grid_safety.hpp"
 
 // メンバ関数じゃない計算を行うプログラム
 namespace {
@@ -346,28 +347,9 @@ void PathPlannerNode::getGoalPose(geometry_msgs::msg::PoseStamped::SharedPtr pos
     bool start_snapped = false;
 
     if (!isPassable(start_grid_x, start_grid_y)) {
-        const int radius_cells = static_cast<int>(std::ceil(start_snap_radius_ / resolution_));
-
-        const auto snapped = findNearestPassable(start_grid_x, start_grid_y, radius_cells);
-
-        if (!snapped) {
-            RCLCPP_WARN(
-                this->get_logger(), "Robot is not on a passable cell and no free cell is nearby."
-            );
-
-            return;
-        }
-
-        start_grid_x  = snapped->first;
-        start_grid_y  = snapped->second;
-        start_snapped = true;
-
-        RCLCPP_WARN(
-            this->get_logger(),
-            "Robot cell is occupied. Start snapped to x=%d, y=%d",
-            start_grid_x,
-            start_grid_y
-        );
+        // A nearest free cell does not certify the traversed correction segment.
+        RCLCPP_WARN(get_logger(), "Occupied start has no safe continuous correction path");
+        return;
     }
 
     // A*の配列にstartとgoalのgridを代入
@@ -389,6 +371,18 @@ void PathPlannerNode::getGoalPose(geometry_msgs::msg::PoseStamped::SharedPtr pos
     //(同じセル内なので通行可能性は変わらない。スナップした場合は行わない。)
     if (!start_snapped && smoothed_path.size() >= 2) {
         smoothed_path.front() = {robot_x_, robot_y_};
+    }
+
+    if (smoothed_path.size() == 1) {
+        smoothed_path = {{robot_x_, robot_y_}, {goal_x_, goal_y_}};
+    } else {
+        smoothed_path.front() = {robot_x_, robot_y_};
+        smoothed_path.back() = {goal_x_, goal_y_};
+    }
+    // Validate after endpoint correction, before copying into the published Path.
+    if (!isSmoothPathValid(smoothed_path)) {
+        RCLCPP_WARN(get_logger(), "Corrected path intersects a blocked cell");
+        return;
     }
 
     nav_msgs::msg::Path path_msg;
@@ -420,7 +414,6 @@ void PathPlannerNode::getGoalPose(geometry_msgs::msg::PoseStamped::SharedPtr pos
         path_msg.poses.push_back(pose);
     }
 
-    smoothed_path.back() = {goal_x_, goal_y_};
     path_pub_->publish(path_msg);
 
     RCLCPP_INFO(this->get_logger(), "Published Path with %zu points.", path_msg.poses.size());
@@ -757,42 +750,17 @@ bool PathPlannerNode::isSmoothPathValid(const std::vector<std::pair<double, doub
     if (path.empty()) {
         return false;
     }
-
-    for (std::size_t i = 0; i < path.size(); ++i) {
-        const auto& point = path[i];
-
-        const auto [grid_x, grid_y] = worldToGrid(point.first, point.second);
-
-        if (!isPassable(grid_x, grid_y)) {  // 範囲外もここで弾かれる
+    const gn10_navigation::GridSafety grid(planning_grid_, width_, height_, resolution_,
+                                          origin_x_, origin_y_);
+    if (!grid.point_passable(path.front().first, path.front().second)) {
+        return false;
+    }
+    for (std::size_t point_index = 1; point_index < path.size(); ++point_index) {
+        if (!grid.segment_passable(path[point_index - 1].first, path[point_index - 1].second,
+                                   path[point_index].first, path[point_index].second)) {
             return false;
         }
-
-        if (i == 0) {
-            continue;
-        }
-
-        // 前の点との間を、半セル刻みで調べる
-        const auto& previous = path[i - 1];
-
-        const double dx       = point.first - previous.first;
-        const double dy       = point.second - previous.second;
-        const double distance = std::hypot(dx, dy);
-
-        const int samples =
-            std::max(1, static_cast<int>(std::ceil(distance / (resolution_ * 0.5))));
-
-        for (int j = 1; j <= samples; ++j) {
-            const double ratio = static_cast<double>(j) / static_cast<double>(samples);
-
-            const auto [sample_x, sample_y] =
-                worldToGrid(previous.first + dx * ratio, previous.second + dy * ratio);
-
-            if (!isPassable(sample_x, sample_y)) {
-                return false;
-            }
-        }
     }
-
     return true;
 }
 

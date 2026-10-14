@@ -71,3 +71,11 @@ ros2 launch gn10_navigation costmap_generator.launch.py team_color:=red
 ROS型は本パッケージが所有し、manager・robot_portには依存しない。
 `-DBUILD_RUNTIME_NODES=OFF` で実行ノードのビルドを分離できる。
 Service・Actionの型と取消・lease対応は同じ作業ブランチで段階的に追加する。
+
+## 経路安全修正（T06）
+
+独自0〜254コストをunsignedとして比較し、描画順で高コストを下げない。
+要求端点をPathへのコピー前に補正し、全線分をsupercoverで検査する。
+セル角抜け、境界の両隣、占有終端、開始補正区間の障害物通過を許可しない。
+占有開始位置から最寄り自由セルへの単純snapは安全な接続を保証できないため拒否する。
+同一セル内の短距離も実際の開始・目標座標を使用する。

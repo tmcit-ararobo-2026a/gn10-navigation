@@ -82,6 +82,8 @@ install(DIRECTORY launch config rviz
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_cmake_pytest REQUIRED)
+  ament_add_gtest(grid_safety_test test/grid_safety_test.cpp)
+  target_include_directories(grid_safety_test PRIVATE include)
 endif()
 ament_export_dependencies(rosidl_default_runtime)
 ament_package()
