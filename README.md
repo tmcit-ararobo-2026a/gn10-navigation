@@ -65,3 +65,9 @@ ros2 launch gn10_navigation costmap_generator.launch.py team_color:=red
 ## 5. ライセンス
 
 本リポジトリは [MITライセンス](./LICENSE) のもとで公開されています。
+
+## STM32新仕様向けAPI整備（T01）
+
+ROS型は本パッケージが所有し、manager・robot_portには依存しない。
+`-DBUILD_RUNTIME_NODES=OFF` で実行ノードのビルドを分離できる。
+Service・Actionの型と取消・lease対応は同じ作業ブランチで段階的に追加する。
