@@ -174,9 +174,63 @@ PathFollowerNode::PathFollowerNode() : Node("path_follower_node")
 
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
-    path_sub_ = create_subscription<nav_msgs::msg::Path>(
-        "/planned_path", rclcpp::QoS(1),
-        std::bind(&PathFollowerNode::onPath, this, std::placeholders::_1));
+    legacy_input_enabled_ = declare_parameter<bool>("enable_legacy_path_input", false);
+    lease_timeout_s_ = declare_parameter<double>("lease_timeout_s", 0.1);
+    goal_heading_tolerance_rad_ = declare_parameter<double>("goal_heading_tolerance_rad", 0.05);
+    if (!std::isfinite(lease_timeout_s_) || lease_timeout_s_ <= 0 ||
+        !std::isfinite(goal_heading_tolerance_rad_) || goal_heading_tolerance_rad_ <= 0) {
+        throw std::invalid_argument("Lease and goal heading limits must be positive");
+    }
+    if (legacy_input_enabled_) {
+        path_sub_ = create_subscription<nav_msgs::msg::Path>(
+            "/planned_path", rclcpp::QoS(1),
+            std::bind(&PathFollowerNode::onPath, this, std::placeholders::_1));
+    }
+    velocity_publisher_ = create_publisher<gn10_navigation::msg::PathVelocity>(
+        "/navigation/path_velocity", rclcpp::QoS(1).durability_volatile());
+    lease_subscription_ = create_subscription<gn10_navigation::msg::ControlLease>(
+        "/navigation/control_lease", rclcpp::QoS(1).durability_volatile(),
+        [this](gn10_navigation::msg::ControlLease::ConstSharedPtr message) { accept_lease(*message); });
+    action_server_ = rclcpp_action::create_server<FollowPath>(
+        this, "/navigation/follow_path",
+        [this](const rclcpp_action::GoalUUID &, std::shared_ptr<const FollowPath::Goal> goal) {
+            if (legacy_input_enabled_ || active_goal_ || goal->producer_session == 0 ||
+                goal->generation == 0 || !valid_path(goal->path) ||
+                retired_sessions_.count(goal->producer_session) != 0 ||
+                (goal->producer_session == execution_session_ && goal->generation <= execution_generation_) ||
+                !lease_fresh() || lease_.producer_session != goal->producer_session ||
+                lease_.generation != goal->generation) {
+                return rclcpp_action::GoalResponse::REJECT;
+            }
+            return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+        },
+        [this](const std::shared_ptr<GoalHandle> goal) {
+            if (goal != active_goal_) {
+                return rclcpp_action::CancelResponse::REJECT;
+            }
+            // Suppress output immediately; report canceled after the Action state transition.
+            cancellation_requested_ = true;
+            stop();
+            path_.clear();
+            return rclcpp_action::CancelResponse::ACCEPT;
+        },
+        [this](const std::shared_ptr<GoalHandle> goal) {
+            if (execution_session_ != 0 && execution_session_ != goal->get_goal()->producer_session) {
+                retired_sessions_.insert(execution_session_);
+            }
+            execution_session_ = goal->get_goal()->producer_session;
+            execution_generation_ = goal->get_goal()->generation;
+            active_goal_ = goal;
+            cancellation_requested_ = false;
+            try {
+                onPath(std::make_shared<nav_msgs::msg::Path>(goal->get_goal()->path));
+                if (path_.empty()) {
+                    finish_action(FollowPath::Result::INVALID_PATH, "Path preprocessing failed");
+                }
+            } catch (const std::exception & error) {
+                finish_action(FollowPath::Result::INVALID_PATH, error.what());
+            }
+        });
     speed_path_pub_ = create_publisher<nav_msgs::msg::Path>("/speed_path", rclcpp::QoS(1).transient_local());
     cmd_pub_ = create_publisher<geometry_msgs::msg::Twist>("/robot/operation/cmd_vel", 10);
     last_control_ = std::chrono::steady_clock::now();
@@ -194,7 +248,147 @@ void PathFollowerNode::stop()
     command_ax_world_ = 0.0;
     command_ay_world_ = 0.0;
     command_yaw_rate_ = 0.0;
-    cmd_pub_->publish(geometry_msgs::msg::Twist());
+    publish_velocity(geometry_msgs::msg::Twist(), false);
+}
+
+bool PathFollowerNode::valid_path(const nav_msgs::msg::Path & path) const
+{
+    if (path.header.frame_id != map_frame_ || path.poses.empty() || path.poses.size() > 100000) {
+        return false;
+    }
+    double length = 0;
+    for (std::size_t point_index = 0; point_index < path.poses.size(); ++point_index) {
+        const auto & pose = path.poses[point_index];
+        const auto & rotation = pose.pose.orientation;
+        const double norm = rotation.x * rotation.x + rotation.y * rotation.y +
+                            rotation.z * rotation.z + rotation.w * rotation.w;
+        if (!finitePoint(pose) || !std::isfinite(pose.pose.position.z) ||
+            (!pose.header.frame_id.empty() && pose.header.frame_id != map_frame_) ||
+            !std::isfinite(norm) || std::abs(norm - 1.0) >= 1e-3) {
+            return false;
+        }
+        if (point_index > 0) {
+            const auto & previous = path.poses[point_index - 1].pose.position;
+            length += std::hypot(pose.pose.position.x - previous.x, pose.pose.position.y - previous.y);
+            // Bound preprocessing memory/latency; synthetic or corrupt huge paths are rejected.
+            if (!std::isfinite(length) || length / kPathStep > 100000) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+void PathFollowerNode::accept_lease(const gn10_navigation::msg::ControlLease & lease)
+{
+    if (lease.producer_session == 0 || lease.generation == 0 || lease.update_sequence == 0 ||
+        lease.stamp.sec < 0 || lease.stamp.nanosec >= 1000000000U) {
+        return;
+    }
+    const auto current_ns = now().nanoseconds();
+    const auto stamp_ns = rclcpp::Time(lease.stamp).nanoseconds();
+    const double age_s = static_cast<double>(current_ns - stamp_ns) * 1e-9;
+    if (stamp_ns <= 0 || age_s < 0 || age_s >= lease_timeout_s_ ||
+        retired_sessions_.count(lease.producer_session) != 0) {
+        return;
+    }
+    if (active_goal_ && (lease.producer_session != execution_session_ ||
+                        lease.generation != execution_generation_)) {
+        return;
+    }
+    if (have_lease_ && lease.producer_session == lease_.producer_session &&
+        (lease.update_sequence <= lease_.update_sequence || lease.generation < lease_.generation ||
+         stamp_ns <= rclcpp::Time(lease_.stamp).nanoseconds())) {
+        return;
+    }
+    lease_ = lease;
+    have_lease_ = true;
+    last_lease_ros_now_ns_ = current_ns;
+    lease_deadline_ = std::chrono::steady_clock::now() +
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(lease_timeout_s_ - age_s));
+    if (!lease.enabled && active_goal_) {
+        finish_action(FollowPath::Result::LEASE_EXPIRED, "Lease permission revoked");
+    }
+}
+
+bool PathFollowerNode::lease_fresh()
+{
+    if (!have_lease_ || !lease_.enabled) {
+        return false;
+    }
+    const auto current_ns = now().nanoseconds();
+    const double age_s = static_cast<double>(current_ns - rclcpp::Time(lease_.stamp).nanoseconds()) * 1e-9;
+    if (std::chrono::steady_clock::now() >= lease_deadline_ || current_ns < last_lease_ros_now_ns_ ||
+        age_s < 0 || age_s >= lease_timeout_s_) {
+        have_lease_ = false;
+        return false;
+    }
+    last_lease_ros_now_ns_ = current_ns;
+    return true;
+}
+
+void PathFollowerNode::publish_velocity(const geometry_msgs::msg::Twist & velocity, bool valid)
+{
+    gn10_navigation::msg::PathVelocity message;
+    message.stamp = now();
+    message.frame_id = base_frame_;
+    message.producer_session = execution_session_;
+    message.generation = execution_generation_;
+    message.update_sequence = ++velocity_sequence_;
+    message.valid = valid && static_cast<bool>(active_goal_);
+    message.velocity = velocity;
+    velocity_publisher_->publish(message);
+    if (legacy_input_enabled_) {
+        cmd_pub_->publish(velocity);
+    }
+}
+
+void PathFollowerNode::publish_feedback(double goal_yaw_error)
+{
+    if (!active_goal_) {
+        return;
+    }
+    auto feedback = std::make_shared<FollowPath::Feedback>();
+    feedback->generation = execution_generation_;
+    feedback->progress_m = progress_;
+    if (!path_.empty()) {
+        feedback->remaining_m = std::max(0.0, path_.back().distance - progress_);
+    }
+    feedback->goal_yaw_error_rad = goal_yaw_error;
+    active_goal_->publish_feedback(feedback);
+}
+
+void PathFollowerNode::finish_action(uint8_t error_code, const std::string & reason)
+{
+    stop();
+    path_.clear();
+    progress_ = 0;
+    heading_locked_ = false;
+    heading_target_ = 0;
+    last_control_ = std::chrono::steady_clock::now();
+    nav_msgs::msg::Path cleared;
+    cleared.header.frame_id = map_frame_;
+    cleared.header.stamp = now();
+    speed_path_pub_->publish(cleared);
+    if (active_goal_) {
+        auto result = std::make_shared<FollowPath::Result>();
+        result->generation = execution_generation_;
+        result->reason = reason;
+        result->error_code = error_code;
+        result->success = error_code == FollowPath::Result::SUCCESS;
+        if (active_goal_->is_canceling()) {
+            result->success = false;
+            result->error_code = FollowPath::Result::CANCELED;
+            active_goal_->canceled(result);
+        } else if (result->success) {
+            active_goal_->succeed(result);
+        } else {
+            active_goal_->abort(result);
+        }
+        active_goal_.reset();
+    }
+    cancellation_requested_ = false;
 }
 
 void PathFollowerNode::onPath(const nav_msgs::msg::Path::ConstSharedPtr msg)
@@ -208,7 +402,7 @@ void PathFollowerNode::onPath(const nav_msgs::msg::Path::ConstSharedPtr msg)
     cleared_path.header.stamp = now();
     speed_path_pub_->publish(cleared_path);
 
-    if (msg->header.frame_id != map_frame_) {
+    if (!valid_path(*msg)) {
         RCLCPP_WARN(get_logger(), "Rejected path in frame '%s'; expected '%s'",
                     msg->header.frame_id.c_str(), map_frame_.c_str());
         return;
@@ -244,9 +438,13 @@ void PathFollowerNode::onPath(const nav_msgs::msg::Path::ConstSharedPtr msg)
             }
         }
     }
-    if (path_.size() < 2) {
-        path_.clear();
-        RCLCPP_WARN(get_logger(), "Path needs at least two distinct points");
+    goal_yaw_ = tf2::getYaw(msg->poses.back().pose.orientation);
+    if (path_.size() == 1) {
+        path_.front().speed = 0;
+        speed_path_pub_->publish(*msg);
+        return;
+    }
+    if (path_.empty()) {
         return;
     }
 
@@ -361,6 +559,15 @@ void PathFollowerNode::onTimer()
     const double dt = std::clamp(std::chrono::duration<double>(steady_now - last_control_).count(),
                                  0.001, 0.1);
     last_control_ = steady_now;
+    if (active_goal_ && (cancellation_requested_ || active_goal_->is_canceling())) {
+        finish_action(FollowPath::Result::CANCELED, "Execution canceled");
+        return;
+    }
+    if (active_goal_ && (!lease_fresh() || lease_.producer_session != execution_session_ ||
+                         lease_.generation != execution_generation_)) {
+        finish_action(FollowPath::Result::LEASE_EXPIRED, "Execution lease expired");
+        return;
+    }
     if (path_.empty()) {
         stop();
         return;
@@ -370,13 +577,13 @@ void PathFollowerNode::onTimer()
     try {
         transform = tf_buffer_->lookupTransform(map_frame_, base_frame_, tf2::TimePointZero);
     } catch (const tf2::TransformException& error) {
-        stop();
+        finish_action(FollowPath::Result::TF_ERROR, "Pose TF unavailable");
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Pose TF unavailable: %s", error.what());
         return;
     }
     const double age = (now() - rclcpp::Time(transform.header.stamp)).seconds();
     if (!std::isfinite(age) || age > max_pose_age_ || age < -0.1) {
-        stop();
+        finish_action(FollowPath::Result::TF_ERROR, "Pose TF stale");
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Pose TF stale: %.2f s", age);
         return;
     }
@@ -384,30 +591,53 @@ void PathFollowerNode::onTimer()
     const double x = transform.transform.translation.x;
     const double y = transform.transform.translation.y;
     const double yaw = tf2::getYaw(transform.transform.rotation);
-    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(yaw)) {
-        stop();
+    const auto & rotation = transform.transform.rotation;
+    const double rotation_norm = rotation.x * rotation.x + rotation.y * rotation.y +
+                                 rotation.z * rotation.z + rotation.w * rotation.w;
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(yaw) ||
+        !std::isfinite(rotation_norm) || std::abs(rotation_norm - 1.0) >= 1e-3) {
+        finish_action(FollowPath::Result::TF_ERROR, "Invalid pose");
+        return;
+    }
+    const double goal_distance = std::hypot(x - path_.back().x, y - path_.back().y);
+    const double goal_yaw_error = std::atan2(std::sin(goal_yaw_ - yaw), std::cos(goal_yaw_ - yaw));
+    if (goal_distance <= goal_tolerance_ &&
+        (path_.size() == 1 || progress_ >= path_.back().distance - goal_tolerance_)) {
+        if (std::abs(goal_yaw_error) <= goal_heading_tolerance_rad_) {
+            finish_action(FollowPath::Result::SUCCESS, "Goal position and heading reached");
+            return;
+        }
+        // Final orientation is aligned even when heading_mode is fixed during translation.
+        command_vx_world_ = 0;
+        command_vy_world_ = 0;
+        command_ax_world_ = 0;
+        command_ay_world_ = 0;
+        const double requested_yaw_rate = std::clamp(heading_gain_ * goal_yaw_error,
+                                                     -max_angular_speed_, max_angular_speed_);
+        command_yaw_rate_ = std::clamp(requested_yaw_rate,
+            command_yaw_rate_ - max_angular_acceleration_ * dt,
+            command_yaw_rate_ + max_angular_acceleration_ * dt);
+        if (max_wheel_angular_speed_ > 0 && wheel_center_distance_ > 0) {
+            const double wheel_yaw_limit = wheel_radius_ * max_wheel_angular_speed_ /
+                                           wheel_center_distance_;
+            command_yaw_rate_ = std::clamp(command_yaw_rate_, -wheel_yaw_limit, wheel_yaw_limit);
+        }
+        geometry_msgs::msg::Twist command;
+        command.angular.z = command_yaw_rate_;
+        publish_velocity(command, true);
+        publish_feedback(goal_yaw_error);
+        return;
+    }
+    if (path_.size() == 1) {
+        finish_action(FollowPath::Result::INVALID_PATH, "Point goal has no translation path");
         return;
     }
     const auto nearest = project(x, y);
     if (nearest.error > max_path_error_) {
-        stop();
-        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-                             "Path deviation %.2f m exceeds limit", nearest.error);
+        finish_action(FollowPath::Result::PATH_DEVIATION, "Path deviation exceeds limit");
         return;
     }
     progress_ = std::max(progress_, nearest.distance);
-    const double goal_distance = std::hypot(x - path_.back().x, y - path_.back().y);
-    if (progress_ >= path_.back().distance - goal_tolerance_ &&
-        goal_distance <= goal_tolerance_) {
-        stop();
-        path_.clear();
-        nav_msgs::msg::Path cleared_path;
-        cleared_path.header.frame_id = map_frame_;
-        cleared_path.header.stamp = now();
-        speed_path_pub_->publish(cleared_path);
-        RCLCPP_INFO(get_logger(), "Path complete");
-        return;
-    }
 
     if (heading_mode_ != "fixed" && !heading_locked_) {
         heading_target_ = yaw;
@@ -488,7 +718,8 @@ void PathFollowerNode::onTimer()
             command.angular.z *= scale;
         }
     }
-    cmd_pub_->publish(command);
+    publish_velocity(command, true);
+    publish_feedback(goal_yaw_error);
 }
 
 int main(int argc, char** argv)

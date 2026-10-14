@@ -89,3 +89,18 @@ Quaternion・有限座標・地図サイズ・軸に平行な地図原点を検�
 計画失敗は空Pathを公開し、古い計画を残さない。Service自身はTFを要求せず、
 開始Poseの鮮度と遅延結果の世代判定は呼出側が実行前に検査する。
 旧 `/goal_pose` 入力は既定無効で、単独の従来操作時のみ `enable_legacy_goal_input:=true` を指定する。
+
+## FollowPath Action・ControlLease（T08）
+
+`/navigation/follow_path`はPath・producer_session・generationを受け、進捗と
+SUCCESS / CANCELED / INVALID_PATH / LEASE_EXPIRED / TF_ERROR / PATH_DEVIATIONを返す。
+`/navigation/control_lease`は同一session・generationの新しいstamp・update_sequenceで
+20ms周期配信する設計。100msを生成時点から単調時計で監視し、重複・逆行・未来・期限超過を拒否する。
+Action開始前に一致する有効leaseが必要。実行中の新goalは拒否し、明示取消後に新世代で差し替える。
+取消、lease断・取消、TF異常、経路逸脱でゼロ速度・経路消去・制御履歴消去・結果通知を行う。
+TF復旧・lease再開だけで旧経路を再開しない。同一sessionの旧goal世代と引退sessionを拒否する。
+
+出力は `/navigation/path_velocity` のbase_link速度・session・世代・時刻・更新番号・valid。
+旧 `/planned_path` 入力は既定無効。従来操作は `enable_legacy_path_input:=true` でActionと排他的に使用する。
+到着は位置と最終Yawで判定し、走行中fixedモードでも最終姿勢を整列する。
+閾値は単独試験の初期設計値であり、実機受入は別途必要。

@@ -29,6 +29,9 @@ include_directories(
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ComputePath.srv"
+  "action/FollowPath.action"
+  "msg/PathVelocity.msg"
+  "msg/ControlLease.msg"
   DEPENDENCIES geometry_msgs nav_msgs builtin_interfaces)
 rosidl_get_typesupport_target(cpp_typesupport ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
@@ -62,7 +65,9 @@ ament_target_dependencies(path_planner_node
 )
 
 add_executable(path_follower_node src/path_follower_node.cpp)
+target_link_libraries(path_follower_node "${cpp_typesupport}")
 ament_target_dependencies(path_follower_node
+  rclcpp_action
   rclcpp
   nav_msgs
   geometry_msgs
@@ -93,6 +98,9 @@ if(BUILD_TESTING)
   if(BUILD_RUNTIME_NODES)
     ament_add_pytest_test(compute_path_integration_test test/compute_path_integration_test.py
       ENV PLANNER_EXECUTABLE=$<TARGET_FILE:path_planner_node>
+      TIMEOUT 60)
+    ament_add_pytest_test(follow_path_integration_test test/follow_path_integration_test.py
+      ENV FOLLOWER_EXECUTABLE=$<TARGET_FILE:path_follower_node>
       TIMEOUT 60)
   endif()
 endif()
