@@ -141,7 +141,8 @@ def test_follow_path_faults():
         assert outcome.status == GoalStatus.STATUS_CANCELED
         assert outcome.result.error_code == FollowPath.Result.CANCELED
         wait_for(lambda: velocities and not velocities[-1].valid
-                 and velocities[-1].velocity.linear.x == 0)
+                 and velocities[-1].velocity.linear.x == 0
+                 and velocities[-1].control_history_cleared)
         assert not goal().accepted  # Same execution cannot be resurrected.
 
         handle = start_next()
@@ -190,7 +191,8 @@ def test_follow_path_faults():
         outcome = await_future(aligned.get_result_async())
         assert outcome.status == GoalStatus.STATUS_SUCCEEDED
         assert outcome.result.success and outcome.result.generation == generation
-        wait_for(lambda: not velocities[-1].valid and velocities[-1].velocity.angular.z == 0)
+        wait_for(lambda: not velocities[-1].valid and velocities[-1].velocity.angular.z == 0
+                 and velocities[-1].control_history_cleared)
     finally:
         process.terminate()
         try:

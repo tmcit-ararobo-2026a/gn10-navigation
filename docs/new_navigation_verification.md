@@ -26,3 +26,12 @@ colcon test-result --test-result-base /tmp/stm32-ros2/build/gn10_navigation/test
 Goal位置・最終Yaw閾値、lease期限は初期設計値。実機調整・負荷・HIL・全体受入: 未実施。
 Action実行中のgoal差替えは拒否し、取消完了後の新世代で要求する契約。
 下位パッケージはmanager/robot_portに依存しない。
+
+## 契約v1の取消完了確認（T08追加）
+
+2026-10-14 Asia/Tokyo、feat/12-navigation-contract-v1、5c8db72からのPathVelocity型・追従・試験差分。
+control_history_clearedは経路・平滑化速度／加速度・Yaw・progress・headingを消去したzero/invalid出力だけでtrue。
+終端処理の消去後に明示配信し、managerはAction終端と合わせて確認する。
+`/home/lambda/ros2_ws/src`、Humble setup後、`colcon build --packages-select gn10_navigation --build-base /tmp/manager-v1/build --install-base /tmp/manager-v1/install`、成功／終了コード0。
+install setup後、`ctest --test-dir /tmp/manager-v1/build/gn10_navigation --output-on-failure`、3試験（6ケース）成功／終了コード0。
+取消とSUCCESSで消去確認を待つ実DDS試験を追加。実機／物理停止は未実施。ログ `/tmp/manager-v1/navigation-final-tests.log`。
