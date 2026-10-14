@@ -1,6 +1,6 @@
 # gn10-navigation
 
-コストマップ生成、経路生成、経路追従などのナビゲーション機能を提供するROS2パッケージです。
+コストマップ生成、経路生成、経路追従などのナビゲーション機能を提供するROS 2パッケージです。
 
 ## 目次
 
@@ -12,95 +12,83 @@
 
 ## 1. 概要
 
-経路生成：2D A*
-経路追従：Pure Pursuit / PID制御
+- コストマップ生成：フィールド地図と障害物から走行コストを生成
+- 経路生成：2D A*による経路計画
+- 経路追従：Pure Pursuit / PID制御による並進速度・Yaw速度の計算
+
+経路計画はService、追従はActionで利用します。速度は`PathVelocity`として配信し、アクチュエータへの送信は呼出側が担当します。
 
 ## 2. コントリビューション
 
-[CONTRIBUTING.md](./CONTRIBUTING.md) を参照してください。
+[CONTRIBUTING.md](CONTRIBUTING.md)を参照してください。
 
 ## 3. ビルド・使い方
 
-必要なパッケージをインストール
+ROS 2 Humbleを使用します。ワークスペースで依存関係をインストールします。
 
 ```bash
+cd ~/ros2_ws
+source /opt/ros/humble/setup.bash
 sudo apt update
 sudo apt install -y nlohmann-json3-dev
-```
-
-rosdepで依存関係をインストール
-
-```bash
-rosdep update --rosdistro humble
-rosdep install --from-paths . --ignore-src -y --rosdistro humble
-```
-
-ビルド
-
-```bash
-colcon build --symlink-install --package-select gn10_navigation
-```
-
-読み込み
-
-```bash
+rosdep install --from-paths src/gn10-navigation --ignore-src -y --rosdistro humble
+colcon build --symlink-install --packages-select gn10_navigation
 source install/setup.bash
 ```
 
-コストマップ生成ノードの起動
+コストマップ生成ノードだけを起動する場合:
 
 ```bash
-# Blue チームとして起動
-ros2 launch gn10_navigation costmap_generator.launch.py team_color:=blue
+ros2 launch gn10_navigation costmap_generator.launch.py
+```
 
-# Red チームとして起動
-ros2 launch gn10_navigation costmap_generator.launch.py team_color:=red
+コストマップ・経路計画・追従をまとめて起動する場合:
+
+```bash
+ros2 launch gn10_navigation navigation.launch.py use_rviz:=true
+```
+
+自己位置推定を別途起動し、点群・Poseの時刻に対応する`map → base_link` TFを用意してください。bag再生では`use_sim_time:=true`を指定します。
+
+地図は[config/nhk2026_map.json](config/nhk2026_map.json)、各ノードの設定は[コストマップ](config/costmap_params.yaml)、[経路計画](config/path_planner_params.yaml)、[経路追従](config/path_follower_params.yaml)を参照してください。`navigation.launch.py`の`map_file_path`、`costmap_params`、`planner_params`、`follower_params`で変更できます。
+
+型のみをビルドする場合は`--cmake-args -DBUILD_RUNTIME_NODES=OFF`を指定します。試験は以下で実行できます。
+
+```bash
+colcon test --packages-select gn10_navigation
+colcon test-result --verbose
 ```
 
 ## 4. システム構成
 
-<!-- ROS2ノード構成・STM32との通信方式・ハードウェア構成 等 -->
-<!-- 依存クラスが3つ以上ある場合は docs/uml/ にUML図を作成し、ここにリンクする -->
+### ノードとインターフェース
+
+| ノード | インターフェース | 役割 |
+| :--- | :--- | :--- |
+| `costmap_generator_node` | `/costmap` | 独自の0〜254コストを持つコストマップ生成 |
+| `path_planner_node` | `/navigation/compute_path` (`ComputePath`) | 開始・目標Poseから経路を計画 |
+| `path_follower_node` | `/navigation/follow_path` (`FollowPath`) | 経路追従と進捗・終了結果の通知 |
+| `path_follower_node` | `/navigation/control_lease` (`ControlLease`) | 制御許可の受信 |
+| `path_follower_node` | `/navigation/path_velocity` (`PathVelocity`) | `base_link`基準の速度と有効性の配信 |
+
+### 経路計画
+
+`ComputePath`はmap座標の開始・目標Poseと`generation`を受け取り、同じ世代番号とPathまたはエラーを返します。地図の未取得、不正Pose、占有端点、経路なし、安全性検査失敗などを区別します。計画失敗時は空Pathを公開し、古い経路を残しません。
+
+コストはunsignedとして比較し、セル境界・角・端点を含めて線分が通るセルを検査します。占有開始位置から自由セルへの単純な移動補正は行いません。ServiceはTFを要求しないため、呼出側で開始Poseの鮮度と遅延結果の世代を確認してください。
+
+### 経路追従と取消
+
+`FollowPath`はPath・`producer_session`・`generation`を受け取り、進捗とSUCCESS、CANCELED、INVALID_PATH、LEASE_EXPIRED、TF_ERROR、PATH_DEVIATIONを返します。開始前に同じsession・世代の有効なleaseが必要です。
+
+呼出側は新しいstamp・`update_sequence`のleaseを20ms周期で配信します。追従ノードは生成時点から100msの単調期限を監視し、重複・逆行・未来時刻・期限超過を拒否します。実行中の別goalは受け付けず、取消後に新世代で差し替えます。
+
+取消・lease失効・TF異常・経路逸脱では、ゼロ速度の配信、経路と制御履歴の消去、終了結果の通知を行います。`control_history_cleared`で履歴消去を確認できます。TFやleaseの復旧だけでは旧経路を再開しません。到着は位置と最終Yawで判定します。閾値は実機での調整・確認が必要です。
+
+従来の`/goal_pose`・`/planned_path`入力は既定で無効です。単独操作で使用する場合は、それぞれ`enable_legacy_goal_input`・`enable_legacy_path_input`を有効にします。従来のPath入力とActionは排他的に使用します。
+
+試験の詳細は[経路・追従の検証記録](docs/new_navigation_verification.md)を参照してください。
 
 ## 5. ライセンス
 
-本リポジトリは [MITライセンス](./LICENSE) のもとで公開されています。
-
-## STM32新仕様向けAPI整備（T01）
-
-ROS型は本パッケージが所有し、manager・robot_portには依存しない。
-`-DBUILD_RUNTIME_NODES=OFF` で実行ノードのビルドを分離できる。
-Service・Actionの型と取消・lease対応は同じ作業ブランチで段階的に追加する。
-
-## 経路安全修正（T06）
-
-独自0〜254コストをunsignedとして比較し、描画順で高コストを下げない。
-要求端点をPathへのコピー前に補正し、全線分をsupercoverで検査する。
-セル角抜け、境界の両隣、占有終端、開始補正区間の障害物通過を許可しない。
-占有開始位置から最寄り自由セルへの単純snapは安全な接続を保証できないため拒否する。
-同一セル内の短距離も実際の開始・目標座標を使用する。
-
-## ComputePath Service（T07）
-
-`/navigation/compute_path` はmap座標の開始・目標Poseとgenerationを受け、Pathまたは
-NO_MAP / INVALID_START / INVALID_GOAL / START_BLOCKED / GOAL_BLOCKED /
-NO_PATH / PATH_UNSAFE / INTERNAL_ERRORを返す。generationはそのまま返す。
-Quaternion・有限座標・地図サイズ・軸に平行な地図原点を検査する。
-計画失敗は空Pathを公開し、古い計画を残さない。Service自身はTFを要求せず、
-開始Poseの鮮度と遅延結果の世代判定は呼出側が実行前に検査する。
-旧 `/goal_pose` 入力は既定無効で、単独の従来操作時のみ `enable_legacy_goal_input:=true` を指定する。
-
-## FollowPath Action・ControlLease（T08）
-
-`/navigation/follow_path`はPath・producer_session・generationを受け、進捗と
-SUCCESS / CANCELED / INVALID_PATH / LEASE_EXPIRED / TF_ERROR / PATH_DEVIATIONを返す。
-`/navigation/control_lease`は同一session・generationの新しいstamp・update_sequenceで
-20ms周期配信する設計。100msを生成時点から単調時計で監視し、重複・逆行・未来・期限超過を拒否する。
-Action開始前に一致する有効leaseが必要。実行中の新goalは拒否し、明示取消後に新世代で差し替える。
-取消、lease断・取消、TF異常、経路逸脱でゼロ速度・経路消去・制御履歴消去・結果通知を行う。
-TF復旧・lease再開だけで旧経路を再開しない。同一sessionの旧goal世代と引退sessionを拒否する。
-
-出力は `/navigation/path_velocity` のbase_link速度・session・世代・時刻・更新番号・valid。
-旧 `/planned_path` 入力は既定無効。従来操作は `enable_legacy_path_input:=true` でActionと排他的に使用する。
-到着は位置と最終Yawで判定し、走行中fixedモードでも最終姿勢を整列する。
-閾値は単独試験の初期設計値であり、実機受入は別途必要。
+本リポジトリは[MITライセンス](LICENSE)のもとで公開されています。
