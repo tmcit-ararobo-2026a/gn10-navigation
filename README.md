@@ -45,6 +45,12 @@ ros2 launch gn10_navigation costmap_generator.launch.py
 コストマップ・経路計画・追従をまとめて起動する場合:
 
 ```bash
+ros2 launch gn10_navigation navigation.launch.py
+```
+
+RVizも起動する場合:
+
+```bash
 ros2 launch gn10_navigation navigation.launch.py use_rviz:=true
 ```
 
