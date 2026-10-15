@@ -1,6 +1,8 @@
 #include "gn10_navigation/costmap_generator_node.hpp"
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <cmath>
+#include <stdexcept>
+#include "gn10_navigation/grid_safety.hpp"
 #include <algorithm>
 
 CostmapGeneratorNode::CostmapGeneratorNode() : Node("costmap_generator_node")
@@ -63,6 +65,18 @@ void CostmapGeneratorNode::declareAndGetParameters()
     cost_partition_ = static_cast<int>(this->get_parameter("costs.partition").as_int());
     cost_obstacle_  = static_cast<int>(this->get_parameter("costs.obstacle").as_int());
     cost_default_   = static_cast<int>(this->get_parameter("costs.default_cost").as_int());
+    for (const auto cost : {cost_wall_, cost_partition_, cost_obstacle_, cost_default_}) {
+        if (cost < 0 || cost > 254) {
+            throw std::invalid_argument("Custom cost must be within [0,254]");
+        }
+    }
+    if (!std::isfinite(resolution_) || resolution_ <= 0 ||
+        !std::isfinite(map_min_x_) || !std::isfinite(map_max_x_) ||
+        !std::isfinite(map_min_y_) || !std::isfinite(map_max_y_) ||
+        map_min_x_ >= map_max_x_ || map_min_y_ >= map_max_y_) {
+        throw std::invalid_argument("Invalid map bounds/resolution");
+    }
+
 }
 
 int CostmapGeneratorNode::getObjectCost(const std::string& comment, ObjectType /*type*/) const
@@ -141,7 +155,7 @@ void CostmapGeneratorNode::generateAndPublishCostmap()
             for (int x = min_x_idx; x <= max_x_idx; ++x) {
                 for (int y = min_y_idx; y <= max_y_idx; ++y) {
                     int idx = y * width + x;
-                    costmap_msg.data[idx] = static_cast<int8_t>(std::max(static_cast<int>(costmap_msg.data[idx]), cost));
+                    costmap_msg.data[idx] = gn10_navigation::merge_cost(costmap_msg.data[idx], static_cast<uint8_t>(cost));
                 }
             }
         } 
@@ -161,7 +175,7 @@ void CostmapGeneratorNode::generateAndPublishCostmap()
 
                     if (dist_sq <= radius * radius) {
                         int idx = y * width + x;
-                        costmap_msg.data[idx] = static_cast<int8_t>(std::max(static_cast<int>(costmap_msg.data[idx]), cost));
+                        costmap_msg.data[idx] = gn10_navigation::merge_cost(costmap_msg.data[idx], static_cast<uint8_t>(cost));
                     }
                 }
             }

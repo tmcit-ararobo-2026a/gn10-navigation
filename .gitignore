@@ -61,3 +61,10 @@ _autosave-*
 *.kicad_pcb-bak
 fp-info-cache
 **/.history/
+# Python test artifacts
+__pycache__/
+.pytest_cache/
+
+# Local documentation and tests
+docs/
+test/
