@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(gn10_navigation LANGUAGES CXX)
+project(gn10_navigation LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -17,11 +18,24 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(nlohmann_json REQUIRED)
+find_package(builtin_interfaces REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+find_package(rclcpp_action REQUIRED)
+option(BUILD_RUNTIME_NODES "Build planning and following runtime nodes" ON)
 
 include_directories(
   include
 )
 
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "srv/ComputePath.srv"
+  "action/FollowPath.action"
+  "msg/PathVelocity.msg"
+  "msg/ControlLease.msg"
+  DEPENDENCIES geometry_msgs nav_msgs builtin_interfaces)
+rosidl_get_typesupport_target(cpp_typesupport ${PROJECT_NAME} "rosidl_typesupport_cpp")
+
+if(BUILD_RUNTIME_NODES)
 # C++ ノードのビルド
 add_executable(costmap_generator_node
   src/map_loader.cpp
@@ -30,6 +44,7 @@ add_executable(costmap_generator_node
 
 
 ament_target_dependencies(costmap_generator_node
+  ament_index_cpp
   rclcpp
   nav_msgs
   nlohmann_json
@@ -38,6 +53,7 @@ ament_target_dependencies(costmap_generator_node
 add_executable(path_planner_node
   src/path_planner_node.cpp
 )
+target_link_libraries(path_planner_node "${cpp_typesupport}")
 
 ament_target_dependencies(path_planner_node
   rclcpp
@@ -49,7 +65,9 @@ ament_target_dependencies(path_planner_node
 )
 
 add_executable(path_follower_node src/path_follower_node.cpp)
+target_link_libraries(path_follower_node "${cpp_typesupport}")
 ament_target_dependencies(path_follower_node
+  rclcpp_action
   rclcpp
   nav_msgs
   geometry_msgs
@@ -66,8 +84,25 @@ install(TARGETS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+endif()
+
 install(DIRECTORY launch config rviz
   DESTINATION share/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/grid_safety_test.cpp")
+  find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_gtest(grid_safety_test test/grid_safety_test.cpp)
+  target_include_directories(grid_safety_test PRIVATE include)
+  if(BUILD_RUNTIME_NODES)
+    ament_add_pytest_test(compute_path_integration_test test/compute_path_integration_test.py
+      ENV PLANNER_EXECUTABLE=$<TARGET_FILE:path_planner_node>
+      TIMEOUT 60)
+    ament_add_pytest_test(follow_path_integration_test test/follow_path_integration_test.py
+      ENV FOLLOWER_EXECUTABLE=$<TARGET_FILE:path_follower_node>
+      TIMEOUT 60)
+  endif()
+endif()
+ament_export_dependencies(rosidl_default_runtime)
 ament_package()

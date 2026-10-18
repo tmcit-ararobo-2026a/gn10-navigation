@@ -5,10 +5,8 @@ import math
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, EmitEvent, OpaqueFunction, RegisterEventHandler
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition
-from launch.event_handlers import OnProcessExit
-from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -43,18 +41,14 @@ def start_navigation(context):
              output='screen', arguments=['-d', rviz_config] if rviz_config else [],
              parameters=[clock], condition=IfCondition(LaunchConfiguration('use_rviz'))),
     ]
-    handlers = [RegisterEventHandler(OnProcessExit(
-        target_action=node,
-        on_exit=[EmitEvent(event=Shutdown(reason='Navigation process exited'))],
-    )) for node in nodes]
-    return handlers + nodes
+    return nodes
 
 
 def generate_launch_description():
     share = Path(get_package_share_directory('gn10_navigation'))
     rviz_config = share / 'rviz/navigation.rviz'
     arguments = [
-        DeclareLaunchArgument('use_rviz', default_value='true', description='RViz2 を起動する'),
+        DeclareLaunchArgument('use_rviz', default_value='false', description='RViz2 を起動する'),
         DeclareLaunchArgument('use_sim_time', default_value='false',
                               description='実機は false、rosbag の /clock 利用時は true'),
         DeclareLaunchArgument('planner_params',

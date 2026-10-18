@@ -12,6 +12,7 @@
 #include "nav_msgs/msg/occupancy_grid.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "gn10_navigation/srv/compute_path.hpp"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
@@ -35,6 +36,10 @@ private:
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_pose_sub_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
+    rclcpp::Service<gn10_navigation::srv::ComputePath>::SharedPtr compute_path_service_;
+    /** @brief Return a complete path or an explicit failure for caller-supplied poses. */
+    void compute_path(const gn10_navigation::srv::ComputePath::Request & request,
+                      gn10_navigation::srv::ComputePath::Response & response);
 
     void getCostmapMsg(nav_msgs::msg::OccupancyGrid::SharedPtr grid_msg);
 

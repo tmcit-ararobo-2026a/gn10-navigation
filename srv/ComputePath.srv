@@ -1,0 +1,20 @@
+# Caller supplies start and goal in the configured map frame.
+# Measurement freshness is the caller's responsibility before execution.
+geometry_msgs/PoseStamped start
+geometry_msgs/PoseStamped goal
+uint64 generation
+---
+uint8 SUCCESS=0
+uint8 NO_MAP=1
+uint8 INVALID_START=2
+uint8 INVALID_GOAL=3
+uint8 START_BLOCKED=4
+uint8 GOAL_BLOCKED=5
+uint8 NO_PATH=6
+uint8 PATH_UNSAFE=7
+uint8 INTERNAL_ERROR=8
+uint64 generation
+bool success
+uint8 error_code
+string reason
+nav_msgs/Path path
