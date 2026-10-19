@@ -70,8 +70,6 @@ install(TARGETS
   DESTINATION lib/${PROJECT_NAME}
 )
 
-endif()
-
 install(DIRECTORY launch config rviz
   DESTINATION share/${PROJECT_NAME}
 )
