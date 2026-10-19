@@ -61,3 +61,119 @@ jobs:
           source install/setup.bash
           colcon test --event-handlers console_direct+
           colcon test-result --verbose
+      - name: Check standard planner goal and path interface
+        env:
+          ROS_LOCALHOST_ONLY: '1'
+          ROS_DOMAIN_ID: '221'
+        run: |
+          set -e
+          source /opt/ros/humble/setup.bash
+          source install/setup.bash
+          export ROS_LOG_DIR="$RUNNER_TEMP/planner-ros-logs"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path as FilePath
+          import subprocess
+          import time
+
+          from ament_index_python.packages import get_package_prefix
+          from geometry_msgs.msg import PoseStamped, TransformStamped
+          from nav_msgs.msg import OccupancyGrid, Path
+          import rclpy
+          from rclpy.qos import DurabilityPolicy, QoSProfile
+          from tf2_ros import TransformBroadcaster
+
+          prefix = FilePath(get_package_prefix('gn10_navigation'))
+          assert not any('compute_path' in p.name.lower() or 'computepath' in p.name.lower()
+                         for p in prefix.rglob('*'))
+          rclpy.init()
+          node = rclpy.create_node('standard_planner_smoke')
+          goals = node.create_publisher(PoseStamped, '/goal_pose', 1)
+          maps = node.create_publisher(OccupancyGrid, '/costmap', QoSProfile(
+              depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+          paths = []
+          node.create_subscription(Path, '/planned_path', paths.append, 10)
+          transforms = TransformBroadcaster(node)
+          grid = OccupancyGrid()
+          grid.header.frame_id = 'map'
+          grid.info.width = grid.info.height = 5
+          grid.info.resolution = 1.0
+          grid.info.origin.orientation.w = 1.0
+          grid.data = [0] * 25
+          with (FilePath(os.environ['RUNNER_TEMP']) / 'planner.log').open('w') as log:
+              process = subprocess.Popen(
+                  [str(prefix / 'lib/gn10_navigation/path_planner_node')],
+                  stdout=log, stderr=log)
+              try:
+                  def pump():
+                      assert process.poll() is None
+                      transform = TransformStamped()
+                      transform.header.frame_id = 'map'
+                      transform.header.stamp = node.get_clock().now().to_msg()
+                      transform.child_frame_id = 'base_link'
+                      transform.transform.translation.x = 0.5
+                      transform.transform.translation.y = 2.5
+                      transform.transform.rotation.w = 1.0
+                      transforms.sendTransform(transform)
+                      rclpy.spin_once(node, timeout_sec=0.01)
+
+                  def wait(condition):
+                      deadline = time.monotonic() + 10
+                      while not condition() and time.monotonic() < deadline:
+                          pump()
+                      assert condition(), 'Planner discovery/response timed out'
+
+                  def spin_for(seconds):
+                      deadline = time.monotonic() + seconds
+                      while time.monotonic() < deadline:
+                          pump()
+
+                  wait(lambda: goals.get_subscription_count() == 1
+                       and maps.get_subscription_count() == 1
+                       and node.count_publishers('/planned_path') == 1)
+                  maps.publish(grid)
+                  spin_for(0.5)
+                  goal = PoseStamped()
+                  goal.header.frame_id = 'map'
+                  goal.pose.position.x = 4.5
+                  goal.pose.position.y = 2.5
+                  goal.pose.orientation.w = 1.0
+                  goals.publish(goal)
+                  wait(lambda: bool(paths))
+                  path = paths[-1]
+                  assert len(path.poses) >= 2 and path.header.frame_id == 'map'
+                  assert path.poses[0].pose.position.x == 0.5
+                  assert path.poses[-1].pose.position.x == 4.5
+                  assert path.poses[-1].pose.position.y == 2.5
+                  subscriptions = dict(node.get_subscriber_names_and_types_by_node(
+                      'path_planner_node', '/'))
+                  publishers = dict(node.get_publisher_names_and_types_by_node(
+                      'path_planner_node', '/'))
+                  services = node.get_service_names_and_types_by_node('path_planner_node', '/')
+                  assert subscriptions['/goal_pose'] == ['geometry_msgs/msg/PoseStamped']
+                  assert subscriptions['/costmap'] == ['nav_msgs/msg/OccupancyGrid']
+                  assert publishers['/planned_path'] == ['nav_msgs/msg/Path']
+                  assert all(name != '/navigation/compute_path' for name, _ in services)
+                  assert not any(kind.startswith('gn10_navigation/')
+                                 for _, kinds in services + list(subscriptions.items())
+                                 + list(publishers.items()) for kind in kinds)
+                  count = len(paths)
+                  goal.header.frame_id = 'odom'
+                  goals.publish(goal)
+                  wait(lambda: len(paths) > count)
+                  assert not paths[-1].poses
+                  count = len(paths)
+                  maps.publish(grid)
+                  spin_for(0.7)
+                  assert len(paths) == count
+                  print('Standard goal/path, empty failure path and no automatic retry confirmed')
+              finally:
+                  process.terminate()
+                  try:
+                      process.wait(timeout=5)
+                  except subprocess.TimeoutExpired:
+                      process.kill()
+                      process.wait(timeout=5)
+                  node.destroy_node()
+                  rclpy.shutdown()
+          PY
