@@ -14,9 +14,9 @@
 
 - コストマップ生成：フィールド地図と障害物から走行コストを生成
 - 経路生成：2D A*による経路計画
-- 経路追従：Pure Pursuit / PID制御による並進速度・Yaw速度の計算
+- 経路追従：Pure Pursuitによる並進と、移動バケツ方向への常時旋回
 
-経路計画はService、追従はActionで利用します。速度は`PathVelocity`として配信し、アクチュエータへの送信は呼出側が担当します。
+経路計画はService、追従は標準型のPathトピックで利用します。追従ノードは標準型のTwist速度とLED用BoolをUDPノードへ配信します。
 
 ## 2. コントリビューション
 
@@ -54,7 +54,7 @@ RVizも起動する場合:
 ros2 launch gn10_navigation navigation.launch.py use_rviz:=true
 ```
 
-自己位置推定を別途起動し、点群・Poseの時刻に対応する`map → base_link` TFを用意してください。bag再生では`use_sim_time:=true`を指定します。
+自己位置推定の`map → base_link`と、LiDAR認識の`map → bucket_bottom` TFを別途用意してください。bag再生では`use_sim_time:=true`を指定します。バケツTFが有効になると、経路未受信でも旋回指令を配信します。
 
 地図は[config/nhk2026_map.json](config/nhk2026_map.json)、各ノードの設定は[コストマップ](config/costmap_params.yaml)、[経路計画](config/path_planner_params.yaml)、[経路追従](config/path_follower_params.yaml)を参照してください。`navigation.launch.py`の`map_file_path`、`costmap_params`、`planner_params`、`follower_params`で変更できます。
 
@@ -73,9 +73,10 @@ colcon test-result --verbose
 | :--- | :--- | :--- |
 | `costmap_generator_node` | `/costmap` | 独自の0〜254コストを持つコストマップ生成 |
 | `path_planner_node` | `/navigation/compute_path` (`ComputePath`) | 開始・目標Poseから経路を計画 |
-| `path_follower_node` | `/navigation/follow_path` (`FollowPath`) | 経路追従と進捗・終了結果の通知 |
-| `path_follower_node` | `/navigation/control_lease` (`ControlLease`) | 制御許可の受信 |
-| `path_follower_node` | `/navigation/path_velocity` (`PathVelocity`) | `base_link`基準の速度と有効性の配信 |
+| `path_follower_node` | `/planned_path` (`nav_msgs/msg/Path`) | 並進経路の受信。空Pathで並進取消 |
+| `path_follower_node` | `/robot/command/cmd_vel` (`geometry_msgs/msg/Twist`) | `base_link`基準の並進・旋回速度 |
+| `path_follower_node` | `/robot/command/can_move` (`std_msgs/msg/Bool`) | LED用の正常／失敗表示 |
+| `path_follower_node` | `/speed_path` (`nav_msgs/msg/Path`) | 速度計画の可視化 |
 
 ### 経路計画
 
@@ -83,15 +84,17 @@ colcon test-result --verbose
 
 コストはunsignedとして比較し、セル境界・角・端点を含めて線分が通るセルを検査します。占有開始位置から自由セルへの単純な移動補正は行いません。ServiceはTFを要求しないため、呼出側で開始Poseの鮮度と遅延結果の世代を確認してください。
 
-### 経路追従と取消
+### 経路追従とバケツ方向への旋回
 
-`FollowPath`はPath・`producer_session`・`generation`を受け取り、進捗とSUCCESS、CANCELED、INVALID_PATH、LEASE_EXPIRED、TF_ERROR、PATH_DEVIATIONを返します。開始前に同じsession・世代の有効なleaseが必要です。
+`/planned_path`は常時受信し、新しいPathで並進経路と並進制御履歴を置き換えます。空Pathで並進を取り消します。到着は位置だけで判定し、Pathの姿勢は旋回に使用しません。既存の速度・加減速・jerk・車輪速度の制限を使用します。
 
-呼出側は新しいstamp・`update_sequence`のleaseを20ms周期で配信します。追従ノードは生成時点から100msの単調期限を監視し、重複・逆行・未来時刻・期限超過を拒否します。実行中の別goalは受け付けず、取消後に新世代で差し替えます。
+旋回は並進から独立し、起動後・走行中・到着後も`bucket_frame`（既定`bucket_bottom`）のXY位置へ`base_link`の正面+Xを向けます。底面TFの姿勢は使いません。`heading_gain`、`max_angular_speed`、`max_angular_acceleration`で調整します。
 
-取消・lease失効・TF異常・経路逸脱では、ゼロ速度の配信、経路と制御履歴の消去、終了結果の通知を行います。`control_history_cleared`で履歴消去を確認できます。TFやleaseの復旧だけでは旧経路を再開しません。到着は位置と最終Yawで判定します。閾値は実機での調整・確認が必要です。
+バケツTFが未受信・不正・`max_bucket_age`（既定0.3秒）を超過した場合やXY方向が定義できない場合は、並進を続けて旋回だけゼロにし、`can_move=false`を配信します。TFの更新停止はsteady時計でも判定し、復帰後は旋回を再開します。自己位置TF異常では全速度をゼロにして並進経路を解除し、経路不正・逸脱でも並進を終了します。解除した経路の再開には新しいPathが必要です。
 
-従来の`/goal_pose`・`/planned_path`入力は既定で無効です。単独操作で使用する場合は、それぞれ`enable_legacy_goal_input`・`enable_legacy_path_input`を有効にします。従来のPath入力とActionは排他的に使用します。
+`can_move`はLED専用で、正常な待機・到着時もtrueです。経路異常の表示は有効な新Pathまたは空Pathで解除します。安全許可やNavigationStatusの代わりには使いません。UDP側の速度受理に必要な`localization_valid`と`navigation_status`は自己位置推定・goal manager等から別途配信してください。
+
+followerの`FollowPath`・`ControlLease`・`PathVelocity`と、`heading_mode`・`enable_legacy_path_input`・lease関連パラメータは撤去しました。旧呼出側との互換性はありません。plannerの独自`ComputePath`は維持します。plannerを`/goal_pose`で操作する場合は、従来どおり`enable_legacy_goal_input`を有効にしてください。旧生成型が残らないよう、移行時はクリーンなbuild/installを使用してください。
 
 
 ## 5. ライセンス
