@@ -5,7 +5,6 @@
 #include <limits>
 #include <map>
 #include <queue>
-
 #include "gn10_navigation/grid_safety.hpp"
 
 // メンバ関数じゃない計算を行うプログラム
@@ -64,7 +63,7 @@ double pointToLineDistance(
     // 線分上で一番近い位置を割合t(0〜1)で求める
     double t = ((point.first - line_start.first) * dx + (point.second - line_start.second) * dy) /
                length_squared;
-    t = std::clamp(t, 0.0, 1.0);
+    t        = std::clamp(t, 0.0, 1.0);
 
     const double closest_x = line_start.first + t * dx;
     const double closest_y = line_start.second + t * dy;
@@ -119,11 +118,18 @@ PathPlannerNode::PathPlannerNode() : Node("path_planner_node")
         "/costmap", map_qos, std::bind(&PathPlannerNode::getCostmapMsg, this, std::placeholders::_1)
     );
 
-    goal_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-        "/goal_pose", 1, std::bind(&PathPlannerNode::getGoalPose, this, std::placeholders::_1)
-    );
+    if (declare_parameter<bool>("enable_legacy_goal_input", false)) {
+        goal_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+            "/goal_pose", 10, std::bind(&PathPlannerNode::getGoalPose, this, std::placeholders::_1));
+    }
+    compute_path_service_ = create_service<gn10_navigation::srv::ComputePath>(
+        "/navigation/compute_path",
+        [this](const std::shared_ptr<gn10_navigation::srv::ComputePath::Request> request,
+               std::shared_ptr<gn10_navigation::srv::ComputePath::Response> response) {
+            compute_path(*request, *response);
+        });
 
-    path_pub_ = this->create_publisher<nav_msgs::msg::Path>("/planned_path", 1);
+    path_pub_ = this->create_publisher<nav_msgs::msg::Path>("/planned_path", 10);
 
     // tf
     tf_buffer_   = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -167,6 +173,7 @@ PathPlannerNode::PathPlannerNode() : Node("path_planner_node")
     bspline_optimization_iterations_ =
         static_cast<int>(this->get_parameter("cost_caluculate.optimization_iterations").as_int());
 
+    timer_ = this->create_wall_timer(std::chrono::milliseconds(500), [this]() { getRobotPose(); });
     RCLCPP_INFO(this->get_logger(), "Path planner started");
 }
 
@@ -177,16 +184,15 @@ void PathPlannerNode::getCostmapMsg(nav_msgs::msg::OccupancyGrid::SharedPtr grid
     const unsigned int new_height = grid_msg->info.height;
 
     planning_grid_.clear();
-    resolution_           = 0;
-    const auto& origin    = grid_msg->info.origin;
+    resolution_ = 0;
+    const auto & origin = grid_msg->info.origin;
     const auto cell_count = static_cast<std::size_t>(new_width) * new_height;
-    if (new_width == 0 || new_height == 0 ||
-        cell_count > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
-        !std::isfinite(grid_msg->info.resolution) || !std::isfinite(origin.position.x) ||
-        !std::isfinite(origin.position.y) || !std::isfinite(origin.position.z) ||
-        !std::isfinite(origin.orientation.x) || !std::isfinite(origin.orientation.y) ||
-        !std::isfinite(origin.orientation.z) || !std::isfinite(origin.orientation.w) ||
-        std::abs(std::abs(origin.orientation.w) - 1.0) > 1e-3 ||
+    if (new_width == 0 || new_height == 0 || cell_count > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        !std::isfinite(grid_msg->info.resolution) ||
+        !std::isfinite(origin.position.x) || !std::isfinite(origin.position.y) ||
+        !std::isfinite(origin.position.z) || !std::isfinite(origin.orientation.x) ||
+        !std::isfinite(origin.orientation.y) || !std::isfinite(origin.orientation.z) ||
+        !std::isfinite(origin.orientation.w) || std::abs(std::abs(origin.orientation.w) - 1.0) > 1e-3 ||
         std::abs(origin.orientation.x) > 1e-6 || std::abs(origin.orientation.y) > 1e-6 ||
         std::abs(origin.orientation.z) > 1e-6) {
         RCLCPP_ERROR(get_logger(), "Costmap shape/origin is invalid or rotated");
@@ -259,101 +265,169 @@ void PathPlannerNode::getCostmapMsg(nav_msgs::msg::OccupancyGrid::SharedPtr grid
     }
 }
 
+bool PathPlannerNode::getRobotPose()
+{
+    // tfに例外が発生して受信できなかった場合座標変換しない
+    try {
+        auto transform = tf_buffer_->lookupTransform(map_frame_, base_frame_, tf2::TimePointZero);
+        robot_x_       = transform.transform.translation.x;
+        robot_y_       = transform.transform.translation.y;
+        robot_yaw_     = tf2::getYaw(transform.transform.rotation);
+    } catch (const tf2::TransformException& ex) {
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 2000, "Could not get transform: %s", ex.what()
+        );
+
+        return false;
+    }
+
+    // コストマップ未受信(resolution_ = 0)のときに座標変換しない
+    if (planning_grid_.empty()) {
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 2000, "Costmap has not been received yet."
+        );
+
+        return false;
+    }
+
+    auto [grid_x, grid_y] = worldToGrid(robot_x_, robot_y_);
+
+    // 座標が範囲内に収まっているかどうかcheckする関数
+    if (!isInsideGrid(grid_x, grid_y)) {
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(),
+            *this->get_clock(),
+            2000,
+            "Robot is outside the costmap: x=%d, y=%d",
+            grid_x,
+            grid_y
+        );
+        return false;
+    }
+
+    // 通行不可ならコメントを出す
+    if (!isPassable(grid_x, grid_y)) {
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 2000, "Robot cell is occupied!"
+        );
+    }
+
+    return true;
+}
+
 void PathPlannerNode::getGoalPose(geometry_msgs::msg::PoseStamped::SharedPtr goal)
 {
-    nav_msgs::msg::Path path;
-    path.header.frame_id = map_frame_;
-    path.header.stamp    = now();
-    const auto fail      = [&](const std::string& reason) {
-        RCLCPP_WARN(get_logger(), "Path planning failed: %s", reason.c_str());
-        path.poses.clear();
-        path_pub_->publish(path);
+    if (!getRobotPose()) {
+        nav_msgs::msg::Path cleared;
+        cleared.header.frame_id = map_frame_;
+        cleared.header.stamp = now();
+        path_pub_->publish(cleared);
+        return;
+    }
+    gn10_navigation::srv::ComputePath::Request request;
+    request.goal = *goal;
+    request.start.header.frame_id = map_frame_;
+    request.start.header.stamp = now();
+    request.start.pose.position.x = robot_x_;
+    request.start.pose.position.y = robot_y_;
+    request.start.pose.orientation.z = std::sin(robot_yaw_ * 0.5);
+    request.start.pose.orientation.w = std::cos(robot_yaw_ * 0.5);
+    gn10_navigation::srv::ComputePath::Response response;
+    compute_path(request, response);
+}
+
+void PathPlannerNode::compute_path(const gn10_navigation::srv::ComputePath::Request & request,
+                                  gn10_navigation::srv::ComputePath::Response & response)
+{
+    using Response = gn10_navigation::srv::ComputePath::Response;
+    response.generation = request.generation;
+    response.success = false;
+    response.path.header.frame_id = map_frame_;
+    response.path.header.stamp = now();
+    // Clear visualization/legacy path on every failure; never leave a previous plan active.
+    const auto fail = [&](uint8_t code, const std::string & reason) {
+        response.error_code = code;
+        response.reason = reason;
+        response.path.poses.clear();
+        path_pub_->publish(response.path);
     };
-    const auto valid_pose = [&](const geometry_msgs::msg::PoseStamped& pose) {
-        const auto& position = pose.pose.position;
-        const auto& rotation = pose.pose.orientation;
-        const double norm    = rotation.x * rotation.x + rotation.y * rotation.y +
+    const auto valid_pose = [&](const geometry_msgs::msg::PoseStamped & pose) {
+        const auto & position = pose.pose.position;
+        const auto & rotation = pose.pose.orientation;
+        const double norm = rotation.x * rotation.x + rotation.y * rotation.y +
                             rotation.z * rotation.z + rotation.w * rotation.w;
         return pose.header.frame_id == map_frame_ && std::isfinite(position.x) &&
-               std::isfinite(position.y) && std::isfinite(position.z) && std::isfinite(norm) &&
-               std::abs(norm - 1.0) < 1e-3;
+               std::isfinite(position.y) && std::isfinite(position.z) &&
+               std::isfinite(norm) && std::abs(norm - 1.0) < 1e-3;
     };
     try {
         if (planning_grid_.empty()) {
-            fail("No validated costmap");
+            fail(Response::NO_MAP, "No validated costmap");
             return;
         }
-        const auto transform =
-            tf_buffer_->lookupTransform(map_frame_, base_frame_, tf2::TimePointZero);
-        geometry_msgs::msg::PoseStamped start;
-        start.header           = path.header;
-        start.pose.position.x  = transform.transform.translation.x;
-        start.pose.position.y  = transform.transform.translation.y;
-        start.pose.position.z  = transform.transform.translation.z;
-        start.pose.orientation = transform.transform.rotation;
-        const gn10_navigation::GridSafety grid(
-            planning_grid_, width_, height_, resolution_, origin_x_, origin_y_
-        );
-        if (!valid_pose(start)) {
-            fail("Invalid start pose/frame/quaternion");
+        const gn10_navigation::GridSafety grid(planning_grid_, width_, height_, resolution_,
+                                              origin_x_, origin_y_);
+        if (!valid_pose(request.start)) {
+            fail(Response::INVALID_START, "Invalid start pose/frame/quaternion");
             return;
         }
-        if (!valid_pose(*goal)) {
-            fail("Invalid goal pose/frame/quaternion");
+        if (!valid_pose(request.goal)) {
+            fail(Response::INVALID_GOAL, "Invalid goal pose/frame/quaternion");
             return;
         }
-        robot_x_ = start.pose.position.x;
-        robot_y_ = start.pose.position.y;
-        goal_x_  = goal->pose.position.x;
-        goal_y_  = goal->pose.position.y;
+        robot_x_ = request.start.pose.position.x;
+        robot_y_ = request.start.pose.position.y;
+        robot_yaw_ = tf2::getYaw(request.start.pose.orientation);
+        goal_x_ = request.goal.pose.position.x;
+        goal_y_ = request.goal.pose.position.y;
         if (!grid.point_passable(robot_x_, robot_y_)) {
-            fail("Start outside grid or blocked; no unverified snap");
+            fail(Response::START_BLOCKED, "Start outside grid or blocked; no unverified snap");
             return;
         }
         if (!grid.point_passable(goal_x_, goal_y_)) {
-            fail("Goal outside grid or blocked");
+            fail(Response::GOAL_BLOCKED, "Goal outside grid or blocked");
             return;
         }
         const auto [start_x, start_y] = worldToGrid(robot_x_, robot_y_);
-        const auto [goal_x, goal_y]   = worldToGrid(goal_x_, goal_y_);
-        const auto discrete           = aStar(start_x, start_y, goal_x, goal_y);
+        const auto [goal_x, goal_y] = worldToGrid(goal_x_, goal_y_);
+        const auto discrete = aStar(start_x, start_y, goal_x, goal_y);
         if (discrete.empty()) {
-            fail("No A* path");
+            fail(Response::NO_PATH, "No A* path");
             return;
         }
         auto points = bsplineSmoothPath(discrete);
         if (points.empty()) {
-            fail("No smoothed path");
+            fail(Response::NO_PATH, "No smoothed path");
             return;
         }
         if (points.size() == 1) {
-            points = {
-                {robot_x_, robot_y_},
-                { goal_x_,  goal_y_}
-            };
+            points = {{robot_x_, robot_y_}, {goal_x_, goal_y_}};
         } else {
             points.front() = {robot_x_, robot_y_};
-            points.back()  = {goal_x_, goal_y_};
+            points.back() = {goal_x_, goal_y_};
         }
         if (!isSmoothPathValid(points)) {
-            fail("Corrected path intersects blocked cells");
+            fail(Response::PATH_UNSAFE, "Corrected path intersects blocked cells");
             return;
         }
         for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
             geometry_msgs::msg::PoseStamped pose;
-            pose.header          = path.header;
+            pose.header = response.path.header;
             pose.pose.position.x = points[point_index].first;
             pose.pose.position.y = points[point_index].second;
             if (point_index + 1 == points.size()) {
-                pose.pose.orientation = goal->pose.orientation;
+                pose.pose.orientation = request.goal.pose.orientation;
             } else {
-                pose.pose.orientation = start.pose.orientation;
+                pose.pose.orientation = request.start.pose.orientation;
             }
-            path.poses.push_back(pose);
+            response.path.poses.push_back(pose);
         }
-        path_pub_->publish(path);
-    } catch (const std::exception& error) {
-        fail(error.what());
+        response.success = true;
+        response.error_code = Response::SUCCESS;
+        response.reason = "Path computed";
+        path_pub_->publish(response.path);
+    } catch (const std::exception & error) {
+        fail(Response::INTERNAL_ERROR, error.what());
     }
 }
 
@@ -362,7 +436,8 @@ std::pair<int, int> PathPlannerNode::worldToGrid(double wx, double wy)
 {
     return {
         static_cast<int>(std::floor((wx - origin_x_) / resolution_)),
-        static_cast<int>(std::floor((wy - origin_y_) / resolution_))};
+        static_cast<int>(std::floor((wy - origin_y_) / resolution_))
+    };
 }
 
 std::pair<double, double> PathPlannerNode::gridToWorld(int gx, int gy)
@@ -687,19 +762,14 @@ bool PathPlannerNode::isSmoothPathValid(const std::vector<std::pair<double, doub
     if (path.empty()) {
         return false;
     }
-    const gn10_navigation::GridSafety grid(
-        planning_grid_, width_, height_, resolution_, origin_x_, origin_y_
-    );
+    const gn10_navigation::GridSafety grid(planning_grid_, width_, height_, resolution_,
+                                          origin_x_, origin_y_);
     if (!grid.point_passable(path.front().first, path.front().second)) {
         return false;
     }
     for (std::size_t point_index = 1; point_index < path.size(); ++point_index) {
-        if (!grid.segment_passable(
-                path[point_index - 1].first,
-                path[point_index - 1].second,
-                path[point_index].first,
-                path[point_index].second
-            )) {
+        if (!grid.segment_passable(path[point_index - 1].first, path[point_index - 1].second,
+                                   path[point_index].first, path[point_index].second)) {
             return false;
         }
     }
@@ -853,7 +923,8 @@ std::vector<std::pair<double, double>> PathPlannerNode::bsplineSmoothPath(
             const double move = std::min(smoothing_step, distance);
 
             control_points[i] = {
-                original.first + dx / distance * move, original.second + dy / distance * move};
+                original.first + dx / distance * move, original.second + dy / distance * move
+            };
 
             // 動かした結果が障害物に入るなら取り消す
             if (!isSmoothPathValid(evaluateBSplinePath(control_points))) {
@@ -1155,8 +1226,8 @@ double PathPlannerNode::calculatePathCost(
     const double curvature_ratio  = calculateCurvatureCost(path) / std::max(base_curvature, 1e-4);
     const double smoothness_ratio = calculateSmoothnessCost(path) / std::max(base_smoothness, 1e-4);
     const double control_ratio    = calculateControlPointSmoothnessCost(control_points) /
-                                 std::max(base_control_smoothness, 1e-4);
-    const double obstacle = calculateObstacleCost(path);
+                                    std::max(base_control_smoothness, 1e-4);
+    const double obstacle         = calculateObstacleCost(path);
 
     return bspline_length_weight_ * length_ratio + bspline_curvature_weight_ * curvature_ratio +
            bspline_smoothness_weight_ * (0.5 * smoothness_ratio + 0.5 * control_ratio) +

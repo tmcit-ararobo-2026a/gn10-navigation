@@ -21,7 +21,6 @@ find_package(tf2_eigen REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
-find_package(rclcpp_action REQUIRED)
 option(BUILD_RUNTIME_NODES "Build planning and following runtime nodes" ON)
 
 include_directories(
@@ -29,9 +28,7 @@ include_directories(
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "action/FollowPath.action"
-  "msg/PathVelocity.msg"
-  "msg/ControlLease.msg"
+  "srv/ComputePath.srv"
   DEPENDENCIES geometry_msgs nav_msgs builtin_interfaces)
 rosidl_get_typesupport_target(cpp_typesupport ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
@@ -53,6 +50,7 @@ ament_target_dependencies(costmap_generator_node
 add_executable(path_planner_node
   src/path_planner_node.cpp
 )
+target_link_libraries(path_planner_node "${cpp_typesupport}")
 
 ament_target_dependencies(path_planner_node
   rclcpp
@@ -64,9 +62,7 @@ ament_target_dependencies(path_planner_node
 )
 
 add_executable(path_follower_node src/path_follower_node.cpp)
-target_link_libraries(path_follower_node "${cpp_typesupport}")
 ament_target_dependencies(path_follower_node
-  rclcpp_action
   rclcpp
   nav_msgs
   geometry_msgs
@@ -96,11 +92,9 @@ if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/grid_safety_test.c
   ament_add_gtest(grid_safety_test test/grid_safety_test.cpp)
   target_include_directories(grid_safety_test PRIVATE include)
   if(BUILD_RUNTIME_NODES)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/goal_planner_integration_test.py")
-      ament_add_pytest_test(goal_planner_integration_test test/goal_planner_integration_test.py
-        ENV PLANNER_EXECUTABLE=$<TARGET_FILE:path_planner_node>
-        TIMEOUT 60)
-    endif()
+    ament_add_pytest_test(compute_path_integration_test test/compute_path_integration_test.py
+      ENV PLANNER_EXECUTABLE=$<TARGET_FILE:path_planner_node>
+      TIMEOUT 60)
     ament_add_pytest_test(follow_path_integration_test test/follow_path_integration_test.py
       ENV FOLLOWER_EXECUTABLE=$<TARGET_FILE:path_follower_node>
       TIMEOUT 60)

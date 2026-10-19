@@ -14,10 +14,9 @@
 
 - コストマップ生成：フィールド地図と障害物から走行コストを生成
 - 経路生成：2D A*による経路計画
-- 経路追従：Pure Pursuit / PID制御による並進と、移動バケツ方向への常時旋回
+- 経路追従：Pure Pursuitによる並進と、移動バケツ方向への常時旋回
 
-経路計画は標準型のゴール・経路トピックで利用します。追従はActionで利用し、
-速度は標準型のTwistとして配信し、アクチュエータへの送信は呼出側が担当します。
+経路計画はService、追従は標準型のPathトピックで利用します。追従ノードは標準型のTwist速度とLED用BoolをUDPノードへ配信します。
 
 ## 2. コントリビューション
 
@@ -73,28 +72,17 @@ colcon test-result --verbose
 | ノード | インターフェース | 役割 |
 | :--- | :--- | :--- |
 | `costmap_generator_node` | `/costmap` | 独自の0〜254コストを持つコストマップ生成 |
-| `path_planner_node` | `/goal_pose` (`geometry_msgs/msg/PoseStamped`) | goal managerからゴールを受信 |
-| `path_follower_node` | `/navigation/follow_path` (`FollowPath`) | 経路追従と進捗・終了結果の通知 |
-| `path_follower_node` | `/navigation/control_lease` (`ControlLease`) | 制御許可の受信 |
-| `path_follower_node` | `/robot/command/cmd_vel` (`geometry_msgs/msg/Twist`) | `base_link`基準の速度配信 |
-| `path_follower_node` | `/robot/command/can_move` (`std_msgs/msg/Bool`) | 移動可否LEDの配信 |
+| `path_planner_node` | `/navigation/compute_path` (`ComputePath`) | 開始・目標Poseから経路を計画 |
+| `path_follower_node` | `/planned_path` (`nav_msgs/msg/Path`) | 並進経路の受信。空Pathで並進取消 |
+| `path_follower_node` | `/robot/command/cmd_vel` (`geometry_msgs/msg/Twist`) | `base_link`基準の並進・旋回速度 |
+| `path_follower_node` | `/robot/command/can_move` (`std_msgs/msg/Bool`) | LED用の正常／失敗表示 |
+| `path_follower_node` | `/speed_path` (`nav_msgs/msg/Path`) | 速度計画の可視化 |
 
 ### 経路計画
 
-goal managerが`/goal_pose`へゴールを送信すると、その受信時の`map → base_link` TFを開始位置として、指定したXY位置までの経路を1回生成します。RVizの「2D Goal Pose」も利用できます。ゴールの`header.frame_id`は`map_configs.map_frame`（既定`map`）と一致させ、有限の位置と正規化したquaternionを指定してください。他の座標系への変換は行いません。Pathの末尾姿勢にはゴールの姿勢を格納しますが、planner自身は旋回や到着判定を行いません。
+`ComputePath`はmap座標の開始・目標Poseと`generation`を受け取り、同じ世代番号とPathまたはエラーを返します。地図の未取得、不正Pose、占有端点、経路なし、安全性検査失敗などを区別します。計画失敗時は空Pathを公開し、古い経路を残しません。
 
-```bash
-ros2 launch gn10_navigation path_planner.launch.py
-# 別端末で環境をsourceし、通行可能なmap座標を指定
-ros2 topic pub --once /goal_pose geometry_msgs/msg/PoseStamped \
-  '{header: {frame_id: map}, pose: {position: {x: 2.0, y: 1.0}, orientation: {w: 1.0}}}'
-```
-
-地図・TFが未取得、不正Pose、占有端点、経路なし、障害物検査失敗の場合は空Pathを公開し、理由をログへ記録します。ゴールを保持しないため、地図・TFの到着や更新だけでは再計画しません。準備ができたらゴールを再指定してください。同じ位置の再指定でも、その時点の自己位置から計画します。
-
-ゴール入力と経路出力はreliable/volatile/depth 1、地図入力はreliable/transient_local/depth 1です。既存のA*とB-splineを使用し、コストはunsignedとして比較します。セル境界・角・端点を含む線分の通行検査と、実際の開始・ゴール位置への端点補正を行います。占有開始位置から自由セルへの単純な移動補正は行いません。
-
-plannerの独自`ComputePath`サービス・型定義と`enable_legacy_goal_input`は撤去しました。plannerは標準ROS型だけを使用します。旧Service呼出側は`/goal_pose`へ移行し、旧生成型を残さないようクリーンなbuild/installを使用してください。followerの`FollowPath`・`ControlLease`は維持します。
+コストはunsignedとして比較し、セル境界・角・端点を含めて線分が通るセルを検査します。占有開始位置から自由セルへの単純な移動補正は行いません。ServiceはTFを要求しないため、呼出側で開始Poseの鮮度と遅延結果の世代を確認してください。
 
 ### 経路追従とバケツ方向への旋回
 
@@ -106,7 +94,7 @@ plannerの独自`ComputePath`サービス・型定義と`enable_legacy_goal_inpu
 
 `can_move`はLED専用で、正常な待機・到着時もtrueです。経路異常の表示は有効な新Pathまたは空Pathで解除します。安全許可やNavigationStatusの代わりには使いません。UDP側の速度受理に必要な`localization_valid`と`navigation_status`は自己位置推定・goal manager等から別途配信してください。
 
-plannerの`/goal_pose`入力は常に有効です。followerで`/planned_path`入力を使用する場合は`enable_legacy_path_input`を有効にします。従来のPath入力とActionは排他的に使用します。
+followerの`FollowPath`・`ControlLease`・`PathVelocity`と、`heading_mode`・`enable_legacy_path_input`・lease関連パラメータは撤去しました。旧呼出側との互換性はありません。plannerの独自`ComputePath`は維持します。plannerを`/goal_pose`で操作する場合は、従来どおり`enable_legacy_goal_input`を有効にしてください。旧生成型が残らないよう、移行時はクリーンなbuild/installを使用してください。
 
 
 ## 5. ライセンス
