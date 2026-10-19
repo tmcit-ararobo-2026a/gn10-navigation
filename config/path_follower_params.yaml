@@ -2,6 +2,8 @@ path_follower_node:
   ros__parameters:
     map_frame: map
     base_frame: base_link
+    bucket_frame: bucket_bottom  # LiDARが配信する底面中心。正面+XをこのXY位置へ向ける
+    max_bucket_age: 0.3          # 対象TFのROS時刻/更新停止の上限 [s]
     control_rate: 60.0            # 制御周期 [Hz]
     max_speed: 2.0                # 最高並進速度 [m/s]。前後・左右の合成速度の上限
     max_acceleration: 1.8         # 加速度上限 [m/s^2]
@@ -11,8 +13,6 @@ path_follower_node:
     curvature_window: 0.10        # 曲率を評価する前後の区間 [m]。min_lookahead 以下にする
     max_angular_speed: 2.0
     max_angular_acceleration: 4.0
-    # fixed: 回転指令ゼロで平行移動、hold: 開始方位へ補正、tangent: 経路方向へ旋回
-    heading_mode: fixed
     heading_gain: 2.0
     # 最大車輪角速度が0の間は、車輪ごとの速度制限を無効にする。
     wheel_radius: 0.065                # 車輪半径 [m]

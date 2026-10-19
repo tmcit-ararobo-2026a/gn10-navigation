@@ -11,6 +11,7 @@ find_package(ament_index_cpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(tf2 REQUIRED)
@@ -18,23 +19,11 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(nlohmann_json REQUIRED)
-find_package(builtin_interfaces REQUIRED)
-find_package(rosidl_default_generators REQUIRED)
-find_package(rclcpp_action REQUIRED)
-option(BUILD_RUNTIME_NODES "Build planning and following runtime nodes" ON)
 
 include_directories(
   include
 )
 
-rosidl_generate_interfaces(${PROJECT_NAME}
-  "action/FollowPath.action"
-  "msg/PathVelocity.msg"
-  "msg/ControlLease.msg"
-  DEPENDENCIES geometry_msgs nav_msgs builtin_interfaces)
-rosidl_get_typesupport_target(cpp_typesupport ${PROJECT_NAME} "rosidl_typesupport_cpp")
-
-if(BUILD_RUNTIME_NODES)
 # C++ ノードのビルド
 add_executable(costmap_generator_node
   src/map_loader.cpp
@@ -63,12 +52,11 @@ ament_target_dependencies(path_planner_node
 )
 
 add_executable(path_follower_node src/path_follower_node.cpp)
-target_link_libraries(path_follower_node "${cpp_typesupport}")
 ament_target_dependencies(path_follower_node
-  rclcpp_action
   rclcpp
   nav_msgs
   geometry_msgs
+  std_msgs
   tf2
   tf2_geometry_msgs
   tf2_ros
@@ -81,8 +69,6 @@ install(TARGETS
   path_follower_node
   DESTINATION lib/${PROJECT_NAME}
 )
-
-endif()
 
 install(DIRECTORY launch config rviz
   DESTINATION share/${PROJECT_NAME}

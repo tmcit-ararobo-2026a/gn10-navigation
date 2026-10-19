@@ -7,13 +7,13 @@
 #include <stdexcept>
 
 #include "tf2/exceptions.h"
-#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "tf2/utils.h"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 namespace {
 
-constexpr double kEpsilon = 1e-6;
-constexpr double kPathStep = 0.05;
+constexpr double kEpsilon          = 1e-6;
+constexpr double kPathStep         = 0.05;
 constexpr double kRadiansPerDegree = 0.017453292519943295;
 
 void limitVector(double& x, double& y, double limit)
@@ -36,22 +36,25 @@ struct MotionSample {
 };
 
 std::vector<MotionSample> makeSCurve(
-    double length, double max_speed, double max_acceleration,
-    double max_deceleration, double max_jerk)
+    double length,
+    double max_speed,
+    double max_acceleration,
+    double max_deceleration,
+    double max_jerk
+)
 {
     const auto ramp_time = [max_jerk](double speed, double acceleration) {
-        const double jerk_time = std::min(acceleration / max_jerk,
-                                          std::sqrt(speed / max_jerk));
+        const double jerk_time = std::min(acceleration / max_jerk, std::sqrt(speed / max_jerk));
         const double flat_time = std::max(0.0, speed / acceleration - jerk_time);
         return std::pair<double, double>{jerk_time, flat_time};
     };
     const auto ramp_distance = [&](double speed) {
-        const auto [up_jerk, up_flat] = ramp_time(speed, max_acceleration);
+        const auto [up_jerk, up_flat]     = ramp_time(speed, max_acceleration);
         const auto [down_jerk, down_flat] = ramp_time(speed, max_deceleration);
         return speed * (up_jerk + down_jerk + 0.5 * (up_flat + down_flat));
     };
 
-    double low = 0.0;
+    double low  = 0.0;
     double high = max_speed;
     for (int i = 0; i < 60; ++i) {
         const double mid = 0.5 * (low + high);
@@ -61,25 +64,31 @@ std::vector<MotionSample> makeSCurve(
             high = mid;
         }
     }
-    const double peak = low;
-    const auto [up_jerk, up_flat] = ramp_time(peak, max_acceleration);
+    const double peak                 = low;
+    const auto [up_jerk, up_flat]     = ramp_time(peak, max_acceleration);
     const auto [down_jerk, down_flat] = ramp_time(peak, max_deceleration);
-    const double cruise_time = std::max(0.0, (length - ramp_distance(peak)) / peak);
+    const double cruise_time          = std::max(0.0, (length - ramp_distance(peak)) / peak);
     const std::vector<std::pair<double, double>> phases = {
-        {up_jerk, max_jerk}, {up_flat, 0.0}, {up_jerk, -max_jerk},
-        {cruise_time, 0.0},
-        {down_jerk, -max_jerk}, {down_flat, 0.0}, {down_jerk, max_jerk}};
+        {    up_jerk,  max_jerk},
+        {    up_flat,       0.0},
+        {    up_jerk, -max_jerk},
+        {cruise_time,       0.0},
+        {  down_jerk, -max_jerk},
+        {  down_flat,       0.0},
+        {  down_jerk,  max_jerk}
+    };
 
-    std::vector<MotionSample> samples{{0.0, 0.0}};
-    double distance = 0.0;
-    double speed = 0.0;
+    std::vector<MotionSample> samples{
+        {0.0, 0.0}
+    };
+    double distance     = 0.0;
+    double speed        = 0.0;
     double acceleration = 0.0;
     for (const auto& [duration, jerk] : phases) {
         double elapsed = 0.0;
         while (elapsed + kEpsilon < duration) {
             const double dt = std::min(0.01, duration - elapsed);
-            distance += speed * dt + 0.5 * acceleration * dt * dt +
-                        jerk * dt * dt * dt / 6.0;
+            distance += speed * dt + 0.5 * acceleration * dt * dt + jerk * dt * dt * dt / 6.0;
             speed += acceleration * dt + 0.5 * jerk * dt * dt;
             acceleration += jerk * dt;
             elapsed += dt;
@@ -92,8 +101,12 @@ std::vector<MotionSample> makeSCurve(
 
 double sCurveSpeed(const std::vector<MotionSample>& samples, double distance)
 {
-    const auto it = std::lower_bound(samples.begin(), samples.end(), distance,
-        [](const MotionSample& point, double value) { return point.distance < value; });
+    const auto it = std::lower_bound(
+        samples.begin(),
+        samples.end(),
+        distance,
+        [](const MotionSample& point, double value) { return point.distance < value; }
+    );
     if (it == samples.begin()) {
         return it->speed;
     }
@@ -101,8 +114,8 @@ double sCurveSpeed(const std::vector<MotionSample>& samples, double distance)
         return 0.0;
     }
     const auto& previous = *(it - 1);
-    const double fraction = (distance - previous.distance) /
-        std::max(it->distance - previous.distance, kEpsilon);
+    const double fraction =
+        (distance - previous.distance) / std::max(it->distance - previous.distance, kEpsilon);
     return previous.speed + fraction * (it->speed - previous.speed);
 }
 
@@ -110,43 +123,58 @@ double sCurveSpeed(const std::vector<MotionSample>& samples, double distance)
 
 PathFollowerNode::PathFollowerNode() : Node("path_follower_node")
 {
-    map_frame_ = declare_parameter<std::string>("map_frame", "map");
-    base_frame_ = declare_parameter<std::string>("base_frame", "base_link");
-    control_rate_ = declare_parameter<double>("control_rate", 50.0);
-    max_speed_ = declare_parameter<double>("max_speed", 1.5);
-    max_acceleration_ = declare_parameter<double>("max_acceleration", 1.0);
-    max_deceleration_ = declare_parameter<double>("max_deceleration", 1.0);
-    max_jerk_ = declare_parameter<double>("max_jerk", 2.0);
+    map_frame_                = declare_parameter<std::string>("map_frame", "map");
+    base_frame_               = declare_parameter<std::string>("base_frame", "base_link");
+    bucket_frame_             = declare_parameter<std::string>("bucket_frame", "bucket_bottom");
+    max_bucket_age_           = declare_parameter<double>("max_bucket_age", 0.3);
+    control_rate_             = declare_parameter<double>("control_rate", 50.0);
+    max_speed_                = declare_parameter<double>("max_speed", 1.5);
+    max_acceleration_         = declare_parameter<double>("max_acceleration", 1.0);
+    max_deceleration_         = declare_parameter<double>("max_deceleration", 1.0);
+    max_jerk_                 = declare_parameter<double>("max_jerk", 2.0);
     max_lateral_acceleration_ = declare_parameter<double>("max_lateral_acceleration", 0.7);
-    curvature_window_ = declare_parameter<double>("curvature_window", 0.15);
-    max_angular_speed_ = declare_parameter<double>("max_angular_speed", 2.0);
+    curvature_window_         = declare_parameter<double>("curvature_window", 0.15);
+    max_angular_speed_        = declare_parameter<double>("max_angular_speed", 2.0);
     max_angular_acceleration_ = declare_parameter<double>("max_angular_acceleration", 4.0);
-    heading_mode_ = declare_parameter<std::string>("heading_mode", "fixed");
-    heading_gain_ = declare_parameter<double>("heading_gain", 2.0);
-    wheel_radius_ = declare_parameter<double>("wheel_radius", 0.0);
-    wheel_center_distance_ = declare_parameter<double>("wheel_center_distance", 0.0);
-    max_wheel_angular_speed_ = declare_parameter<double>("max_wheel_angular_speed", 0.0);
-    wheel_mount_angles_deg_ = declare_parameter<std::vector<double>>(
-        "wheel_mount_angles_deg", {0.0, 120.0, 240.0});
-    min_lookahead_ = declare_parameter<double>("min_lookahead", 0.3);
-    max_lookahead_ = declare_parameter<double>("max_lookahead", 0.9);
-    lookahead_gain_ = declare_parameter<double>("lookahead_gain", 0.5);
-    goal_tolerance_ = declare_parameter<double>("goal_tolerance", 0.08);
+    heading_gain_             = declare_parameter<double>("heading_gain", 2.0);
+    wheel_radius_             = declare_parameter<double>("wheel_radius", 0.0);
+    wheel_center_distance_    = declare_parameter<double>("wheel_center_distance", 0.0);
+    max_wheel_angular_speed_  = declare_parameter<double>("max_wheel_angular_speed", 0.0);
+    wheel_mount_angles_deg_ =
+        declare_parameter<std::vector<double>>("wheel_mount_angles_deg", {0.0, 120.0, 240.0});
+    min_lookahead_       = declare_parameter<double>("min_lookahead", 0.3);
+    max_lookahead_       = declare_parameter<double>("max_lookahead", 0.9);
+    lookahead_gain_      = declare_parameter<double>("lookahead_gain", 0.5);
+    goal_tolerance_      = declare_parameter<double>("goal_tolerance", 0.08);
     goal_approach_speed_ = declare_parameter<double>("goal_approach_speed", 0.3);
-    max_path_error_ = declare_parameter<double>("max_path_error", 0.5);
-    max_pose_age_ = declare_parameter<double>("max_pose_age", 0.5);
+    max_path_error_      = declare_parameter<double>("max_path_error", 0.5);
+    max_pose_age_        = declare_parameter<double>("max_pose_age", 0.5);
 
-    for (double value : {control_rate_, max_speed_, max_acceleration_, max_deceleration_,
-                         max_jerk_, max_lateral_acceleration_, curvature_window_, max_angular_speed_,
-                         max_angular_acceleration_, heading_gain_, min_lookahead_, max_lookahead_,
-                         goal_tolerance_, goal_approach_speed_, max_path_error_, max_pose_age_}) {
+    for (double value :
+         {control_rate_,
+          max_speed_,
+          max_acceleration_,
+          max_deceleration_,
+          max_jerk_,
+          max_lateral_acceleration_,
+          curvature_window_,
+          max_angular_speed_,
+          max_angular_acceleration_,
+          heading_gain_,
+          min_lookahead_,
+          max_lookahead_,
+          goal_tolerance_,
+          goal_approach_speed_,
+          max_path_error_,
+          max_pose_age_,
+          max_bucket_age_}) {
         if (!std::isfinite(value) || value <= 0.0) {
             throw std::invalid_argument("Path follower limits must be finite and positive");
         }
     }
     if (!std::isfinite(lookahead_gain_) || lookahead_gain_ < 0.0 ||
         min_lookahead_ > max_lookahead_ || map_frame_.empty() || base_frame_.empty() ||
-        (heading_mode_ != "fixed" && heading_mode_ != "hold" && heading_mode_ != "tangent")) {
+        (bucket_frame_.empty() || bucket_frame_ == map_frame_ || bucket_frame_ == base_frame_)) {
         throw std::invalid_argument("Invalid path follower configuration");
     }
     if (curvature_window_ > min_lookahead_ + kEpsilon) {
@@ -156,120 +184,82 @@ PathFollowerNode::PathFollowerNode() : Node("path_follower_node")
         !std::isfinite(max_wheel_angular_speed_) || wheel_radius_ < 0.0 ||
         wheel_center_distance_ < 0.0 || max_wheel_angular_speed_ < 0.0 ||
         wheel_mount_angles_deg_.size() != 3 ||
-        std::any_of(wheel_mount_angles_deg_.begin(), wheel_mount_angles_deg_.end(),
-                    [](double angle) { return !std::isfinite(angle); })) {
+        std::any_of(
+            wheel_mount_angles_deg_.begin(),
+            wheel_mount_angles_deg_.end(),
+            [](double angle) { return !std::isfinite(angle); }
+        )) {
         throw std::invalid_argument("Invalid omni wheel configuration");
     }
     if (max_wheel_angular_speed_ > 0.0) {
         if (wheel_radius_ <= 0.0 || wheel_center_distance_ <= 0.0) {
-            throw std::invalid_argument("Wheel speed limit requires wheel radius and center distance");
+            throw std::invalid_argument(
+                "Wheel speed limit requires wheel radius and center distance"
+            );
         }
         const double wheel_speed_limit = wheel_radius_ * max_wheel_angular_speed_;
         if (max_speed_ > wheel_speed_limit) {
-            RCLCPP_WARN(get_logger(), "max_speed %.2f m/s limited to %.2f m/s by wheel speed",
-                        max_speed_, wheel_speed_limit);
+            RCLCPP_WARN(
+                get_logger(),
+                "max_speed %.2f m/s limited to %.2f m/s by wheel speed",
+                max_speed_,
+                wheel_speed_limit
+            );
             max_speed_ = wheel_speed_limit;
         }
     }
 
-    tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
+    tf_buffer_   = std::make_shared<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
-    legacy_input_enabled_ = declare_parameter<bool>("enable_legacy_path_input", false);
-    lease_timeout_s_ = declare_parameter<double>("lease_timeout_s", 0.1);
-    goal_heading_tolerance_rad_ = declare_parameter<double>("goal_heading_tolerance_rad", 0.05);
-    if (!std::isfinite(lease_timeout_s_) || lease_timeout_s_ <= 0 ||
-        !std::isfinite(goal_heading_tolerance_rad_) || goal_heading_tolerance_rad_ <= 0) {
-        throw std::invalid_argument("Lease and goal heading limits must be positive");
-    }
-    if (legacy_input_enabled_) {
-        path_sub_ = create_subscription<nav_msgs::msg::Path>(
-            "/planned_path", rclcpp::QoS(1),
-            std::bind(&PathFollowerNode::onPath, this, std::placeholders::_1));
-    }
-    velocity_publisher_ = create_publisher<gn10_navigation::msg::PathVelocity>(
-        "/navigation/path_velocity", rclcpp::QoS(1).durability_volatile());
-    lease_subscription_ = create_subscription<gn10_navigation::msg::ControlLease>(
-        "/navigation/control_lease", rclcpp::QoS(1).durability_volatile(),
-        [this](gn10_navigation::msg::ControlLease::ConstSharedPtr message) { accept_lease(*message); });
-    action_server_ = rclcpp_action::create_server<FollowPath>(
-        this, "/navigation/follow_path",
-        [this](const rclcpp_action::GoalUUID &, std::shared_ptr<const FollowPath::Goal> goal) {
-            if (legacy_input_enabled_ || active_goal_ || goal->producer_session == 0 ||
-                goal->generation == 0 || !valid_path(goal->path) ||
-                retired_sessions_.count(goal->producer_session) != 0 ||
-                (goal->producer_session == execution_session_ && goal->generation <= execution_generation_) ||
-                !lease_fresh() || lease_.producer_session != goal->producer_session ||
-                lease_.generation != goal->generation) {
-                return rclcpp_action::GoalResponse::REJECT;
-            }
-            return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
-        },
-        [this](const std::shared_ptr<GoalHandle> goal) {
-            if (goal != active_goal_) {
-                return rclcpp_action::CancelResponse::REJECT;
-            }
-            // Suppress output immediately; report canceled after the Action state transition.
-            cancellation_requested_ = true;
-            stop();
-            path_.clear();
-            return rclcpp_action::CancelResponse::ACCEPT;
-        },
-        [this](const std::shared_ptr<GoalHandle> goal) {
-            if (execution_session_ != 0 && execution_session_ != goal->get_goal()->producer_session) {
-                retired_sessions_.insert(execution_session_);
-            }
-            execution_session_ = goal->get_goal()->producer_session;
-            execution_generation_ = goal->get_goal()->generation;
-            active_goal_ = goal;
-            cancellation_requested_ = false;
-            try {
-                onPath(std::make_shared<nav_msgs::msg::Path>(goal->get_goal()->path));
-                if (path_.empty()) {
-                    finish_action(FollowPath::Result::INVALID_PATH, "Path preprocessing failed");
-                }
-            } catch (const std::exception & error) {
-                finish_action(FollowPath::Result::INVALID_PATH, error.what());
-            }
-        });
-    speed_path_pub_ = create_publisher<nav_msgs::msg::Path>("/speed_path", rclcpp::QoS(1).transient_local());
-    cmd_pub_ = create_publisher<geometry_msgs::msg::Twist>("/robot/operation/cmd_vel", 10);
+    path_sub_    = create_subscription<nav_msgs::msg::Path>(
+        "/planned_path",
+        rclcpp::QoS(1),
+        std::bind(&PathFollowerNode::onPath, this, std::placeholders::_1)
+    );
+    speed_path_pub_ =
+        create_publisher<nav_msgs::msg::Path>("/speed_path", rclcpp::QoS(1).transient_local());
+    cmd_pub_ =
+        create_publisher<geometry_msgs::msg::Twist>("/robot/command/cmd_vel", rclcpp::QoS(1));
+    can_move_pub_ =
+        create_publisher<std_msgs::msg::Bool>("/robot/command/can_move", rclcpp::QoS(1));
     last_control_ = std::chrono::steady_clock::now();
-    timer_ = create_wall_timer(
+    timer_        = create_wall_timer(
         std::chrono::duration<double>(1.0 / control_rate_),
-        std::bind(&PathFollowerNode::onTimer, this));
-    RCLCPP_INFO(get_logger(), "Path follower ready at %.1f Hz, heading_mode=%s, max_speed=%.2f m/s",
-                control_rate_, heading_mode_.c_str(), max_speed_);
+        std::bind(&PathFollowerNode::onTimer, this)
+    );
+    RCLCPP_INFO(
+        get_logger(),
+        "Path follower ready at %.1f Hz, bucket_frame=%s, max_speed=%.2f m/s",
+        control_rate_,
+        bucket_frame_.c_str(),
+        max_speed_
+    );
 }
 
-void PathFollowerNode::stop()
+void PathFollowerNode::clear_translation()
 {
     command_vx_world_ = 0.0;
     command_vy_world_ = 0.0;
     command_ax_world_ = 0.0;
     command_ay_world_ = 0.0;
-    command_yaw_rate_ = 0.0;
-    publish_velocity(geometry_msgs::msg::Twist(), false);
 }
 
-bool PathFollowerNode::valid_path(const nav_msgs::msg::Path & path) const
+bool PathFollowerNode::valid_path(const nav_msgs::msg::Path& path) const
 {
     if (path.header.frame_id != map_frame_ || path.poses.empty() || path.poses.size() > 100000) {
         return false;
     }
     double length = 0;
     for (std::size_t point_index = 0; point_index < path.poses.size(); ++point_index) {
-        const auto & pose = path.poses[point_index];
-        const auto & rotation = pose.pose.orientation;
-        const double norm = rotation.x * rotation.x + rotation.y * rotation.y +
-                            rotation.z * rotation.z + rotation.w * rotation.w;
+        const auto& pose = path.poses[point_index];
         if (!finitePoint(pose) || !std::isfinite(pose.pose.position.z) ||
-            (!pose.header.frame_id.empty() && pose.header.frame_id != map_frame_) ||
-            !std::isfinite(norm) || std::abs(norm - 1.0) >= 1e-3) {
+            (!pose.header.frame_id.empty() && pose.header.frame_id != map_frame_)) {
             return false;
         }
         if (point_index > 0) {
-            const auto & previous = path.poses[point_index - 1].pose.position;
-            length += std::hypot(pose.pose.position.x - previous.x, pose.pose.position.y - previous.y);
+            const auto& previous = path.poses[point_index - 1].pose.position;
+            length +=
+                std::hypot(pose.pose.position.x - previous.x, pose.pose.position.y - previous.y);
             // Bound preprocessing memory/latency; synthetic or corrupt huge paths are rejected.
             if (!std::isfinite(length) || length / kPathStep > 100000) {
                 return false;
@@ -279,143 +269,80 @@ bool PathFollowerNode::valid_path(const nav_msgs::msg::Path & path) const
     return true;
 }
 
-void PathFollowerNode::accept_lease(const gn10_navigation::msg::ControlLease & lease)
+void PathFollowerNode::publish_velocity(const geometry_msgs::msg::Twist& velocity, bool can_move)
 {
-    if (lease.producer_session == 0 || lease.generation == 0 || lease.update_sequence == 0 ||
-        lease.stamp.sec < 0 || lease.stamp.nanosec >= 1000000000U) {
-        return;
-    }
-    const auto current_ns = now().nanoseconds();
-    const auto stamp_ns = rclcpp::Time(lease.stamp).nanoseconds();
-    const double age_s = static_cast<double>(current_ns - stamp_ns) * 1e-9;
-    if (stamp_ns <= 0 || age_s < 0 || age_s >= lease_timeout_s_ ||
-        retired_sessions_.count(lease.producer_session) != 0) {
-        return;
-    }
-    if (active_goal_ && (lease.producer_session != execution_session_ ||
-                        lease.generation != execution_generation_)) {
-        return;
-    }
-    if (have_lease_ && lease.producer_session == lease_.producer_session &&
-        (lease.update_sequence <= lease_.update_sequence || lease.generation < lease_.generation ||
-         stamp_ns <= rclcpp::Time(lease_.stamp).nanoseconds())) {
-        return;
-    }
-    lease_ = lease;
-    have_lease_ = true;
-    last_lease_ros_now_ns_ = current_ns;
-    lease_deadline_ = std::chrono::steady_clock::now() +
-        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-            std::chrono::duration<double>(lease_timeout_s_ - age_s));
-    if (!lease.enabled && active_goal_) {
-        finish_action(FollowPath::Result::LEASE_EXPIRED, "Lease permission revoked");
-    }
+    cmd_pub_->publish(velocity);
+    std_msgs::msg::Bool indication;
+    indication.data = can_move;
+    can_move_pub_->publish(indication);
 }
 
-bool PathFollowerNode::lease_fresh()
+void PathFollowerNode::clear_path(bool failed)
 {
-    if (!have_lease_ || !lease_.enabled) {
-        return false;
-    }
-    const auto current_ns = now().nanoseconds();
-    const double age_s = static_cast<double>(current_ns - rclcpp::Time(lease_.stamp).nanoseconds()) * 1e-9;
-    if (std::chrono::steady_clock::now() >= lease_deadline_ || current_ns < last_lease_ros_now_ns_ ||
-        age_s < 0 || age_s >= lease_timeout_s_) {
-        have_lease_ = false;
-        return false;
-    }
-    last_lease_ros_now_ns_ = current_ns;
-    return true;
-}
-
-void PathFollowerNode::publish_velocity(const geometry_msgs::msg::Twist & velocity, bool valid)
-{
-    gn10_navigation::msg::PathVelocity message;
-    message.stamp = now();
-    message.frame_id = base_frame_;
-    message.producer_session = execution_session_;
-    message.generation = execution_generation_;
-    message.update_sequence = ++velocity_sequence_;
-    message.valid = valid && static_cast<bool>(active_goal_);
-    message.velocity = velocity;
-    message.control_history_cleared = !valid && path_.empty() && !heading_locked_ &&
-        progress_ == 0 && command_vx_world_ == 0 && command_vy_world_ == 0 &&
-        command_ax_world_ == 0 && command_ay_world_ == 0 && command_yaw_rate_ == 0;
-    velocity_publisher_->publish(message);
-    if (legacy_input_enabled_) {
-        cmd_pub_->publish(velocity);
-    }
-}
-
-void PathFollowerNode::publish_feedback(double goal_yaw_error)
-{
-    if (!active_goal_) {
-        return;
-    }
-    auto feedback = std::make_shared<FollowPath::Feedback>();
-    feedback->generation = execution_generation_;
-    feedback->progress_m = progress_;
-    if (!path_.empty()) {
-        feedback->remaining_m = std::max(0.0, path_.back().distance - progress_);
-    }
-    feedback->goal_yaw_error_rad = goal_yaw_error;
-    active_goal_->publish_feedback(feedback);
-}
-
-void PathFollowerNode::finish_action(uint8_t error_code, const std::string & reason)
-{
-    stop();
+    clear_translation();
     path_.clear();
-    progress_ = 0;
-    heading_locked_ = false;
-    heading_target_ = 0;
-    last_control_ = std::chrono::steady_clock::now();
+    progress_    = 0.0;
+    path_failed_ = failed;
     nav_msgs::msg::Path cleared;
     cleared.header.frame_id = map_frame_;
-    cleared.header.stamp = now();
+    cleared.header.stamp    = now();
     speed_path_pub_->publish(cleared);
-    if (active_goal_) {
-        auto result = std::make_shared<FollowPath::Result>();
-        result->generation = execution_generation_;
-        result->reason = reason;
-        result->error_code = error_code;
-        result->success = error_code == FollowPath::Result::SUCCESS;
-        if (active_goal_->is_canceling()) {
-            result->success = false;
-            result->error_code = FollowPath::Result::CANCELED;
-            active_goal_->canceled(result);
-        } else if (result->success) {
-            active_goal_->succeed(result);
-        } else {
-            active_goal_->abort(result);
-        }
-        active_goal_.reset();
+}
+
+bool PathFollowerNode::bucket_heading(double x, double y, double yaw, double& error)
+{
+    geometry_msgs::msg::TransformStamped target;
+    try {
+        target = tf_buffer_->lookupTransform(map_frame_, bucket_frame_, tf2::TimePointZero);
+    } catch (const tf2::TransformException& exception) {
+        RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 2000, "Bucket TF unavailable: %s", exception.what()
+        );
+        return false;
     }
-    cancellation_requested_ = false;
-    publish_velocity(geometry_msgs::msg::Twist{}, false);
+    const auto stamp_ns   = rclcpp::Time(target.header.stamp).nanoseconds();
+    const auto steady_now = std::chrono::steady_clock::now();
+    if (stamp_ns != bucket_stamp_ns_) {
+        bucket_stamp_ns_ = stamp_ns;
+        bucket_updated_  = steady_now;
+    }
+    const double age = (now() - rclcpp::Time(target.header.stamp)).seconds();
+    if (stamp_ns <= 0 || !std::isfinite(age) || age < -0.1 || age > max_bucket_age_ ||
+        std::chrono::duration<double>(steady_now - bucket_updated_).count() > max_bucket_age_) {
+        return false;
+    }
+    const double dx = target.transform.translation.x - x;
+    const double dy = target.transform.translation.y - y;
+    if (!std::isfinite(dx) || !std::isfinite(dy) || std::hypot(dx, dy) <= kEpsilon) {
+        return false;
+    }
+    const double bearing = std::atan2(dy, dx);
+    error                = std::atan2(std::sin(bearing - yaw), std::cos(bearing - yaw));
+    return true;
 }
 
 void PathFollowerNode::onPath(const nav_msgs::msg::Path::ConstSharedPtr msg)
 {
-    stop();
-    path_.clear();
-    progress_ = 0.0;
-    heading_locked_ = false;
-    nav_msgs::msg::Path cleared_path;
-    cleared_path.header.frame_id = map_frame_;
-    cleared_path.header.stamp = now();
-    speed_path_pub_->publish(cleared_path);
-
+    clear_path(false);
+    // An empty Path cancels translation; rotation remains independent.
+    if (msg->poses.empty()) {
+        return;
+    }
     if (!valid_path(*msg)) {
-        RCLCPP_WARN(get_logger(), "Rejected path in frame '%s'; expected '%s'",
-                    msg->header.frame_id.c_str(), map_frame_.c_str());
+        path_failed_ = true;
+        RCLCPP_WARN(
+            get_logger(),
+            "Rejected path in frame '%s'; expected '%s'",
+            msg->header.frame_id.c_str(),
+            map_frame_.c_str()
+        );
         return;
     }
 
     for (const auto& pose : msg->poses) {
         if (!finitePoint(pose) ||
             (!pose.header.frame_id.empty() && pose.header.frame_id != map_frame_)) {
-            path_.clear();
+            clear_path(true);
             RCLCPP_WARN(get_logger(), "Rejected path with invalid point or frame");
             return;
         }
@@ -426,9 +353,9 @@ void PathFollowerNode::onPath(const nav_msgs::msg::Path::ConstSharedPtr msg)
             continue;
         }
         const auto start = path_.back();
-        const double ds = std::hypot(x - start.x, y - start.y);
+        const double ds  = std::hypot(x - start.x, y - start.y);
         if (!std::isfinite(ds) || !std::isfinite(start.distance + ds)) {
-            path_.clear();
+            clear_path(true);
             RCLCPP_WARN(get_logger(), "Rejected path with invalid length");
             return;
         }
@@ -436,13 +363,16 @@ void PathFollowerNode::onPath(const nav_msgs::msg::Path::ConstSharedPtr msg)
             const int steps = std::max(1, static_cast<int>(std::ceil(ds / kPathStep - 1e-9)));
             for (int step = 1; step <= steps; ++step) {
                 const double fraction = static_cast<double>(step) / steps;
-                path_.push_back({start.x + fraction * (x - start.x),
-                                 start.y + fraction * (y - start.y),
-                                 start.distance + fraction * ds, max_speed_, 0.0});
+                path_.push_back(
+                    {start.x + fraction * (x - start.x),
+                     start.y + fraction * (y - start.y),
+                     start.distance + fraction * ds,
+                     max_speed_,
+                     0.0}
+                );
             }
         }
     }
-    goal_yaw_ = tf2::getYaw(msg->poses.back().pose.orientation);
     if (path_.size() == 1) {
         path_.front().speed = 0;
         speed_path_pub_->publish(*msg);
@@ -455,14 +385,13 @@ void PathFollowerNode::onPath(const nav_msgs::msg::Path::ConstSharedPtr msg)
     // 制御の追従距離以下の区間で曲率を評価し、A*格子の細かなジグザグを平均化する。
     // Curvature limits lateral acceleration; yaw is independent for an omni base.
     for (std::size_t i = 1; i + 1 < path_.size(); ++i) {
-        const auto a = sample(path_[i].distance - curvature_window_);
-        const auto& b = path_[i];
-        const auto c = sample(path_[i].distance + curvature_window_);
-        const double ab = std::hypot(b.x - a.x, b.y - a.y);
-        const double bc = std::hypot(c.x - b.x, c.y - b.y);
-        const double ac = std::hypot(c.x - a.x, c.y - a.y);
-        const double cross = (b.x - a.x) * (c.y - b.y) -
-                             (b.y - a.y) * (c.x - b.x);
+        const auto a             = sample(path_[i].distance - curvature_window_);
+        const auto& b            = path_[i];
+        const auto c             = sample(path_[i].distance + curvature_window_);
+        const double ab          = std::hypot(b.x - a.x, b.y - a.y);
+        const double bc          = std::hypot(c.x - b.x, c.y - b.y);
+        const double ac          = std::hypot(c.x - a.x, c.y - a.y);
+        const double cross       = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
         const double denominator = ab * bc * ac;
         if (denominator <= kEpsilon) {
             path_[i].speed = 0.0;
@@ -470,15 +399,15 @@ void PathFollowerNode::onPath(const nav_msgs::msg::Path::ConstSharedPtr msg)
         }
         const double curvature = 2.0 * std::abs(cross) / denominator;
         if (curvature > kEpsilon) {
-            path_[i].speed = std::min(max_speed_,
-                std::sqrt(max_lateral_acceleration_ / curvature));
+            path_[i].speed = std::min(max_speed_, std::sqrt(max_lateral_acceleration_ / curvature));
         }
     }
     path_.front().speed = 0.0;
-    path_.back().speed = 0.0;
+    path_.back().speed  = 0.0;
 
-    const auto s_curve = makeSCurve(path_.back().distance, max_speed_, max_acceleration_,
-                                     max_deceleration_, max_jerk_);
+    const auto s_curve = makeSCurve(
+        path_.back().distance, max_speed_, max_acceleration_, max_deceleration_, max_jerk_
+    );
     for (auto& point : path_) {
         point.speed = std::min(point.speed, sCurveSpeed(s_curve, point.distance));
     }
@@ -486,36 +415,45 @@ void PathFollowerNode::onPath(const nav_msgs::msg::Path::ConstSharedPtr msg)
     // Forward and backward passes enforce acceleration and stopping distance.
     for (std::size_t i = 1; i < path_.size(); ++i) {
         const double ds = path_[i].distance - path_[i - 1].distance;
-        path_[i].speed = std::min(path_[i].speed,
-            std::sqrt(path_[i - 1].speed * path_[i - 1].speed + 2.0 * max_acceleration_ * ds));
+        path_[i].speed  = std::min(
+            path_[i].speed,
+            std::sqrt(path_[i - 1].speed * path_[i - 1].speed + 2.0 * max_acceleration_ * ds)
+        );
     }
     for (std::size_t i = path_.size() - 1; i > 0; --i) {
-        const double ds = path_[i].distance - path_[i - 1].distance;
-        path_[i - 1].speed = std::min(path_[i - 1].speed,
-            std::sqrt(path_[i].speed * path_[i].speed + 2.0 * max_deceleration_ * ds));
+        const double ds    = path_[i].distance - path_[i - 1].distance;
+        path_[i - 1].speed = std::min(
+            path_[i - 1].speed,
+            std::sqrt(path_[i].speed * path_[i].speed + 2.0 * max_deceleration_ * ds)
+        );
     }
 
     nav_msgs::msg::Path speed_path;
     speed_path.header.frame_id = map_frame_;
-    speed_path.header.stamp = now();
+    speed_path.header.stamp    = now();
     for (std::size_t i = 0; i < path_.size(); ++i) {
         if (i > 0) {
             const double ds = path_[i].distance - path_[i - 1].distance;
-            path_[i].time = path_[i - 1].time +
-                2.0 * ds / std::max(path_[i - 1].speed + path_[i].speed, kEpsilon);
+            path_[i].time   = path_[i - 1].time +
+                            2.0 * ds / std::max(path_[i - 1].speed + path_[i].speed, kEpsilon);
         }
         geometry_msgs::msg::PoseStamped pose;
         pose.header.frame_id = map_frame_;
-        pose.header.stamp = rclcpp::Time(speed_path.header.stamp) +
-                            rclcpp::Duration::from_seconds(path_[i].time);
-        pose.pose.position.x = path_[i].x;
-        pose.pose.position.y = path_[i].y;
+        pose.header.stamp =
+            rclcpp::Time(speed_path.header.stamp) + rclcpp::Duration::from_seconds(path_[i].time);
+        pose.pose.position.x    = path_[i].x;
+        pose.pose.position.y    = path_[i].y;
         pose.pose.orientation.w = 1.0;
         speed_path.poses.push_back(pose);
     }
     speed_path_pub_->publish(speed_path);
-    RCLCPP_INFO(get_logger(), "Speed path: %zu points, %.2f m, nominal %.2f s",
-                path_.size(), path_.back().distance, path_.back().time);
+    RCLCPP_INFO(
+        get_logger(),
+        "Speed path: %zu points, %.2f m, nominal %.2f s",
+        path_.size(),
+        path_.back().distance,
+        path_.back().time
+    );
 }
 
 PathFollowerNode::Projection PathFollowerNode::project(double x, double y) const
@@ -529,8 +467,8 @@ PathFollowerNode::Projection PathFollowerNode::project(double x, double y) const
         }
         const double dx = b.x - a.x;
         const double dy = b.y - a.y;
-        const double fraction = std::clamp(((x - a.x) * dx + (y - a.y) * dy) /
-            (dx * dx + dy * dy), 0.0, 1.0);
+        const double fraction =
+            std::clamp(((x - a.x) * dx + (y - a.y) * dy) / (dx * dx + dy * dy), 0.0, 1.0);
         const double error = std::hypot(x - a.x - fraction * dx, y - a.y - fraction * dy);
         if (error < best.error) {
             best = {a.distance + fraction * (b.distance - a.distance), error};
@@ -541,178 +479,158 @@ PathFollowerNode::Projection PathFollowerNode::project(double x, double y) const
 
 PathFollowerNode::SpeedPoint PathFollowerNode::sample(double distance) const
 {
-    distance = std::clamp(distance, 0.0, path_.back().distance);
-    const auto it = std::lower_bound(path_.begin(), path_.end(), distance,
-        [](const SpeedPoint& point, double value) { return point.distance < value; });
+    distance      = std::clamp(distance, 0.0, path_.back().distance);
+    const auto it = std::lower_bound(
+        path_.begin(),
+        path_.end(),
+        distance,
+        [](const SpeedPoint& point, double value) { return point.distance < value; }
+    );
     if (it == path_.begin()) {
         return *it;
     }
     if (it == path_.end()) {
         return path_.back();
     }
-    const auto& a = *(it - 1);
+    const auto& a         = *(it - 1);
     const double fraction = (distance - a.distance) / (it->distance - a.distance);
-    return {a.x + fraction * (it->x - a.x), a.y + fraction * (it->y - a.y), distance,
-            a.speed + fraction * (it->speed - a.speed),
-            a.time + fraction * (it->time - a.time)};
+    return {
+        a.x + fraction * (it->x - a.x),
+        a.y + fraction * (it->y - a.y),
+        distance,
+        a.speed + fraction * (it->speed - a.speed),
+        a.time + fraction * (it->time - a.time)};
 }
 
 void PathFollowerNode::onTimer()
 {
     const auto steady_now = std::chrono::steady_clock::now();
-    const double dt = std::clamp(std::chrono::duration<double>(steady_now - last_control_).count(),
-                                 0.001, 0.1);
+    const double dt =
+        std::clamp(std::chrono::duration<double>(steady_now - last_control_).count(), 0.001, 0.1);
     last_control_ = steady_now;
-    if (active_goal_ && (cancellation_requested_ || active_goal_->is_canceling())) {
-        finish_action(FollowPath::Result::CANCELED, "Execution canceled");
-        return;
-    }
-    if (active_goal_ && (!lease_fresh() || lease_.producer_session != execution_session_ ||
-                         lease_.generation != execution_generation_)) {
-        finish_action(FollowPath::Result::LEASE_EXPIRED, "Execution lease expired");
-        return;
-    }
-    if (path_.empty()) {
-        stop();
-        return;
-    }
-
     geometry_msgs::msg::TransformStamped transform;
     try {
         transform = tf_buffer_->lookupTransform(map_frame_, base_frame_, tf2::TimePointZero);
     } catch (const tf2::TransformException& error) {
-        finish_action(FollowPath::Result::TF_ERROR, "Pose TF unavailable");
-        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Pose TF unavailable: %s", error.what());
+        if (!path_.empty()) {
+            clear_path(true);
+        }
+        command_yaw_rate_ = 0.0;
+        publish_velocity(geometry_msgs::msg::Twist{}, false);
+        RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 2000, "Pose TF unavailable: %s", error.what()
+        );
         return;
     }
     const double age = (now() - rclcpp::Time(transform.header.stamp)).seconds();
     if (!std::isfinite(age) || age > max_pose_age_ || age < -0.1) {
-        finish_action(FollowPath::Result::TF_ERROR, "Pose TF stale");
+        if (!path_.empty()) {
+            clear_path(true);
+        }
+        command_yaw_rate_ = 0.0;
+        publish_velocity(geometry_msgs::msg::Twist{}, false);
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Pose TF stale: %.2f s", age);
         return;
     }
 
-    const double x = transform.transform.translation.x;
-    const double y = transform.transform.translation.y;
-    const double yaw = tf2::getYaw(transform.transform.rotation);
-    const auto & rotation = transform.transform.rotation;
+    const double x             = transform.transform.translation.x;
+    const double y             = transform.transform.translation.y;
+    const double yaw           = tf2::getYaw(transform.transform.rotation);
+    const auto& rotation       = transform.transform.rotation;
     const double rotation_norm = rotation.x * rotation.x + rotation.y * rotation.y +
                                  rotation.z * rotation.z + rotation.w * rotation.w;
     if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(yaw) ||
         !std::isfinite(rotation_norm) || std::abs(rotation_norm - 1.0) >= 1e-3) {
-        finish_action(FollowPath::Result::TF_ERROR, "Invalid pose");
-        return;
-    }
-    const double goal_distance = std::hypot(x - path_.back().x, y - path_.back().y);
-    const double goal_yaw_error = std::atan2(std::sin(goal_yaw_ - yaw), std::cos(goal_yaw_ - yaw));
-    if (goal_distance <= goal_tolerance_ &&
-        (path_.size() == 1 || progress_ >= path_.back().distance - goal_tolerance_)) {
-        if (std::abs(goal_yaw_error) <= goal_heading_tolerance_rad_) {
-            finish_action(FollowPath::Result::SUCCESS, "Goal position and heading reached");
-            return;
+        if (!path_.empty()) {
+            clear_path(true);
         }
-        // Final orientation is aligned even when heading_mode is fixed during translation.
-        command_vx_world_ = 0;
-        command_vy_world_ = 0;
-        command_ax_world_ = 0;
-        command_ay_world_ = 0;
-        const double requested_yaw_rate = std::clamp(heading_gain_ * goal_yaw_error,
-                                                     -max_angular_speed_, max_angular_speed_);
-        command_yaw_rate_ = std::clamp(requested_yaw_rate,
-            command_yaw_rate_ - max_angular_acceleration_ * dt,
-            command_yaw_rate_ + max_angular_acceleration_ * dt);
-        if (max_wheel_angular_speed_ > 0 && wheel_center_distance_ > 0) {
-            const double wheel_yaw_limit = wheel_radius_ * max_wheel_angular_speed_ /
-                                           wheel_center_distance_;
-            command_yaw_rate_ = std::clamp(command_yaw_rate_, -wheel_yaw_limit, wheel_yaw_limit);
-        }
-        geometry_msgs::msg::Twist command;
-        command.angular.z = command_yaw_rate_;
-        publish_velocity(command, true);
-        publish_feedback(goal_yaw_error);
-        return;
-    }
-    if (path_.size() == 1) {
-        finish_action(FollowPath::Result::INVALID_PATH, "Point goal has no translation path");
-        return;
-    }
-    const auto nearest = project(x, y);
-    if (nearest.error > max_path_error_) {
-        finish_action(FollowPath::Result::PATH_DEVIATION, "Path deviation exceeds limit");
-        return;
-    }
-    progress_ = std::max(progress_, nearest.distance);
-
-    if (heading_mode_ != "fixed" && !heading_locked_) {
-        heading_target_ = yaw;
-        heading_locked_ = true;
-    }
-
-    const double command_speed = std::hypot(command_vx_world_, command_vy_world_);
-    const double lookahead = std::clamp(min_lookahead_ + lookahead_gain_ * command_speed,
-                                         min_lookahead_, max_lookahead_);
-    const auto target = sample(progress_ + lookahead);
-    const double dx = target.x - x;
-    const double dy = target.y - y;
-    const double target_distance = std::hypot(dx, dy);
-    const double remaining = path_.back().distance - progress_;
-
-    // Holonomic pure pursuit points the translational velocity at the lookahead point.
-    double desired_speed = sample(progress_ + std::min(0.5 * lookahead, 0.5 * remaining)).speed;
-    desired_speed = std::min(desired_speed, std::sqrt(2.0 * max_deceleration_ * remaining));
-    if (remaining <= goal_tolerance_ && goal_distance > goal_tolerance_) {
-        // 経路終端への射影が先に到達しても、横方向の残差を低速で解消する。
-        desired_speed = std::min({max_speed_, goal_approach_speed_, 1.5 * goal_distance});
-    }
-    const double desired_vx = target_distance > kEpsilon ? desired_speed * dx / target_distance : 0.0;
-    const double desired_vy = target_distance > kEpsilon ? desired_speed * dy / target_distance : 0.0;
-    double desired_ax = (desired_vx - command_vx_world_) / dt;
-    double desired_ay = (desired_vy - command_vy_world_) / dt;
-    const double acceleration_limit = desired_speed < command_speed ?
-        max_deceleration_ : max_acceleration_;
-    limitVector(desired_ax, desired_ay, acceleration_limit);
-    double delta_ax = desired_ax - command_ax_world_;
-    double delta_ay = desired_ay - command_ay_world_;
-    limitVector(delta_ax, delta_ay, max_jerk_ * dt);
-    command_ax_world_ += delta_ax;
-    command_ay_world_ += delta_ay;
-    command_vx_world_ += command_ax_world_ * dt;
-    command_vy_world_ += command_ay_world_ * dt;
-    limitVector(command_vx_world_, command_vy_world_, max_speed_);
-
-    if (heading_mode_ == "fixed") {
-        // 方位推定の変動や経路の曲がりによって回転指令を発生させない。
         command_yaw_rate_ = 0.0;
-    } else {
-        if (heading_mode_ == "tangent") {
-            const auto before = sample(progress_ - 0.1);
-            const auto after = sample(progress_ + 0.1);
-            heading_target_ = std::atan2(after.y - before.y, after.x - before.x);
+        publish_velocity(geometry_msgs::msg::Twist{}, false);
+        return;
+    }
+    if (!path_.empty()) {
+        const double goal_distance = std::hypot(x - path_.back().x, y - path_.back().y);
+        if (goal_distance <= goal_tolerance_ &&
+            (path_.size() == 1 || progress_ >= path_.back().distance - goal_tolerance_)) {
+            clear_path(false);
+        } else if (path_.size() == 1) {
+            clear_path(true);
+        } else {
+            const auto nearest = project(x, y);
+            if (nearest.error > max_path_error_) {
+                clear_path(true);
+                RCLCPP_WARN(get_logger(), "Path deviation exceeds limit");
+            } else {
+                progress_ = std::max(progress_, nearest.distance);
+            }
         }
-        const double heading_error = std::atan2(std::sin(heading_target_ - yaw),
-                                                 std::cos(heading_target_ - yaw));
-        const double desired_yaw_rate = std::clamp(heading_gain_ * heading_error,
-                                                   -max_angular_speed_, max_angular_speed_);
-        command_yaw_rate_ = std::clamp(desired_yaw_rate,
+    }
+
+    if (!path_.empty()) {
+        const double goal_distance = std::hypot(x - path_.back().x, y - path_.back().y);
+        const double command_speed = std::hypot(command_vx_world_, command_vy_world_);
+        const double lookahead     = std::clamp(
+            min_lookahead_ + lookahead_gain_ * command_speed, min_lookahead_, max_lookahead_
+        );
+        const auto target            = sample(progress_ + lookahead);
+        const double dx              = target.x - x;
+        const double dy              = target.y - y;
+        const double target_distance = std::hypot(dx, dy);
+        const double remaining       = path_.back().distance - progress_;
+
+        // Holonomic pure pursuit points the translational velocity at the lookahead point.
+        double desired_speed = sample(progress_ + std::min(0.5 * lookahead, 0.5 * remaining)).speed;
+        desired_speed = std::min(desired_speed, std::sqrt(2.0 * max_deceleration_ * remaining));
+        if (remaining <= goal_tolerance_ && goal_distance > goal_tolerance_) {
+            // 経路終端への射影が先に到達しても、横方向の残差を低速で解消する。
+            desired_speed = std::min({max_speed_, goal_approach_speed_, 1.5 * goal_distance});
+        }
+        const double desired_vx =
+            target_distance > kEpsilon ? desired_speed * dx / target_distance : 0.0;
+        const double desired_vy =
+            target_distance > kEpsilon ? desired_speed * dy / target_distance : 0.0;
+        double desired_ax = (desired_vx - command_vx_world_) / dt;
+        double desired_ay = (desired_vy - command_vy_world_) / dt;
+        const double acceleration_limit =
+            desired_speed < command_speed ? max_deceleration_ : max_acceleration_;
+        limitVector(desired_ax, desired_ay, acceleration_limit);
+        double delta_ax = desired_ax - command_ax_world_;
+        double delta_ay = desired_ay - command_ay_world_;
+        limitVector(delta_ax, delta_ay, max_jerk_ * dt);
+        command_ax_world_ += delta_ax;
+        command_ay_world_ += delta_ay;
+        command_vx_world_ += command_ax_world_ * dt;
+        command_vy_world_ += command_ay_world_ * dt;
+        limitVector(command_vx_world_, command_vy_world_, max_speed_);
+    }
+
+    double heading_error        = 0.0;
+    const bool bucket_available = bucket_heading(x, y, yaw, heading_error);
+    if (bucket_available) {
+        const double requested_yaw_rate =
+            std::clamp(heading_gain_ * heading_error, -max_angular_speed_, max_angular_speed_);
+        command_yaw_rate_ = std::clamp(
+            requested_yaw_rate,
             command_yaw_rate_ - max_angular_acceleration_ * dt,
-            command_yaw_rate_ + max_angular_acceleration_ * dt);
-        command_yaw_rate_ = std::clamp(command_yaw_rate_, -max_angular_speed_, max_angular_speed_);
+            command_yaw_rate_ + max_angular_acceleration_ * dt
+        );
+    } else {
+        // Lost target affects rotation and the LED only; keep following the path.
+        command_yaw_rate_ = 0.0;
     }
 
     geometry_msgs::msg::Twist command;
-    command.linear.x = std::cos(yaw) * command_vx_world_ +
-                       std::sin(yaw) * command_vy_world_;
-    command.linear.y = -std::sin(yaw) * command_vx_world_ +
-                       std::cos(yaw) * command_vy_world_;
+    command.linear.x  = std::cos(yaw) * command_vx_world_ + std::sin(yaw) * command_vy_world_;
+    command.linear.y  = -std::sin(yaw) * command_vx_world_ + std::cos(yaw) * command_vy_world_;
     command.angular.z = command_yaw_rate_;
     if (max_wheel_angular_speed_ > 0.0) {
         double peak_wheel_speed = 0.0;
         for (double angle_degrees : wheel_mount_angles_deg_) {
             const double angle = angle_degrees * kRadiansPerDegree;
             const double wheel_speed =
-                (-std::sin(angle) * command.linear.x +
-                  std::cos(angle) * command.linear.y +
-                  wheel_center_distance_ * command.angular.z) / wheel_radius_;
+                (-std::sin(angle) * command.linear.x + std::cos(angle) * command.linear.y +
+                 wheel_center_distance_ * command.angular.z) /
+                wheel_radius_;
             peak_wheel_speed = std::max(peak_wheel_speed, std::abs(wheel_speed));
         }
         if (peak_wheel_speed > max_wheel_angular_speed_) {
@@ -722,8 +640,7 @@ void PathFollowerNode::onTimer()
             command.angular.z *= scale;
         }
     }
-    publish_velocity(command, true);
-    publish_feedback(goal_yaw_error);
+    publish_velocity(command, bucket_available && !path_failed_);
 }
 
 int main(int argc, char** argv)
