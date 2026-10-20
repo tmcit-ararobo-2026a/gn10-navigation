@@ -1,9 +1,9 @@
 #pragma once
 
-#include <rclcpp/rclcpp.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
-#include <vector>
+#include <rclcpp/rclcpp.hpp>
 #include <string>
+#include <vector>
 
 #include "gn10_navigation/field_object.hpp"
 #include "gn10_navigation/map_loader.hpp"

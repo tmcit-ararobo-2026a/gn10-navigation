@@ -27,8 +27,9 @@ std::vector<FieldObject> MapLoader::loadFromJSON(const std::string& file_path)
                 obj.comment = "";
             }
             std::string type_str = item.at("type").get<std::string>();
-            obj.type             = (type_str == "CYLINDER") ? CYLINDER :
-                                   (type_str == "VISUAL_BOX") ? VISUAL_BOX : BOX;
+            obj.type             = (type_str == "CYLINDER")     ? CYLINDER
+                                   : (type_str == "VISUAL_BOX") ? VISUAL_BOX
+                                                                : BOX;
             obj.center_x         = item.at("x").get<float>();
             obj.center_y         = item.at("y").get<float>();
             obj.z_min            = item.at("z_min").get<float>();

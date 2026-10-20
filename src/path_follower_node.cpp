@@ -102,10 +102,9 @@ std::vector<MotionSample> makeSCurve(
 double sCurveSpeed(const std::vector<MotionSample>& samples, double distance)
 {
     const auto it = std::lower_bound(
-        samples.begin(),
-        samples.end(),
-        distance,
-        [](const MotionSample& point, double value) { return point.distance < value; }
+        samples.begin(), samples.end(), distance, [](const MotionSample& point, double value) {
+            return point.distance < value;
+        }
     );
     if (it == samples.begin()) {
         return it->speed;
@@ -435,7 +434,7 @@ void PathFollowerNode::onPath(const nav_msgs::msg::Path::ConstSharedPtr msg)
         if (i > 0) {
             const double ds = path_[i].distance - path_[i - 1].distance;
             path_[i].time   = path_[i - 1].time +
-                            2.0 * ds / std::max(path_[i - 1].speed + path_[i].speed, kEpsilon);
+                              2.0 * ds / std::max(path_[i - 1].speed + path_[i].speed, kEpsilon);
         }
         geometry_msgs::msg::PoseStamped pose;
         pose.header.frame_id = map_frame_;
@@ -481,10 +480,9 @@ PathFollowerNode::SpeedPoint PathFollowerNode::sample(double distance) const
 {
     distance      = std::clamp(distance, 0.0, path_.back().distance);
     const auto it = std::lower_bound(
-        path_.begin(),
-        path_.end(),
-        distance,
-        [](const SpeedPoint& point, double value) { return point.distance < value; }
+        path_.begin(), path_.end(), distance, [](const SpeedPoint& point, double value) {
+            return point.distance < value;
+        }
     );
     if (it == path_.begin()) {
         return *it;
@@ -499,7 +497,8 @@ PathFollowerNode::SpeedPoint PathFollowerNode::sample(double distance) const
         a.y + fraction * (it->y - a.y),
         distance,
         a.speed + fraction * (it->speed - a.speed),
-        a.time + fraction * (it->time - a.time)};
+        a.time + fraction * (it->time - a.time)
+    };
 }
 
 void PathFollowerNode::onTimer()

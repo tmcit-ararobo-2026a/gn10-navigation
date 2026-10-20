@@ -1,9 +1,11 @@
 #include "gn10_navigation/costmap_generator_node.hpp"
+
+#include <algorithm>
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <cmath>
 #include <stdexcept>
+
 #include "gn10_navigation/grid_safety.hpp"
-#include <algorithm>
 
 CostmapGeneratorNode::CostmapGeneratorNode() : Node("costmap_generator_node")
 {
@@ -25,24 +27,28 @@ void CostmapGeneratorNode::declareAndGetParameters()
     this->declare_parameter("map_file_path", "");
 
     // コストマップの範囲・解像度設定
-    this->declare_parameter("resolution", 0.05);        // 5cm/cell
+    this->declare_parameter("resolution", 0.05);  // 5cm/cell
     this->declare_parameter("map_bounds.min_x", -6.0);
     this->declare_parameter("map_bounds.max_x", 6.0);
     this->declare_parameter("map_bounds.min_y", -6.5);
     this->declare_parameter("map_bounds.max_y", 6.5);
-    this->declare_parameter("robot_clearance.z_min", 0.00); // ロボットが乗り越えられる高さ閾値
-    this->declare_parameter("robot_clearance.z_max", 1.40); // ロボットの高さ
+    this->declare_parameter("robot_clearance.z_min", 0.00);  // ロボットが乗り越えられる高さ閾値
+    this->declare_parameter("robot_clearance.z_max", 1.40);  // ロボットの高さ
 
     // 膨張コスト（インフレーション）のパラメータ設定
-    this->declare_parameter("inflation.robot_radius", 0.35);      // ロボット物理半径 [m] (絶対侵入不可領域)
-    this->declare_parameter("inflation.margin", 0.50);            // 基準となる最大の膨張余白 [m]
-    this->declare_parameter("inflation.cost_scale_factor", 1.0);  // コストによるマージン変化の度合い (0.0〜2.0程度)
+    this->declare_parameter(
+        "inflation.robot_radius", 0.35
+    );                                                  // ロボット物理半径 [m] (絶対侵入不可領域)
+    this->declare_parameter("inflation.margin", 0.50);  // 基準となる最大の膨張余白 [m]
+    this->declare_parameter(
+        "inflation.cost_scale_factor", 1.0
+    );  // コストによるマージン変化の度合い (0.0〜2.0程度)
 
     // オブジェクト別コスト定義のパラメータ化
-    this->declare_parameter("costs.wall", 120);         // 外壁
-    this->declare_parameter("costs.partition", 200);    // 中央仕切り・教壇
-    this->declare_parameter("costs.obstacle", 254);     // バケツ・机・椅子・旗など（絶対接触NG）
-    this->declare_parameter("costs.default_cost", 254); // デフォルト
+    this->declare_parameter("costs.wall", 120);          // 外壁
+    this->declare_parameter("costs.partition", 200);     // 中央仕切り・教壇
+    this->declare_parameter("costs.obstacle", 254);      // バケツ・机・椅子・旗など（絶対接触NG）
+    this->declare_parameter("costs.default_cost", 254);  // デフォルト
 
     map_source_type_ = this->get_parameter("map_source_type").as_string();
     map_file_path_   = this->get_parameter("map_file_path").as_string();
@@ -70,25 +76,25 @@ void CostmapGeneratorNode::declareAndGetParameters()
             throw std::invalid_argument("Custom cost must be within [0,254]");
         }
     }
-    if (!std::isfinite(resolution_) || resolution_ <= 0 ||
-        !std::isfinite(map_min_x_) || !std::isfinite(map_max_x_) ||
-        !std::isfinite(map_min_y_) || !std::isfinite(map_max_y_) ||
+    if (!std::isfinite(resolution_) || resolution_ <= 0 || !std::isfinite(map_min_x_) ||
+        !std::isfinite(map_max_x_) || !std::isfinite(map_min_y_) || !std::isfinite(map_max_y_) ||
         map_min_x_ >= map_max_x_ || map_min_y_ >= map_max_y_) {
         throw std::invalid_argument("Invalid map bounds/resolution");
     }
-
 }
 
 int CostmapGeneratorNode::getObjectCost(const std::string& comment, ObjectType /*type*/) const
 {
     if (comment.find("外壁") != std::string::npos) {
         return cost_wall_;
-    } else if (comment.find("仕切り板") != std::string::npos || comment.find("教壇") != std::string::npos) {
+    } else if (
+        comment.find("仕切り板") != std::string::npos || comment.find("教壇") != std::string::npos
+    ) {
         return cost_partition_;
-    } else if (comment.find("バケツ") != std::string::npos || 
-               comment.find("机") != std::string::npos || 
-               comment.find("椅子") != std::string::npos ||
-               comment.find("旗") != std::string::npos) {
+    } else if (
+        comment.find("バケツ") != std::string::npos || comment.find("机") != std::string::npos ||
+        comment.find("椅子") != std::string::npos || comment.find("旗") != std::string::npos
+    ) {
         return cost_obstacle_;
     }
     return cost_default_;
@@ -117,12 +123,14 @@ void CostmapGeneratorNode::generateAndPublishCostmap()
     costmap_msg.header.frame_id = "map";
 
     costmap_msg.info.resolution = static_cast<float>(resolution_);
-    costmap_msg.info.width      = static_cast<uint32_t>(std::ceil((map_max_x_ - map_min_x_) / resolution_));
-    costmap_msg.info.height     = static_cast<uint32_t>(std::ceil((map_max_y_ - map_min_y_) / resolution_));
+    costmap_msg.info.width =
+        static_cast<uint32_t>(std::ceil((map_max_x_ - map_min_x_) / resolution_));
+    costmap_msg.info.height =
+        static_cast<uint32_t>(std::ceil((map_max_y_ - map_min_y_) / resolution_));
 
-    costmap_msg.info.origin.position.x = map_min_x_;
-    costmap_msg.info.origin.position.y = map_min_y_;
-    costmap_msg.info.origin.position.z = 0.0;
+    costmap_msg.info.origin.position.x    = map_min_x_;
+    costmap_msg.info.origin.position.y    = map_min_y_;
+    costmap_msg.info.origin.position.z    = 0.0;
     costmap_msg.info.origin.orientation.w = 1.0;
 
     // 初期化 (全て自由領域 0)
@@ -150,32 +158,42 @@ void CostmapGeneratorNode::generateAndPublishCostmap()
             int min_x_idx = std::max(0, static_cast<int>((min_x - origin_x) / resolution_));
             int max_x_idx = std::min(width - 1, static_cast<int>((max_x - origin_x) / resolution_));
             int min_y_idx = std::max(0, static_cast<int>((min_y - origin_y) / resolution_));
-            int max_y_idx = std::min(height - 1, static_cast<int>((max_y - origin_y) / resolution_));
+            int max_y_idx =
+                std::min(height - 1, static_cast<int>((max_y - origin_y) / resolution_));
 
             for (int x = min_x_idx; x <= max_x_idx; ++x) {
                 for (int y = min_y_idx; y <= max_y_idx; ++y) {
-                    int idx = y * width + x;
-                    costmap_msg.data[idx] = gn10_navigation::merge_cost(costmap_msg.data[idx], static_cast<uint8_t>(cost));
+                    int idx               = y * width + x;
+                    costmap_msg.data[idx] = gn10_navigation::merge_cost(
+                        costmap_msg.data[idx], static_cast<uint8_t>(cost)
+                    );
                 }
             }
-        } 
-        else if (obj.type == CYLINDER) {
+        } else if (obj.type == CYLINDER) {
             double radius = obj.param1;
-            int min_x_idx = std::max(0, static_cast<int>((obj.center_x - radius - origin_x) / resolution_));
-            int max_x_idx = std::min(width - 1, static_cast<int>((obj.center_x + radius - origin_x) / resolution_));
-            int min_y_idx = std::max(0, static_cast<int>((obj.center_y - radius - origin_y) / resolution_));
-            int max_y_idx = std::min(height - 1, static_cast<int>((obj.center_y + radius - origin_y) / resolution_));
+            int min_x_idx =
+                std::max(0, static_cast<int>((obj.center_x - radius - origin_x) / resolution_));
+            int max_x_idx = std::min(
+                width - 1, static_cast<int>((obj.center_x + radius - origin_x) / resolution_)
+            );
+            int min_y_idx =
+                std::max(0, static_cast<int>((obj.center_y - radius - origin_y) / resolution_));
+            int max_y_idx = std::min(
+                height - 1, static_cast<int>((obj.center_y + radius - origin_y) / resolution_)
+            );
 
             for (int x = min_x_idx; x <= max_x_idx; ++x) {
                 for (int y = min_y_idx; y <= max_y_idx; ++y) {
-                    double cell_x = origin_x + (x + 0.5) * resolution_;
-                    double cell_y = origin_y + (y + 0.5) * resolution_;
+                    double cell_x  = origin_x + (x + 0.5) * resolution_;
+                    double cell_y  = origin_y + (y + 0.5) * resolution_;
                     double dist_sq = (cell_x - obj.center_x) * (cell_x - obj.center_x) +
                                      (cell_y - obj.center_y) * (cell_y - obj.center_y);
 
                     if (dist_sq <= radius * radius) {
-                        int idx = y * width + x;
-                        costmap_msg.data[idx] = gn10_navigation::merge_cost(costmap_msg.data[idx], static_cast<uint8_t>(cost));
+                        int idx               = y * width + x;
+                        costmap_msg.data[idx] = gn10_navigation::merge_cost(
+                            costmap_msg.data[idx], static_cast<uint8_t>(cost)
+                        );
                     }
                 }
             }
@@ -195,7 +213,7 @@ void CostmapGeneratorNode::applyInflation(nav_msgs::msg::OccupancyGrid& costmap_
         return;
     }
 
-    const int width = static_cast<int>(costmap_msg.info.width);
+    const int width  = static_cast<int>(costmap_msg.info.width);
     const int height = static_cast<int>(costmap_msg.info.height);
 
     struct SourceCell {
@@ -219,11 +237,11 @@ void CostmapGeneratorNode::applyInflation(nav_msgs::msg::OccupancyGrid& costmap_
     for (const auto& source : obstacle_cells) {
         // コスト(0〜254)に応じたマージン率の計算 (0.0〜1.0)
         double cost_ratio = static_cast<double>(source.cost) / 254.0;
-        
+
         // cost_scale_factor_ に応じて高コストほどマージンが広くなるよう可変スケール
         // (例: factor=1.0 のとき、コスト254なら100%マージン、コスト120なら約47%マージン)
         double scaled_margin = inflation_margin_ * (1.0 - cost_scale_factor_ * (1.0 - cost_ratio));
-        scaled_margin = std::max(0.0, scaled_margin); // 負の値を防ぐ
+        scaled_margin        = std::max(0.0, scaled_margin);  // 負の値を防ぐ
 
         double effective_total_radius = robot_radius_ + scaled_margin;
         int radius_cells = static_cast<int>(std::ceil(effective_total_radius / resolution_));
@@ -235,16 +253,16 @@ void CostmapGeneratorNode::applyInflation(nav_msgs::msg::OccupancyGrid& costmap_
 
         for (int y = min_y; y <= max_y; ++y) {
             for (int x = min_x; x <= max_x; ++x) {
-                int dx = x - source.x;
-                int dy = y - source.y;
+                int dx      = x - source.x;
+                int dy      = y - source.y;
                 double dist = std::hypot(dx, dy) * resolution_;
 
                 int calculated_cost = 0;
                 if (dist <= robot_radius_) {
-                    calculated_cost = 254; // ロボット物理半径は絶対不可侵
+                    calculated_cost = 254;  // ロボット物理半径は絶対不可侵
                 } else if (dist <= effective_total_radius && scaled_margin > 0.0) {
                     // 個別の scaled_margin に基づいてグラデーションコストを計算
-                    double ratio = (effective_total_radius - dist) / scaled_margin;
+                    double ratio    = (effective_total_radius - dist) / scaled_margin;
                     calculated_cost = static_cast<int>(ratio * source.cost);
                 } else {
                     continue;

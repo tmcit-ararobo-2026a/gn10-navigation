@@ -64,7 +64,7 @@ double pointToLineDistance(
     // 線分上で一番近い位置を割合t(0〜1)で求める
     double t = ((point.first - line_start.first) * dx + (point.second - line_start.second) * dy) /
                length_squared;
-    t = std::clamp(t, 0.0, 1.0);
+    t        = std::clamp(t, 0.0, 1.0);
 
     const double closest_x = line_start.first + t * dx;
     const double closest_y = line_start.second + t * dy;
@@ -273,7 +273,7 @@ void PathPlannerNode::getGoalPose(geometry_msgs::msg::PoseStamped::SharedPtr goa
         const auto& position = pose.pose.position;
         const auto& rotation = pose.pose.orientation;
         const double norm    = rotation.x * rotation.x + rotation.y * rotation.y +
-                            rotation.z * rotation.z + rotation.w * rotation.w;
+                               rotation.z * rotation.z + rotation.w * rotation.w;
         return pose.header.frame_id == map_frame_ && std::isfinite(position.x) &&
                std::isfinite(position.y) && std::isfinite(position.z) && std::isfinite(norm) &&
                std::abs(norm - 1.0) < 1e-3;
@@ -362,7 +362,8 @@ std::pair<int, int> PathPlannerNode::worldToGrid(double wx, double wy)
 {
     return {
         static_cast<int>(std::floor((wx - origin_x_) / resolution_)),
-        static_cast<int>(std::floor((wy - origin_y_) / resolution_))};
+        static_cast<int>(std::floor((wy - origin_y_) / resolution_))
+    };
 }
 
 std::pair<double, double> PathPlannerNode::gridToWorld(int gx, int gy)
@@ -853,7 +854,8 @@ std::vector<std::pair<double, double>> PathPlannerNode::bsplineSmoothPath(
             const double move = std::min(smoothing_step, distance);
 
             control_points[i] = {
-                original.first + dx / distance * move, original.second + dy / distance * move};
+                original.first + dx / distance * move, original.second + dy / distance * move
+            };
 
             // 動かした結果が障害物に入るなら取り消す
             if (!isSmoothPathValid(evaluateBSplinePath(control_points))) {
@@ -1155,8 +1157,8 @@ double PathPlannerNode::calculatePathCost(
     const double curvature_ratio  = calculateCurvatureCost(path) / std::max(base_curvature, 1e-4);
     const double smoothness_ratio = calculateSmoothnessCost(path) / std::max(base_smoothness, 1e-4);
     const double control_ratio    = calculateControlPointSmoothnessCost(control_points) /
-                                 std::max(base_control_smoothness, 1e-4);
-    const double obstacle = calculateObstacleCost(path);
+                                    std::max(base_control_smoothness, 1e-4);
+    const double obstacle         = calculateObstacleCost(path);
 
     return bspline_length_weight_ * length_ratio + bspline_curvature_weight_ * curvature_ratio +
            bspline_smoothness_weight_ * (0.5 * smoothness_ratio + 0.5 * control_ratio) +
