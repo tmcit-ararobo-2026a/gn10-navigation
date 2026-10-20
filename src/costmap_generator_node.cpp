@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <ament_index_cpp/get_package_share_directory.hpp>
+#include <chrono>
 #include <cmath>
 #include <stdexcept>
 
@@ -18,7 +19,18 @@ CostmapGeneratorNode::CostmapGeneratorNode() : Node("costmap_generator_node")
 
     costmap_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>("costmap", map_qos);
 
-    generateAndPublishCostmap();
+    // 動的パラメータ変更コールバックの登録
+    param_callback_handle_ = this->add_on_set_parameters_callback(
+        std::bind(&CostmapGeneratorNode::onSetParameters, this, std::placeholders::_1)
+    );
+
+    // 初回生成＆キャッシュ
+    cached_costmap_msg_ = generateCostmap();
+
+    // 1Hzで送信するタイマー
+    timer_ = this->create_wall_timer(
+        std::chrono::seconds(1), std::bind(&CostmapGeneratorNode::publishCachedCostmap, this)
+    );
 }
 
 void CostmapGeneratorNode::declareAndGetParameters()
@@ -83,6 +95,49 @@ void CostmapGeneratorNode::declareAndGetParameters()
     }
 }
 
+rcl_interfaces::msg::SetParametersResult CostmapGeneratorNode::onSetParameters(
+    const std::vector<rclcpp::Parameter>& parameters
+)
+{
+    rcl_interfaces::msg::SetParametersResult result;
+    result.successful    = true;
+    bool need_regenerate = false;
+
+    for (const auto& param : parameters) {
+        const auto& name = param.get_name();
+
+        if (name == "inflation.robot_radius") {
+            robot_radius_   = param.as_double();
+            need_regenerate = true;
+        } else if (name == "inflation.margin") {
+            inflation_margin_ = param.as_double();
+            need_regenerate   = true;
+        } else if (name == "inflation.cost_scale_factor") {
+            cost_scale_factor_ = param.as_double();
+            need_regenerate    = true;
+        } else if (name == "costs.wall") {
+            cost_wall_      = static_cast<int>(param.as_int());
+            need_regenerate = true;
+        } else if (name == "costs.partition") {
+            cost_partition_ = static_cast<int>(param.as_int());
+            need_regenerate = true;
+        } else if (name == "costs.obstacle") {
+            cost_obstacle_  = static_cast<int>(param.as_int());
+            need_regenerate = true;
+        } else if (name == "costs.default_cost") {
+            cost_default_   = static_cast<int>(param.as_int());
+            need_regenerate = true;
+        }
+    }
+
+    if (need_regenerate) {
+        cached_costmap_msg_ = generateCostmap();
+        RCLCPP_INFO(this->get_logger(), "Costmap regenerated due to parameter update.");
+    }
+
+    return result;
+}
+
 int CostmapGeneratorNode::getObjectCost(const std::string& comment, ObjectType /*type*/) const
 {
     if (comment.find("外壁") != std::string::npos) {
@@ -100,7 +155,7 @@ int CostmapGeneratorNode::getObjectCost(const std::string& comment, ObjectType /
     return cost_default_;
 }
 
-void CostmapGeneratorNode::generateAndPublishCostmap()
+nav_msgs::msg::OccupancyGrid CostmapGeneratorNode::generateCostmap()
 {
     std::vector<FieldObject> map_objects;
 
@@ -113,13 +168,13 @@ void CostmapGeneratorNode::generateAndPublishCostmap()
         map_objects = MapLoader::loadFromJSON(json_path);
     }
 
+    nav_msgs::msg::OccupancyGrid costmap_msg;
+
     if (map_objects.empty()) {
         RCLCPP_WARN(this->get_logger(), "Map is empty or failed to load.");
-        return;
+        return costmap_msg;
     }
 
-    nav_msgs::msg::OccupancyGrid costmap_msg;
-    costmap_msg.header.stamp    = this->now();
     costmap_msg.header.frame_id = "map";
 
     costmap_msg.info.resolution = static_cast<float>(resolution_);
@@ -203,8 +258,8 @@ void CostmapGeneratorNode::generateAndPublishCostmap()
     // ② コストおよびスケーリングファクターに基づく可変マージン付きインフレーションの適用
     applyInflation(costmap_msg);
 
-    costmap_pub_->publish(costmap_msg);
-    RCLCPP_INFO(this->get_logger(), "Published Costmap (%dx%d)", width, height);
+    RCLCPP_INFO(this->get_logger(), "Generated Costmap cache (%dx%d)", width, height);
+    return costmap_msg;
 }
 
 void CostmapGeneratorNode::applyInflation(nav_msgs::msg::OccupancyGrid& costmap_msg)
@@ -279,6 +334,16 @@ void CostmapGeneratorNode::applyInflation(nav_msgs::msg::OccupancyGrid& costmap_
     for (size_t i = 0; i < costmap_msg.data.size(); ++i) {
         costmap_msg.data[i] = static_cast<int8_t>(inflated_data[i]);
     }
+}
+
+void CostmapGeneratorNode::publishCachedCostmap()
+{
+    if (cached_costmap_msg_.data.empty()) {
+        return;
+    }
+
+    cached_costmap_msg_.header.stamp = this->now();
+    costmap_pub_->publish(cached_costmap_msg_);
 }
 
 int main(int argc, char** argv)
