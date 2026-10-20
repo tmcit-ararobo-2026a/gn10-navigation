@@ -7,6 +7,7 @@
 
 #include "geometry_msgs/msg/twist.hpp"
 #include "nav_msgs/msg/path.hpp"
+#include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "tf2_ros/buffer.h"
@@ -52,6 +53,11 @@ private:
     rclcpp::TimerBase::SharedPtr timer_;
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+
+    OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
+    rcl_interfaces::msg::SetParametersResult onSetParameters(
+        const std::vector<rclcpp::Parameter>& parameters
+    );
 
     std::vector<SpeedPoint> path_;
     std::string map_frame_;
