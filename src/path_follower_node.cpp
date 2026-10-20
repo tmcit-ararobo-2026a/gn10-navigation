@@ -226,6 +226,11 @@ PathFollowerNode::PathFollowerNode() : Node("path_follower_node")
         std::chrono::duration<double>(1.0 / control_rate_),
         std::bind(&PathFollowerNode::onTimer, this)
     );
+
+    param_callback_handle_ = this->add_on_set_parameters_callback(
+        std::bind(&PathFollowerNode::onSetParameters, this, std::placeholders::_1)
+    );
+
     RCLCPP_INFO(
         get_logger(),
         "Path follower ready at %.1f Hz, bucket_frame=%s, max_speed=%.2f m/s",
@@ -640,6 +645,136 @@ void PathFollowerNode::onTimer()
         }
     }
     publish_velocity(command, bucket_available && !path_failed_);
+}
+
+rcl_interfaces::msg::SetParametersResult PathFollowerNode::onSetParameters(
+    const std::vector<rclcpp::Parameter>& parameters
+)
+{
+    rcl_interfaces::msg::SetParametersResult result;
+    result.successful = true;
+    result.reason     = "success";
+
+    // 変更されたパラメータを一時変数に反映してバリデーション
+    double new_control_rate        = control_rate_;
+    double new_max_speed           = max_speed_;
+    double new_max_accel           = max_acceleration_;
+    double new_max_decel           = max_deceleration_;
+    double new_max_jerk            = max_jerk_;
+    double new_max_lat_accel       = max_lateral_acceleration_;
+    double new_curvature_window    = curvature_window_;
+    double new_max_angular_speed   = max_angular_speed_;
+    double new_max_angular_accel   = max_angular_acceleration_;
+    double new_heading_gain        = heading_gain_;
+    double new_min_lookahead       = min_lookahead_;
+    double new_max_lookahead       = max_lookahead_;
+    double new_lookahead_gain      = lookahead_gain_;
+    double new_goal_tolerance      = goal_tolerance_;
+    double new_goal_approach_speed = goal_approach_speed_;
+    double new_max_path_error      = max_path_error_;
+    double new_max_pose_age        = max_pose_age_;
+    double new_max_bucket_age      = max_bucket_age_;
+
+    for (const auto& param : parameters) {
+        const auto& name = param.get_name();
+        if (name == "control_rate")
+            new_control_rate = param.as_double();
+        else if (name == "max_speed")
+            new_max_speed = param.as_double();
+        else if (name == "max_acceleration")
+            new_max_accel = param.as_double();
+        else if (name == "max_deceleration")
+            new_max_decel = param.as_double();
+        else if (name == "max_jerk")
+            new_max_jerk = param.as_double();
+        else if (name == "max_lateral_acceleration")
+            new_max_lat_accel = param.as_double();
+        else if (name == "curvature_window")
+            new_curvature_window = param.as_double();
+        else if (name == "max_angular_speed")
+            new_max_angular_speed = param.as_double();
+        else if (name == "max_angular_acceleration")
+            new_max_angular_accel = param.as_double();
+        else if (name == "heading_gain")
+            new_heading_gain = param.as_double();
+        else if (name == "min_lookahead")
+            new_min_lookahead = param.as_double();
+        else if (name == "max_lookahead")
+            new_max_lookahead = param.as_double();
+        else if (name == "lookahead_gain")
+            new_lookahead_gain = param.as_double();
+        else if (name == "goal_tolerance")
+            new_goal_tolerance = param.as_double();
+        else if (name == "goal_approach_speed")
+            new_goal_approach_speed = param.as_double();
+        else if (name == "max_path_error")
+            new_max_path_error = param.as_double();
+        else if (name == "max_pose_age")
+            new_max_pose_age = param.as_double();
+        else if (name == "max_bucket_age")
+            new_max_bucket_age = param.as_double();
+    }
+
+    // 正当性チェック
+    for (double value :
+         {new_control_rate,
+          new_max_speed,
+          new_max_accel,
+          new_max_decel,
+          new_max_jerk,
+          new_max_lat_accel,
+          new_curvature_window,
+          new_max_angular_speed,
+          new_max_angular_accel,
+          new_heading_gain,
+          new_min_lookahead,
+          new_max_lookahead,
+          new_goal_tolerance,
+          new_goal_approach_speed,
+          new_max_path_error,
+          new_max_pose_age,
+          new_max_bucket_age}) {
+        if (!std::isfinite(value) || value <= 0.0) {
+            result.successful = false;
+            result.reason     = "Parameters must be finite and positive";
+            return result;
+        }
+    }
+
+    if (new_min_lookahead > new_max_lookahead ||
+        new_curvature_window > new_min_lookahead + kEpsilon) {
+        result.successful = false;
+        result.reason     = "Invalid lookahead or curvature_window relationship";
+        return result;
+    }
+
+    // メンバ変数へ適用
+    control_rate_             = new_control_rate;
+    max_speed_                = new_max_speed;
+    max_acceleration_         = new_max_accel;
+    max_deceleration_         = new_max_decel;
+    max_jerk_                 = new_max_jerk;
+    max_lateral_acceleration_ = new_max_lat_accel;
+    curvature_window_         = new_curvature_window;
+    max_angular_speed_        = new_max_angular_speed;
+    max_angular_acceleration_ = new_max_angular_accel;
+    heading_gain_             = new_heading_gain;
+    min_lookahead_            = new_min_lookahead;
+    max_lookahead_            = new_max_lookahead;
+    lookahead_gain_           = new_lookahead_gain;
+    goal_tolerance_           = new_goal_tolerance;
+    goal_approach_speed_      = new_goal_approach_speed;
+    max_path_error_           = new_max_path_error;
+    max_pose_age_             = new_max_pose_age;
+    max_bucket_age_           = new_max_bucket_age;
+
+    // control_rate が更新された場合はタイマー周期を動的再設定
+    if (std::abs(control_rate_ - new_control_rate) > kEpsilon) {
+        auto period = std::chrono::duration<double>(1.0 / control_rate_);
+        timer_      = create_wall_timer(period, std::bind(&PathFollowerNode::onTimer, this));
+    }
+
+    return result;
 }
 
 int main(int argc, char** argv)
