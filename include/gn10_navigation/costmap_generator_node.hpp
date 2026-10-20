@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <string>
@@ -15,15 +16,24 @@ public:
 
 private:
     void declareAndGetParameters();
-    void generateAndPublishCostmap();
+    nav_msgs::msg::OccupancyGrid generateCostmap();
     int getObjectCost(const std::string& comment, ObjectType type) const;
     void applyInflation(nav_msgs::msg::OccupancyGrid& costmap_msg);
+    void publishCachedCostmap();
+
+    // 動的パラメータ変更時のコールバック関数
+    rcl_interfaces::msg::SetParametersResult onSetParameters(
+        const std::vector<rclcpp::Parameter>& parameters
+    );
 
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_pub_;
+    rclcpp::TimerBase::SharedPtr timer_;
+    rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
+
+    nav_msgs::msg::OccupancyGrid cached_costmap_msg_;
 
     std::string map_source_type_;
     std::string map_file_path_;
-    std::vector<std::string> map_objects_params_;
 
     // グリッドマップパラメータ
     double resolution_;
