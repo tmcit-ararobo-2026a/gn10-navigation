@@ -60,8 +60,9 @@ private:
     // パラメータ
     double control_rate_;
     double max_speed_;
-    double max_angular_velocity_;
     double max_acceleration_;
+    double max_angular_velocity_;
+    double max_angular_acceleration_;
     double min_lookahead_;
     double goal_tolerance_;
     double heading_gain_;

@@ -85,8 +85,9 @@ void PathFollowerNode::declareAndGetParameters()
 {
     this->declare_parameter("control_rate", 50.0);
     this->declare_parameter("max_speed", 1.5);
-    this->declare_parameter("max_angular_velocity", 2.0);
     this->declare_parameter("max_acceleration", 1.0);
+    this->declare_parameter("max_angular_velocity", 2.0);
+    this->declare_parameter("max_angular_acceleration", 2.0);
     this->declare_parameter("min_lookahead", 0.4);
     this->declare_parameter("goal_tolerance", 0.03);
     this->declare_parameter("heading_gain", 2.0);
@@ -98,15 +99,16 @@ void PathFollowerNode::declareAndGetParameters()
     this->declare_parameter("bucket_frame", "bucket_bottom");
     this->declare_parameter("max_bucket_age", 0.5);
 
-    control_rate_         = this->get_parameter("control_rate").as_double();
-    max_speed_            = this->get_parameter("max_speed").as_double();
-    max_angular_velocity_ = this->get_parameter("max_angular_velocity").as_double();
-    max_acceleration_     = this->get_parameter("max_acceleration").as_double();
-    min_lookahead_        = this->get_parameter("min_lookahead").as_double();
-    goal_tolerance_       = this->get_parameter("goal_tolerance").as_double();
-    heading_gain_         = this->get_parameter("heading_gain").as_double();
-    creep_gain_           = this->get_parameter("creep_gain").as_double();
-    min_creep_speed_      = this->get_parameter("min_creep_speed").as_double();
+    control_rate_             = this->get_parameter("control_rate").as_double();
+    max_speed_                = this->get_parameter("max_speed").as_double();
+    max_acceleration_         = this->get_parameter("max_acceleration").as_double();
+    max_angular_velocity_     = this->get_parameter("max_angular_velocity").as_double();
+    max_angular_acceleration_ = this->get_parameter("max_angular_acceleration").as_double();
+    min_lookahead_            = this->get_parameter("min_lookahead").as_double();
+    goal_tolerance_           = this->get_parameter("goal_tolerance").as_double();
+    heading_gain_             = this->get_parameter("heading_gain").as_double();
+    creep_gain_               = this->get_parameter("creep_gain").as_double();
+    min_creep_speed_          = this->get_parameter("min_creep_speed").as_double();
 
     map_frame_      = this->get_parameter("map_frame").as_string();
     base_frame_     = this->get_parameter("base_frame").as_string();
@@ -125,10 +127,12 @@ rcl_interfaces::msg::SetParametersResult PathFollowerNode::onSetParameters(
         const auto& name = param.get_name();
         if (name == "max_speed") {
             max_speed_ = param.as_double();
-        } else if (name == "max_angular_velocity") {
-            max_angular_velocity_ = param.as_double();
         } else if (name == "max_acceleration") {
             max_acceleration_ = param.as_double();
+        } else if (name == "max_angular_velocity") {
+            max_angular_velocity_ = param.as_double();
+        } else if (name == "max_angular_acceleration") {
+            max_angular_acceleration_ = param.as_double();
         } else if (name == "min_lookahead") {
             min_lookahead_ = param.as_double();
         } else if (name == "goal_tolerance") {
@@ -319,10 +323,18 @@ void PathFollowerNode::controlLoop()
             double bucket_y   = bucket_tf.transform.translation.y;
             double target_yaw = std::atan2(bucket_y - robot_y, bucket_x - robot_x);
             double diff_yaw   = normalizeAngle(target_yaw - robot_yaw);
-            double wz         = heading_gain_ * diff_yaw;
-            wz                = std::clamp(wz, -max_angular_velocity_, max_angular_velocity_);
+            double target_wz  = heading_gain_ * diff_yaw;
+            target_wz = std::clamp(target_wz, -max_angular_velocity_, max_angular_velocity_);
 
-            publishCmdVel(0.0, 0.0, wz);
+            // 角加速度制限の適用
+            double dt      = 1.0 / control_rate_;
+            double max_dwz = max_angular_acceleration_ * dt;
+            double diff_wz = target_wz - current_wz_;
+            diff_wz        = std::clamp(diff_wz, -max_dwz, max_dwz);
+            current_wz_ += diff_wz;
+
+            // Tracking モードでは並進速度は0
+            publishCmdVel(0.0, 0.0, current_wz_);
             break;
         }
 
