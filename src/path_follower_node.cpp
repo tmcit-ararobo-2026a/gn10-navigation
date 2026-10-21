@@ -329,11 +329,11 @@ void PathFollowerNode::controlLoop()
             // 角加速度制限の適用
             double dt      = 1.0 / control_rate_;
             double max_dwz = max_angular_acceleration_ * dt;
-            double diff_wz = target_wz - current_wz_;
-            diff_wz        = std::clamp(diff_wz, -max_dwz, max_dwz);
-            current_wz_ += diff_wz;
+            current_wz_ += std::clamp(target_wz - current_wz_, -max_dwz, max_dwz);
 
-            // Tracking モードでは並進速度は0
+            current_vx_local_ = 0.0;
+            current_vy_local_ = 0.0;
+
             publishCmdVel(0.0, 0.0, current_wz_);
             break;
         }
@@ -362,9 +362,9 @@ void PathFollowerNode::controlLoop()
                 break;
             }
 
-            double vx_world = 0.0;
-            double vy_world = 0.0;
-            double wz       = 0.0;
+            double vx_world  = 0.0;
+            double vy_world  = 0.0;
+            double target_wz = 0.0;
 
             // ② 終端位置偏差FB区間 (0.03 m < d_goal < 0.15 m)
             if (d_goal < 0.15) {
@@ -379,8 +379,8 @@ void PathFollowerNode::controlLoop()
                 vy_world = v_creep * dir_y;
 
                 double diff_yaw = normalizeAngle(goal_yaw - robot_yaw);
-                wz              = heading_gain_ * diff_yaw;
-                wz              = std::clamp(wz, -max_angular_velocity_, max_angular_velocity_);
+                target_wz       = heading_gain_ * diff_yaw;
+                target_wz = std::clamp(target_wz, -max_angular_velocity_, max_angular_velocity_);
 
                 publishLookaheadMarker(goal_x, goal_y);
             }
@@ -424,12 +424,7 @@ void PathFollowerNode::controlLoop()
                     vy_world = max_speed_ * (dy / L);
                 }
 
-                // 向き: パス接線方向へのP制御
-                double path_yaw =
-                    getYawFromQuaternion(current_path_[lookahead_idx].pose.orientation);
-                double diff_yaw = normalizeAngle(path_yaw - robot_yaw);
-                wz              = heading_gain_ * diff_yaw;
-                wz              = std::clamp(wz, -2.0, 2.0);
+                target_wz = 0.0;
             }
 
             // ワールド座標系 (map) 速度指示値を機体ローカル座標系 (base_link) に変換
@@ -440,10 +435,10 @@ void PathFollowerNode::controlLoop()
             double target_vx_local = vx_world * cos_yaw + vy_world * sin_yaw;
             double target_vy_local = -vx_world * sin_yaw + vy_world * cos_yaw;
 
-            // 加速度制限の適用
-            double dt     = 1.0 / control_rate_;
-            double max_dv = max_acceleration_ * dt;
+            double dt = 1.0 / control_rate_;
 
+            // 並進加速度制限の適用
+            double max_dv  = max_acceleration_ * dt;
             double diff_vx = target_vx_local - current_vx_local_;
             double diff_vy = target_vy_local - current_vy_local_;
             double diff_v  = std::hypot(diff_vx, diff_vy);
@@ -453,11 +448,16 @@ void PathFollowerNode::controlLoop()
                 target_vy_local = current_vy_local_ + (diff_vy / diff_v) * max_dv;
             }
 
+            // 角加速度制限の適用
+            double max_dwz = max_angular_acceleration_ * dt;
+            double diff_wz = target_wz - current_wz_;
+            diff_wz        = std::clamp(diff_wz, -max_dwz, max_dwz);
+
             current_vx_local_ = target_vx_local;
             current_vy_local_ = target_vy_local;
-            current_wz_       = wz;  // パスに沿って向きは変更しないので未使用
+            current_wz_ += diff_wz;
 
-            publishCmdVel(current_vx_local_, current_vy_local_, 0.0);
+            publishCmdVel(current_vx_local_, current_vy_local_, current_wz_);
             break;
         }
     }
