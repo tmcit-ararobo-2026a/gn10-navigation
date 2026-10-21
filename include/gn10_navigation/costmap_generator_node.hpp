@@ -20,14 +20,38 @@ public:
 
 private:
     void declareAndGetParameters();
+
+    /**
+     * @brief コストマップの生成
+     *
+     * @return nav_msgs::msg::OccupancyGrid コストマップ
+     */
     nav_msgs::msg::OccupancyGrid generateCostmap();
+
+    /**
+     * @brief オブジェクトのコストを返す関数
+     *
+     * @param comment オブジェクトのコメント（文字列一致でコストを決定）
+     * @param type オブジェクト形状など
+     * @return int コスト
+     */
     int getObjectCost(const std::string& comment, ObjectType type) const;
+
+    /**
+     * @brief BFSを用いたコストの波及処理
+     *
+     * @param base_costs 入力コストマップ
+     * @param width コストマップの幅（セル数）
+     * @param height コストマップの高さ（セル数）
+     * @param output_grid コスト波及処理後の出力コストマップ
+     */
     void applyMultiSourceBfsInflation(
         const std::vector<uint8_t>& base_costs,
         int width,
         int height,
         std::vector<int8_t>& output_grid
     );
+
     void publishCachedCostmap();
 
     rcl_interfaces::msg::SetParametersResult onSetParameters(
