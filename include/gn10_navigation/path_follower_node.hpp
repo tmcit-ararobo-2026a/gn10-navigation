@@ -58,14 +58,15 @@ private:
     rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
 
     // パラメータ
-    double control_rate_;      // 50.0 Hz
-    double max_speed_;         // 1.5 m/s
-    double max_acceleration_;  // 1.0 m/s^2
-    double min_lookahead_;     // 0.4 m
-    double goal_tolerance_;    // 0.03 m
-    double heading_gain_;      // 2.0
-    double creep_gain_;        // 終端偏差Pゲイン
-    double min_creep_speed_;   // 0.05 m/s
+    double control_rate_;
+    double max_speed_;
+    double max_angular_velocity_;
+    double max_acceleration_;
+    double min_lookahead_;
+    double goal_tolerance_;
+    double heading_gain_;
+    double creep_gain_;  // 終端偏差Pゲイン
+    double min_creep_speed_;
 
     std::string map_frame_;
     std::string base_frame_;

@@ -85,6 +85,7 @@ void PathFollowerNode::declareAndGetParameters()
 {
     this->declare_parameter("control_rate", 50.0);
     this->declare_parameter("max_speed", 1.5);
+    this->declare_parameter("max_angular_velocity", 2.0);
     this->declare_parameter("max_acceleration", 1.0);
     this->declare_parameter("min_lookahead", 0.4);
     this->declare_parameter("goal_tolerance", 0.03);
@@ -97,14 +98,15 @@ void PathFollowerNode::declareAndGetParameters()
     this->declare_parameter("bucket_frame", "bucket_bottom");
     this->declare_parameter("max_bucket_age", 0.5);
 
-    control_rate_     = this->get_parameter("control_rate").as_double();
-    max_speed_        = this->get_parameter("max_speed").as_double();
-    max_acceleration_ = this->get_parameter("max_acceleration").as_double();
-    min_lookahead_    = this->get_parameter("min_lookahead").as_double();
-    goal_tolerance_   = this->get_parameter("goal_tolerance").as_double();
-    heading_gain_     = this->get_parameter("heading_gain").as_double();
-    creep_gain_       = this->get_parameter("creep_gain").as_double();
-    min_creep_speed_  = this->get_parameter("min_creep_speed").as_double();
+    control_rate_         = this->get_parameter("control_rate").as_double();
+    max_speed_            = this->get_parameter("max_speed").as_double();
+    max_angular_velocity_ = this->get_parameter("max_angular_velocity").as_double();
+    max_acceleration_     = this->get_parameter("max_acceleration").as_double();
+    min_lookahead_        = this->get_parameter("min_lookahead").as_double();
+    goal_tolerance_       = this->get_parameter("goal_tolerance").as_double();
+    heading_gain_         = this->get_parameter("heading_gain").as_double();
+    creep_gain_           = this->get_parameter("creep_gain").as_double();
+    min_creep_speed_      = this->get_parameter("min_creep_speed").as_double();
 
     map_frame_      = this->get_parameter("map_frame").as_string();
     base_frame_     = this->get_parameter("base_frame").as_string();
@@ -123,6 +125,8 @@ rcl_interfaces::msg::SetParametersResult PathFollowerNode::onSetParameters(
         const auto& name = param.get_name();
         if (name == "max_speed") {
             max_speed_ = param.as_double();
+        } else if (name == "max_angular_velocity") {
+            max_angular_velocity_ = param.as_double();
         } else if (name == "max_acceleration") {
             max_acceleration_ = param.as_double();
         } else if (name == "min_lookahead") {
@@ -316,7 +320,7 @@ void PathFollowerNode::controlLoop()
             double target_yaw = std::atan2(bucket_y - robot_y, bucket_x - robot_x);
             double diff_yaw   = normalizeAngle(target_yaw - robot_yaw);
             double wz         = heading_gain_ * diff_yaw;
-            wz                = std::clamp(wz, -2.0, 2.0);
+            wz                = std::clamp(wz, -max_angular_velocity_, max_angular_velocity_);
 
             publishCmdVel(0.0, 0.0, wz);
             break;
@@ -364,7 +368,7 @@ void PathFollowerNode::controlLoop()
 
                 double diff_yaw = normalizeAngle(goal_yaw - robot_yaw);
                 wz              = heading_gain_ * diff_yaw;
-                wz              = std::clamp(wz, -2.0, 2.0);
+                wz              = std::clamp(wz, -max_angular_velocity_, max_angular_velocity_);
 
                 publishLookaheadMarker(goal_x, goal_y);
             }
@@ -439,9 +443,9 @@ void PathFollowerNode::controlLoop()
 
             current_vx_local_ = target_vx_local;
             current_vy_local_ = target_vy_local;
-            current_wz_       = wz;
+            current_wz_       = wz;  // パスに沿って向きは変更しないので未使用
 
-            publishCmdVel(current_vx_local_, current_vy_local_, current_wz_);
+            publishCmdVel(current_vx_local_, current_vy_local_, 0.0);
             break;
         }
     }

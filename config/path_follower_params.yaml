@@ -2,6 +2,7 @@ path_follower_node:
   ros__parameters:
     control_rate: 50.0
     max_speed: 1.5
+    max_angular_velocity: 2.0
     max_acceleration: 1.0
     min_lookahead: 0.4
     goal_tolerance: 0.03
