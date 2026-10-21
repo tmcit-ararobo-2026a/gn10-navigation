@@ -13,115 +13,44 @@
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 
-struct AStarNode {
-    int x;
-    int y;
-
-    double g;
-    double h;
-    double f;
-};
+namespace gn10_navigation {
 
 class PathPlannerNode : public rclcpp::Node
 {
 public:
-    PathPlannerNode();
+    explicit PathPlannerNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
 
 private:
+    void declareAndGetParameters();
+    void onCostmap(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg);
+    void onGoalPose(const geometry_msgs::msg::PoseStamped::ConstSharedPtr msg);
+
+    // 座標変換ヘルパー
+    std::pair<int, int> worldToGrid(double wx, double wy) const;
+    std::pair<double, double> gridToWorld(int gx, int gy) const;
+    bool isInsideGrid(int gx, int gy) const;
+    bool isPassable(int gx, int gy) const;
+    std::optional<std::pair<int, int>> findNearestPassable(int gx, int gy, int max_radius_cells)
+        const;
+
+    // 8方向A*探索
+    std::vector<std::pair<int, int>> aStarSearch(int start_x, int start_y, int goal_x, int goal_y);
+
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_sub_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_pose_sub_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
-    void getCostmapMsg(nav_msgs::msg::OccupancyGrid::SharedPtr grid_msg);
-
-    /** @brief Plan once from the current TF pose; publish an empty path on failure. */
-    void getGoalPose(geometry_msgs::msg::PoseStamped::SharedPtr pose_msg);
-
-    // 変換や確認用関数
-    std::pair<int, int> worldToGrid(double world_x, double world_y);
-
-    std::size_t gridtoIndex(int x, int y) const;
-    std::pair<double, double> gridToWorld(int grid_x, int grid_y);
-
-    bool isInsideGrid(int x, int y);
-    bool isPassable(int x, int y);
-
-    // 指定セルから最も近い通行可能セルを探す関数 (max_radius_cells 以内)
-    std::optional<std::pair<int, int>> findNearestPassable(int x, int y, int max_radius_cells);
-
-    // A*が使用するCostmap 1次元配列で保持
-    std::vector<uint8_t> planning_grid_;
-
-    // A*
-    std::vector<std::pair<int, int>> aStar(int start_x, int start_y, int goal_x, int goal_y);
-
-    // b spline
-    std::vector<std::pair<double, double>> bsplineSmoothPath(
-        const std::vector<std::pair<int, int>>& path
-    );
-    std::vector<std::pair<double, double>> extractImportantPoints(
-        const std::vector<std::pair<int, int>>& path
-    );
-    std::vector<std::pair<double, double>> evaluateBSplinePath(
-        const std::vector<std::pair<double, double>>& control_points
-    );
-    bool isSmoothPathValid(const std::vector<std::pair<double, double>>& path);
-
-    // 最適なコストを計算する関数類
-    double calculatePathLength(const std::vector<std::pair<double, double>>& path);
-    double calculateCurvatureCost(const std::vector<std::pair<double, double>>& path);
-    double calculateSmoothnessCost(const std::vector<std::pair<double, double>>& path);
-    double calculateObstacleCost(const std::vector<std::pair<double, double>>& path);
-    double calculateControlPointSmoothnessCost(
-        const std::vector<std::pair<double, double>>& control_points
-    );
-    double calculatePathCost(
-        const std::vector<std::pair<double, double>>& path,
-        const std::vector<std::pair<double, double>>& control_points,
-        double base_length,
-        double base_curvature,
-        double base_smoothness,
-        double base_control_smoothness
-    );
 
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
-    // 受信コストマップパラメータ
+    // パラメータ
     std::string map_frame_;
     std::string base_frame_;
+    double planning_cost_factor_;  // a_star.planning_cost (3.0)
 
-    // Map information
-    double resolution_   = 0.0;
-    unsigned int width_  = 0;
-    unsigned int height_ = 0;
-    double origin_x_     = 0.0;
-    double origin_y_     = 0.0;
-
-    // map座標系から見たrobot座標系の格納場所
-    double robot_x_ = 0.0;
-    double robot_y_ = 0.0;
-
-    // snap
-    double start_snap_radius_;
-
-    // map座標系
-    double goal_x_ = 0.0;
-    double goal_y_ = 0.0;
-
-    // B-spline用パラメータ;
-    double bspline_simplification_tolerance_;
-    double bspline_turning_angle_threshold_;
-    int bspline_samples_per_segment_;
-    double bspline_smoothness_weight_;
-    double bspline_control_point_step_;
-    int bspline_smoothing_iterations_;
-
-    // コスト計算パラメータ
-    double bspline_length_weight_;
-    double bspline_curvature_weight_;
-    double bspline_obstacle_cost_weight_;
-    int bspline_optimization_iterations_;
-
-    // 小さいほどギリギリの経路
-    double cost_factor_;
+    // コストマップ情報
+    nav_msgs::msg::OccupancyGrid latest_costmap_;
+    bool has_costmap_{false};
 };
+
+}  // namespace gn10_navigation

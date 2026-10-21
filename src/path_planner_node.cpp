@@ -1,472 +1,182 @@
 #include "gn10_navigation/path_planner_node.hpp"
 
+#include <tf2/LinearMath/Quaternion.h>
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <map>
 #include <queue>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
-#include "gn10_navigation/grid_safety.hpp"
+namespace gn10_navigation {
 
-// メンバ関数じゃない計算を行うプログラム
-namespace {
-
-double calculateAngleDifference(double ax, double ay, double bx, double by)
+PathPlannerNode::PathPlannerNode(const rclcpp::NodeOptions& options)
+    : Node("path_planner_node", options)
 {
-    const double a_length = std::hypot(ax, ay);
-    const double b_length = std::hypot(bx, by);
+    declareAndGetParameters();
 
-    if (a_length < 1e-9 || b_length < 1e-9) {
-        return 0.0;
-    }
-
-    double cos_angle = (ax * bx + ay * by) / (a_length * b_length);
-    cos_angle        = std::clamp(cos_angle, -1.0, 1.0);
-
-    return std::acos(cos_angle) * 180.0 / M_PI;
-}
-
-// 8方向に障害物がないとしたときのゴールまでの最短距離（最小腰コストを求める）
-double heuristic(int x, int y, int goal_x, int goal_y)
-{
-    const double dx       = std::abs(x - goal_x);
-    const double dy       = std::abs(y - goal_y);
-    const double diagonal = std::min(dx, dy);
-    const double straight = std::max(dx, dy) - diagonal;
-
-    return diagonal * std::sqrt(2.0) + straight;
-}
-
-struct CompareAStarNode {
-    bool operator()(const AStarNode& a, const AStarNode& b) const
-    {
-        return a.f > b.f;
-    }
-};
-
-// 点pointから線分(line_start, line_end)までの最短距離
-double pointToLineDistance(
-    const std::pair<double, double>& point,
-    const std::pair<double, double>& line_start,
-    const std::pair<double, double>& line_end
-)
-{
-    const double dx = line_end.first - line_start.first;
-    const double dy = line_end.second - line_start.second;
-
-    const double length_squared = dx * dx + dy * dy;
-
-    // 始点と終点がほぼ同じなら、点同士の距離
-    if (length_squared < 1e-12) {
-        return std::hypot(point.first - line_start.first, point.second - line_start.second);
-    }
-
-    // 線分上で一番近い位置を割合t(0〜1)で求める
-    double t = ((point.first - line_start.first) * dx + (point.second - line_start.second) * dy) /
-               length_squared;
-    t        = std::clamp(t, 0.0, 1.0);
-
-    const double closest_x = line_start.first + t * dx;
-    const double closest_y = line_start.second + t * dy;
-
-    return std::hypot(point.first - closest_x, point.second - closest_y);
-}
-
-// RDP: startとendを結ぶ線から最も遠い点が許容誤差より遠ければ残し、その点で2分割して再帰する
-void simplifyPathRecursive(
-    const std::vector<std::pair<double, double>>& points,
-    int start,
-    int end,
-    double tolerance,
-    std::vector<bool>& keep
-)
-{
-    if (end <= start + 1) {
-        return;
-    }
-
-    double max_distance = 0.0;
-    int max_index       = -1;
-
-    for (int i = start + 1; i < end; ++i) {
-        const double distance = pointToLineDistance(points[i], points[start], points[end]);
-
-        if (distance > max_distance) {
-            max_distance = distance;
-            max_index    = i;
-        }
-    }
-
-    if (max_index >= 0 && max_distance > tolerance) {
-        keep[max_index] = true;
-
-        simplifyPathRecursive(points, start, max_index, tolerance, keep);
-        simplifyPathRecursive(points, max_index, end, tolerance, keep);
-    }
-}
-
-}  // namespace
-
-PathPlannerNode::PathPlannerNode() : Node("path_planner_node")
-{
-    // Qos config
-    rclcpp::QoS map_qos(rclcpp::KeepLast(1));
-    map_qos.reliable();
-    map_qos.transient_local();
-
-    // subscriber
-    costmap_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
-        "/costmap", map_qos, std::bind(&PathPlannerNode::getCostmapMsg, this, std::placeholders::_1)
-    );
-
-    goal_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-        "/goal_pose", 1, std::bind(&PathPlannerNode::getGoalPose, this, std::placeholders::_1)
-    );
-
-    path_pub_ = this->create_publisher<nav_msgs::msg::Path>("/planned_path", 1);
-
-    // tf
     tf_buffer_   = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
-    // パラメータの初期化設定
-    this->declare_parameter("map_configs.map_frame", "map");
-    this->declare_parameter("map_configs.base_frame", "base_link");
-    this->declare_parameter("snapp_config.start_snap_radius", 1.0);
-    this->declare_parameter("a_star.plannning_cost", 3.0);
-    this->declare_parameter("bspline.simplification_tolerance", 0.1);
-    this->declare_parameter("bspline.turning_angle_threshold", 15.0);
-    this->declare_parameter("bspline.samples_per_segment", 10);
-    this->declare_parameter("bspline.smoothness_weight", 1.0);
-    this->declare_parameter("bspline.control_point_step", 0.05);
-    this->declare_parameter("bspline.smoothing_iterations", 10);
-    this->declare_parameter("cost_caluculate.length_weight", 1.0);
-    this->declare_parameter("cost_caluculate.curvature_weight", 1.0);
-    this->declare_parameter("cost_caluculate.obstacle_cost_weight", 1.0);
-    this->declare_parameter("cost_caluculate.optimization_iterations", 20);
-
-    // yamlから受信
-    map_frame_         = this->get_parameter("map_configs.map_frame").as_string();
-    base_frame_        = this->get_parameter("map_configs.base_frame").as_string();
-    start_snap_radius_ = this->get_parameter("snapp_config.start_snap_radius").as_double();
-    cost_factor_       = this->get_parameter("a_star.plannning_cost").as_double();
-    bspline_simplification_tolerance_ =
-        this->get_parameter("bspline.simplification_tolerance").as_double();
-    bspline_turning_angle_threshold_ =
-        this->get_parameter("bspline.turning_angle_threshold").as_double();
-    bspline_samples_per_segment_ =
-        static_cast<int>(this->get_parameter("bspline.samples_per_segment").as_int());
-    bspline_smoothness_weight_  = this->get_parameter("bspline.smoothness_weight").as_double();
-    bspline_control_point_step_ = this->get_parameter("bspline.control_point_step").as_double();
-    bspline_smoothing_iterations_ =
-        static_cast<int>(this->get_parameter("bspline.smoothing_iterations").as_int());
-    bspline_length_weight_    = this->get_parameter("cost_caluculate.length_weight").as_double();
-    bspline_curvature_weight_ = this->get_parameter("cost_caluculate.curvature_weight").as_double();
-    bspline_obstacle_cost_weight_ =
-        this->get_parameter("cost_caluculate.obstacle_cost_weight").as_double();
-    bspline_optimization_iterations_ =
-        static_cast<int>(this->get_parameter("cost_caluculate.optimization_iterations").as_int());
-
-    RCLCPP_INFO(this->get_logger(), "Path planner started");
-}
-
-void PathPlannerNode::getCostmapMsg(nav_msgs::msg::OccupancyGrid::SharedPtr grid_msg)
-{
-    // ERROR msg
-    const unsigned int new_width  = grid_msg->info.width;
-    const unsigned int new_height = grid_msg->info.height;
-
-    planning_grid_.clear();
-    resolution_           = 0;
-    const auto& origin    = grid_msg->info.origin;
-    const auto cell_count = static_cast<std::size_t>(new_width) * new_height;
-    if (new_width == 0 || new_height == 0 ||
-        cell_count > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
-        !std::isfinite(grid_msg->info.resolution) || !std::isfinite(origin.position.x) ||
-        !std::isfinite(origin.position.y) || !std::isfinite(origin.position.z) ||
-        !std::isfinite(origin.orientation.x) || !std::isfinite(origin.orientation.y) ||
-        !std::isfinite(origin.orientation.z) || !std::isfinite(origin.orientation.w) ||
-        std::abs(std::abs(origin.orientation.w) - 1.0) > 1e-3 ||
-        std::abs(origin.orientation.x) > 1e-6 || std::abs(origin.orientation.y) > 1e-6 ||
-        std::abs(origin.orientation.z) > 1e-6) {
-        RCLCPP_ERROR(get_logger(), "Costmap shape/origin is invalid or rotated");
-        return;
-    }
-    if (grid_msg->data.size() != cell_count) {
-        RCLCPP_ERROR(
-            this->get_logger(),
-            "Costmap data is too small: data=%zu, expected=%zu",
-            grid_msg->data.size(),
-            static_cast<std::size_t>(new_width) * new_height
-        );
-
-        return;
-    }
-
-    if (grid_msg->info.resolution <= 0.0F) {
-        RCLCPP_ERROR(this->get_logger(), "Costmap resolution is invalid.");
-
-        return;
-    }
-
-    if (grid_msg->header.frame_id != map_frame_) {
-        RCLCPP_ERROR(
-            this->get_logger(),
-            "Costmap frame is not %s: %s",
-            map_frame_.c_str(),
-            grid_msg->header.frame_id.c_str()
-        );
-
-        return;
-    }
-
-    // 値を代入
-    resolution_ = grid_msg->info.resolution;
-    width_      = grid_msg->info.width;
-    height_     = grid_msg->info.height;
-    origin_x_   = grid_msg->info.origin.position.x;
-    origin_y_   = grid_msg->info.origin.position.y;
-
-    // 1次元配列を2次元配列にコピー
-    planning_grid_.assign(static_cast<std::size_t>(width_) * height_, 0);
-
-    for (unsigned int y = 0; y < height_; ++y) {
-        for (unsigned int x = 0; x < width_; ++x) {
-            const std::size_t index = static_cast<std::size_t>(y) * width_ + x;
-
-            planning_grid_[index] = static_cast<uint8_t>(grid_msg->data[index]);
-        }
-    }
-
-    // 受信ログの出力
-    RCLCPP_INFO(
-        this->get_logger(),
-        "Costmap received: width=%u, height=%u, resolution=%.3f",
-        width_,
-        height_,
-        resolution_
+    // Subscriptions
+    rclcpp::QoS map_qos(1);
+    map_qos.transient_local();
+    map_qos.reliable();
+    costmap_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
+        "/costmap", map_qos, std::bind(&PathPlannerNode::onCostmap, this, std::placeholders::_1)
     );
 
-    // コスト値と個数
-    std::map<int, int> value_count;
+    goal_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+        "/goal_pose", 10, std::bind(&PathPlannerNode::onGoalPose, this, std::placeholders::_1)
+    );
 
-    // 何個そのコストがあったのか計算
-    for (const uint8_t value : planning_grid_) {
-        value_count[value]++;
-    }
-    for (const auto& [value, count] : value_count) {
-        RCLCPP_INFO(this->get_logger(), "Cost %d: %d cells", value, count);
-    }
+    // Publisher
+    path_pub_ = this->create_publisher<nav_msgs::msg::Path>("/planned_path", 10);
+
+    RCLCPP_INFO(this->get_logger(), "PathPlannerNode initialized.");
 }
 
-void PathPlannerNode::getGoalPose(geometry_msgs::msg::PoseStamped::SharedPtr goal)
+void PathPlannerNode::declareAndGetParameters()
 {
-    nav_msgs::msg::Path path;
-    path.header.frame_id = map_frame_;
-    path.header.stamp    = now();
-    const auto fail      = [&](const std::string& reason) {
-        RCLCPP_WARN(get_logger(), "Path planning failed: %s", reason.c_str());
-        path.poses.clear();
-        path_pub_->publish(path);
-    };
-    const auto valid_pose = [&](const geometry_msgs::msg::PoseStamped& pose) {
-        const auto& position = pose.pose.position;
-        const auto& rotation = pose.pose.orientation;
-        const double norm    = rotation.x * rotation.x + rotation.y * rotation.y +
-                               rotation.z * rotation.z + rotation.w * rotation.w;
-        return pose.header.frame_id == map_frame_ && std::isfinite(position.x) &&
-               std::isfinite(position.y) && std::isfinite(position.z) && std::isfinite(norm) &&
-               std::abs(norm - 1.0) < 1e-3;
-    };
-    try {
-        if (planning_grid_.empty()) {
-            fail("No validated costmap");
-            return;
-        }
-        const auto transform =
-            tf_buffer_->lookupTransform(map_frame_, base_frame_, tf2::TimePointZero);
-        geometry_msgs::msg::PoseStamped start;
-        start.header           = path.header;
-        start.pose.position.x  = transform.transform.translation.x;
-        start.pose.position.y  = transform.transform.translation.y;
-        start.pose.position.z  = transform.transform.translation.z;
-        start.pose.orientation = transform.transform.rotation;
-        const gn10_navigation::GridSafety grid(
-            planning_grid_, width_, height_, resolution_, origin_x_, origin_y_
-        );
-        if (!valid_pose(start)) {
-            fail("Invalid start pose/frame/quaternion");
-            return;
-        }
-        if (!valid_pose(*goal)) {
-            fail("Invalid goal pose/frame/quaternion");
-            return;
-        }
-        robot_x_ = start.pose.position.x;
-        robot_y_ = start.pose.position.y;
-        goal_x_  = goal->pose.position.x;
-        goal_y_  = goal->pose.position.y;
-        if (!grid.point_passable(robot_x_, robot_y_)) {
-            fail("Start outside grid or blocked; no unverified snap");
-            return;
-        }
-        if (!grid.point_passable(goal_x_, goal_y_)) {
-            fail("Goal outside grid or blocked");
-            return;
-        }
-        const auto [start_x, start_y] = worldToGrid(robot_x_, robot_y_);
-        const auto [goal_x, goal_y]   = worldToGrid(goal_x_, goal_y_);
-        const auto discrete           = aStar(start_x, start_y, goal_x, goal_y);
-        if (discrete.empty()) {
-            fail("No A* path");
-            return;
-        }
-        auto points = bsplineSmoothPath(discrete);
-        if (points.empty()) {
-            fail("No smoothed path");
-            return;
-        }
-        if (points.size() == 1) {
-            points = {
-                {robot_x_, robot_y_},
-                { goal_x_,  goal_y_}
-            };
-        } else {
-            points.front() = {robot_x_, robot_y_};
-            points.back()  = {goal_x_, goal_y_};
-        }
-        if (!isSmoothPathValid(points)) {
-            fail("Corrected path intersects blocked cells");
-            return;
-        }
-        for (std::size_t point_index = 0; point_index < points.size(); ++point_index) {
-            geometry_msgs::msg::PoseStamped pose;
-            pose.header          = path.header;
-            pose.pose.position.x = points[point_index].first;
-            pose.pose.position.y = points[point_index].second;
-            if (point_index + 1 == points.size()) {
-                pose.pose.orientation = goal->pose.orientation;
-            } else {
-                pose.pose.orientation = start.pose.orientation;
-            }
-            path.poses.push_back(pose);
-        }
-        path_pub_->publish(path);
-    } catch (const std::exception& error) {
-        fail(error.what());
-    }
+    this->declare_parameter("map_configs.map_frame", "map");
+    this->declare_parameter("map_configs.base_frame", "base_link");
+    this->declare_parameter("a_star.planning_cost", 3.0);
+
+    map_frame_            = this->get_parameter("map_configs.map_frame").as_string();
+    base_frame_           = this->get_parameter("map_configs.base_frame").as_string();
+    planning_cost_factor_ = this->get_parameter("a_star.planning_cost").as_double();
 }
 
-// peripheral
-std::pair<int, int> PathPlannerNode::worldToGrid(double wx, double wy)
+void PathPlannerNode::onCostmap(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg)
 {
-    return {
-        static_cast<int>(std::floor((wx - origin_x_) / resolution_)),
-        static_cast<int>(std::floor((wy - origin_y_) / resolution_))
-    };
+    latest_costmap_ = *msg;
+    has_costmap_    = true;
 }
 
-std::pair<double, double> PathPlannerNode::gridToWorld(int gx, int gy)
+std::pair<int, int> PathPlannerNode::worldToGrid(double wx, double wy) const
 {
-    return {origin_x_ + (gx + 0.5) * resolution_, origin_y_ + (gy + 0.5) * resolution_};
+    double res = latest_costmap_.info.resolution;
+    int gx     = static_cast<int>(std::floor((wx - latest_costmap_.info.origin.position.x) / res));
+    int gy     = static_cast<int>(std::floor((wy - latest_costmap_.info.origin.position.y) / res));
+    return {gx, gy};
 }
 
-std::size_t PathPlannerNode::gridtoIndex(int x, int y) const
+std::pair<double, double> PathPlannerNode::gridToWorld(int gx, int gy) const
 {
-    return static_cast<std::size_t>(y) * width_ + static_cast<std::size_t>(x);
+    double res = latest_costmap_.info.resolution;
+    double wx  = latest_costmap_.info.origin.position.x + (gx + 0.5) * res;
+    double wy  = latest_costmap_.info.origin.position.y + (gy + 0.5) * res;
+    return {wx, wy};
 }
 
-bool PathPlannerNode::isInsideGrid(int x, int y)
+bool PathPlannerNode::isInsideGrid(int gx, int gy) const
 {
-    return x >= 0 && x < static_cast<int>(width_) && y >= 0 && y < static_cast<int>(height_);
+    return gx >= 0 && gx < static_cast<int>(latest_costmap_.info.width) && gy >= 0 &&
+           gy < static_cast<int>(latest_costmap_.info.height);
 }
 
-bool PathPlannerNode::isPassable(int x, int y)
+bool PathPlannerNode::isPassable(int gx, int gy) const
 {
-    if (!isInsideGrid(x, y)) {
+    if (!isInsideGrid(gx, gy)) {
         return false;
     }
-
-    return planning_grid_[gridtoIndex(x, y)] < 254;
+    int idx     = gy * static_cast<int>(latest_costmap_.info.width) + gx;
+    int8_t cost = latest_costmap_.data[idx];
+    // 0〜99 が通行可能領域、100は不可侵、負数は未知領域
+    return cost >= 0 && cost < 100;
 }
 
 std::optional<std::pair<int, int>> PathPlannerNode::findNearestPassable(
-    int x, int y, int max_radius_cells
-)
+    int gx, int gy, int max_radius_cells
+) const
 {
-    // 半径内の全セルを調べ、ユークリッド距離が最も近い通行可能セルを返す。
-
-    if (max_radius_cells <= 0) {
-        return std::nullopt;
+    if (isPassable(gx, gy)) {
+        return std::make_pair(gx, gy);
     }
 
-    double best_distance = std::numeric_limits<double>::infinity();
+    double best_dist_sq                          = std::numeric_limits<double>::infinity();
+    std::optional<std::pair<int, int>> best_cell = std::nullopt;
 
-    std::optional<std::pair<int, int>> best;
-
-    for (int dy = -max_radius_cells; dy <= max_radius_cells; ++dy) {
-        for (int dx = -max_radius_cells; dx <= max_radius_cells; ++dx) {
-            const int nx = x + dx;
-
-            const int ny = y + dy;
-
-            if (!isPassable(nx, ny)) {
-                continue;
-            }
-
-            const double distance = std::hypot(dx, dy);
-
-            if (distance > max_radius_cells) {
-                continue;
-            }
-
-            if (distance < best_distance) {
-                best_distance = distance;
-
-                best = std::make_pair(nx, ny);
+    for (int r = 1; r <= max_radius_cells; ++r) {
+        for (int dy = -r; dy <= r; ++dy) {
+            for (int dx = -r; dx <= r; ++dx) {
+                if (std::abs(dx) != r && std::abs(dy) != r) {
+                    continue;
+                }
+                int nx = gx + dx;
+                int ny = gy + dy;
+                if (isPassable(nx, ny)) {
+                    double d_sq = dx * dx + dy * dy;
+                    if (d_sq < best_dist_sq) {
+                        best_dist_sq = d_sq;
+                        best_cell    = std::make_pair(nx, ny);
+                    }
+                }
             }
         }
+        if (best_cell.has_value()) {
+            return best_cell;
+        }
     }
-
-    return best;
+    return std::nullopt;
 }
 
-std::vector<std::pair<int, int>> PathPlannerNode::aStar(
+std::vector<std::pair<int, int>> PathPlannerNode::aStarSearch(
     int start_x, int start_y, int goal_x, int goal_y
 )
 {
-    std::vector<std::pair<int, int>> path;
+    const int width     = static_cast<int>(latest_costmap_.info.width);
+    const int height    = static_cast<int>(latest_costmap_.info.height);
+    const int num_cells = width * height;
 
-    if (!isPassable(start_x, start_y) || !isPassable(goal_x, goal_y)) {
-        RCLCPP_WARN(this->get_logger(), "A*: Start or Goal is not passable.");
-        return path;
-    }
+    struct AStarElement {
+        int x;
+        int y;
+        double f;
 
-    // 候補セルの待ち行列。合計推定コストが一番小さいやつから出てくる。
-    std::priority_queue<AStarNode, std::vector<AStarNode>, CompareAStarNode> open_list;
+        bool operator>(const AStarElement& other) const
+        {
+            return f > other.f;
+        }
+    };
 
-    const std::size_t cell_count = static_cast<std::size_t>(width_) * height_;
-    std::vector<double> g_cost(cell_count, std::numeric_limits<double>::infinity());
-    std::vector<int> parent(cell_count, -1);
+    std::priority_queue<AStarElement, std::vector<AStarElement>, std::greater<AStarElement>>
+        open_set;
+    std::vector<double> g_score(num_cells, std::numeric_limits<double>::infinity());
+    std::vector<int> parent_index(num_cells, -1);
+    std::vector<bool> closed_set(num_cells, false);
 
-    const double start_h = heuristic(start_x, start_y, goal_x, goal_y);
-    open_list.push(AStarNode{start_x, start_y, 0.0, start_h, start_h});
-    g_cost[gridtoIndex(start_x, start_y)] = 0.0;
+    auto getIndex = [width](int x, int y) { return y * width + x; };
 
-    const int dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
-    const int dy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+    auto heuristic = [](int x1, int y1, int x2, int y2) -> double {
+        int dx = std::abs(x1 - x2);
+        int dy = std::abs(y1 - y2);
+        // Octile distance
+        int min_d = std::min(dx, dy);
+        int max_d = std::max(dx, dy);
+        return (max_d - min_d) + 1.41421356237 * min_d;
+    };
+
+    int start_idx      = getIndex(start_x, start_y);
+    g_score[start_idx] = 0.0;
+    open_set.push({start_x, start_y, heuristic(start_x, start_y, goal_x, goal_y)});
+
+    const int dx[8]            = {-1, 1, 0, 0, -1, -1, 1, 1};
+    const int dy[8]            = {0, 0, -1, 1, -1, 1, -1, 1};
+    const double step_costs[8] = {
+        1.0, 1.0, 1.0, 1.0, 1.41421356237, 1.41421356237, 1.41421356237, 1.41421356237};
 
     bool found = false;
 
-    // listが空になるまで探索 より良いコスト計算
-    while (!open_list.empty()) {
-        AStarNode current = open_list.top();
-        open_list.pop();
+    while (!open_set.empty()) {
+        auto current = open_set.top();
+        open_set.pop();
 
-        // 古い(より悪いコストで登録された)ノードは捨てる
-        if (current.g > g_cost[gridtoIndex(current.x, current.y)]) {
+        int curr_idx = getIndex(current.x, current.y);
+        if (closed_set[curr_idx]) {
             continue;
         }
+        closed_set[curr_idx] = true;
 
         if (current.x == goal_x && current.y == goal_y) {
             found = true;
@@ -474,701 +184,189 @@ std::vector<std::pair<int, int>> PathPlannerNode::aStar(
         }
 
         for (int i = 0; i < 8; ++i) {
-            const int next_x = current.x + dx[i];
-            const int next_y = current.y + dy[i];
+            int nx = current.x + dx[i];
+            int ny = current.y + dy[i];
 
-            if (!isPassable(next_x, next_y)) {
+            if (!isPassable(nx, ny)) {
                 continue;
             }
 
-            // 斜め移動は、角を挟む2セルも通行可能なときだけ許可
+            // 斜め移動時の角抜け防止
             if (dx[i] != 0 && dy[i] != 0) {
-                if (!isPassable(current.x + dx[i], current.y) ||
+                if (!isPassable(current.x + dx[i], current.y) &&
                     !isPassable(current.x, current.y + dy[i])) {
                     continue;
                 }
             }
 
-            const double move_cost = (dx[i] != 0 && dy[i] != 0) ? std::sqrt(2.0) : 1.0;
-            const double cost_penalty =
-                static_cast<double>(planning_grid_[gridtoIndex(next_x, next_y)]) * cost_factor_;
-            const double new_g = current.g + move_cost + cost_penalty;
-
-            if (new_g >= g_cost[gridtoIndex(next_x, next_y)]) {
+            int next_idx = getIndex(nx, ny);
+            if (closed_set[next_idx]) {
                 continue;
             }
 
-            const double new_h = heuristic(next_x, next_y, goal_x, goal_y);
+            // Cost_step = StepLength + CostmapValue * k_penalty
+            int8_t costmap_val = latest_costmap_.data[next_idx];
+            double edge_cost =
+                step_costs[i] + static_cast<double>(costmap_val) * planning_cost_factor_;
+            double tentative_g = g_score[curr_idx] + edge_cost;
 
-            g_cost[gridtoIndex(next_x, next_y)] = new_g;
-            parent[gridtoIndex(next_x, next_y)] =
-                static_cast<int>(gridtoIndex(current.x, current.y));
-
-            open_list.push(AStarNode{next_x, next_y, new_g, new_h, new_g + new_h});
+            if (tentative_g < g_score[next_idx]) {
+                g_score[next_idx]      = tentative_g;
+                parent_index[next_idx] = curr_idx;
+                double h               = heuristic(nx, ny, goal_x, goal_y);
+                open_set.push({nx, ny, tentative_g + h});
+            }
         }
     }
 
+    std::vector<std::pair<int, int>> path;
     if (!found) {
-        RCLCPP_WARN(this->get_logger(), "A*: Path not found.");
         return path;
     }
 
-    const int start_index = static_cast<int>(gridtoIndex(start_x, start_y));
-    int current_index     = static_cast<int>(gridtoIndex(goal_x, goal_y));
-
-    while (current_index != start_index) {
-        if (current_index < 0) {
-            RCLCPP_ERROR(this->get_logger(), "A*: Parent chain is broken.");
-            path.clear();
-            return path;
-        }
-
-        path.push_back(
-            {current_index % static_cast<int>(width_), current_index / static_cast<int>(width_)}
-        );
-        current_index = parent[static_cast<std::size_t>(current_index)];
+    int curr = getIndex(goal_x, goal_y);
+    while (curr != -1) {
+        int cx = curr % width;
+        int cy = curr / width;
+        path.push_back({cx, cy});
+        curr = parent_index[curr];
     }
-
-    path.push_back({start_x, start_y});
     std::reverse(path.begin(), path.end());
-
-    RCLCPP_INFO(this->get_logger(), "A*: Path found. Length=%zu", path.size());
     return path;
 }
 
-std::vector<std::pair<double, double>> PathPlannerNode::extractImportantPoints(
-    const std::vector<std::pair<int, int>>& path
-)
+void PathPlannerNode::onGoalPose(const geometry_msgs::msg::PoseStamped::ConstSharedPtr msg)
 {
-    using Point = std::pair<double, double>;
-
-    std::vector<Point> points;
-    points.reserve(path.size());  // 使う分予約
-
-    for (const auto& cell : path) {
-        points.push_back(gridToWorld(cell.first, cell.second));
-    }
-    if (points.size() <= 2) {
-        return points;
+    if (!has_costmap_) {
+        RCLCPP_WARN(this->get_logger(), "Costmap not received yet. Cannot plan path.");
+        return;
     }
 
-    const std::size_t n = points.size();
+    // 1. ロボット現在位置をTFから取得
+    geometry_msgs::msg::TransformStamped tf_stamped;
+    try {
+        tf_stamped = tf_buffer_->lookupTransform(map_frame_, base_frame_, tf2::TimePointZero);
+    } catch (const tf2::TransformException& ex) {
+        RCLCPP_ERROR(
+            this->get_logger(),
+            "Could not transform %s to %s: %s",
+            map_frame_.c_str(),
+            base_frame_.c_str(),
+            ex.what()
+        );
+        return;
+    }
 
-    //  RDPで、直線的な部分の不要な点を削除する
-    std::vector<bool> keep(n, false);
-    keep[0]     = true;
-    keep[n - 1] = true;
+    double start_wx = tf_stamped.transform.translation.x;
+    double start_wy = tf_stamped.transform.translation.y;
+    double goal_wx  = msg->pose.position.x;
+    double goal_wy  = msg->pose.position.y;
 
-    simplifyPathRecursive(
-        points, 0, static_cast<int>(n) - 1, bspline_simplification_tolerance_, keep
+    auto [start_gx, start_gy] = worldToGrid(start_wx, start_wy);
+    auto [goal_gx, goal_gy]   = worldToGrid(goal_wx, goal_wy);
+
+    // 2. スタートとゴールの通行可能性チェック＆スナップ
+    const int snap_radius_cells =
+        static_cast<int>(std::ceil(0.4 / latest_costmap_.info.resolution));
+
+    auto snapped_start = findNearestPassable(start_gx, start_gy, snap_radius_cells);
+    if (!snapped_start.has_value()) {
+        RCLCPP_ERROR(
+            this->get_logger(),
+            "Start pose (%d, %d) is inside obstacle and cannot be snapped.",
+            start_gx,
+            start_gy
+        );
+        // 空のPathをパブリッシュして失敗通知
+        nav_msgs::msg::Path empty_path;
+        empty_path.header.stamp    = this->now();
+        empty_path.header.frame_id = map_frame_;
+        path_pub_->publish(empty_path);
+        return;
+    }
+
+    auto snapped_goal = findNearestPassable(goal_gx, goal_gy, snap_radius_cells);
+    if (!snapped_goal.has_value()) {
+        RCLCPP_ERROR(
+            this->get_logger(),
+            "Goal pose (%d, %d) is inside obstacle and cannot be snapped.",
+            goal_gx,
+            goal_gy
+        );
+        nav_msgs::msg::Path empty_path;
+        empty_path.header.stamp    = this->now();
+        empty_path.header.frame_id = map_frame_;
+        path_pub_->publish(empty_path);
+        return;
+    }
+
+    int actual_start_x = snapped_start->first;
+    int actual_start_y = snapped_start->second;
+    int actual_goal_x  = snapped_goal->first;
+    int actual_goal_y  = snapped_goal->second;
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Planning path from grid (%d, %d) to (%d, %d)...",
+        actual_start_x,
+        actual_start_y,
+        actual_goal_x,
+        actual_goal_y
     );
 
-    std::vector<std::size_t> rdp_indices;
-    for (std::size_t i = 0; i < n; ++i) {
-        if (keep[i]) {
-            rdp_indices.push_back(i);
-        }
+    // 3. 8方向A*探索
+    auto grid_path = aStarSearch(actual_start_x, actual_start_y, actual_goal_x, actual_goal_y);
+
+    if (grid_path.empty()) {
+        RCLCPP_WARN(this->get_logger(), "A* search failed to find a path.");
+        nav_msgs::msg::Path empty_path;
+        empty_path.header.stamp    = this->now();
+        empty_path.header.frame_id = map_frame_;
+        path_pub_->publish(empty_path);
+        return;
     }
 
-    //  RDP後の点列で、一定以上曲がっている点だけ残す
-    struct DroppedCandidate {
-        std::size_t index;
-        double angle;
-    };
-    std::vector<DroppedCandidate> dropped;
+    // 4. 仕様書:
+    // 「探索された格子点列はB-spline等の重厚な平滑化・局所最適化を行わず、そのままワールド座標に変換して/planned_path（nav_msgs/msg/Path）として発行する。」
+    nav_msgs::msg::Path path_msg;
+    path_msg.header.stamp    = this->now();
+    path_msg.header.frame_id = map_frame_;
 
-    std::vector<bool> final_keep(n, false);
-    final_keep[0]     = true;
-    final_keep[n - 1] = true;
+    path_msg.poses.resize(grid_path.size());
+    for (size_t i = 0; i < grid_path.size(); ++i) {
+        auto [wx, wy]                     = gridToWorld(grid_path[i].first, grid_path[i].second);
+        path_msg.poses[i].header.stamp    = path_msg.header.stamp;
+        path_msg.poses[i].header.frame_id = map_frame_;
+        path_msg.poses[i].pose.position.x = wx;
+        path_msg.poses[i].pose.position.y = wy;
+        path_msg.poses[i].pose.position.z = 0.0;
 
-    std::size_t kept_count = 2;
-    std::size_t last_kept  = rdp_indices.front();
-
-    for (std::size_t k = 1; k + 1 < rdp_indices.size(); ++k) {
-        const std::size_t idx  = rdp_indices[k];
-        const std::size_t next = rdp_indices[k + 1];
-
-        const double v1x = points[idx].first - points[last_kept].first;
-        const double v1y = points[idx].second - points[last_kept].second;
-        const double v2x = points[next].first - points[idx].first;
-        const double v2y = points[next].second - points[idx].second;
-
-        const double angle = calculateAngleDifference(v1x, v1y, v2x, v2y);
-
-        if (angle >= bspline_turning_angle_threshold_) {
-            final_keep[idx] = true;
-            ++kept_count;
-            last_kept = idx;
+        // 姿勢の計算
+        double yaw = 0.0;
+        if (i + 1 < grid_path.size()) {
+            auto [next_wx, next_wy] = gridToWorld(grid_path[i + 1].first, grid_path[i + 1].second);
+            yaw                     = std::atan2(next_wy - wy, next_wx - wx);
+            tf2::Quaternion q;
+            q.setRPY(0.0, 0.0, yaw);
+            path_msg.poses[i].pose.orientation = tf2::toMsg(q);
         } else {
-            dropped.push_back({idx, angle});
+            // ゴール点では goal_pose の orientation をそのまま使用
+            path_msg.poses[i].pose.orientation = msg->pose.orientation;
         }
     }
 
-    // 4点未満なら、落とした点を曲がり角が大きい順に戻す
-    //  (3次B-splineは制御点が4点以上必要)
-    constexpr std::size_t min_points = 4;
-
-    if (kept_count < min_points && !dropped.empty()) {
-        std::sort(
-            dropped.begin(),
-            dropped.end(),
-            [](const DroppedCandidate& a, const DroppedCandidate& b) { return a.angle > b.angle; }
-        );
-
-        for (const auto& candidate : dropped) {
-            if (kept_count >= min_points) {
-                break;
-            }
-            final_keep[candidate.index] = true;
-            ++kept_count;
-        }
-    }
-
-    // それでも足りなければ、現在の折れ線から最も離れた元経路上の点を追加する ---
-    // まっすぐで距離がすべて0なら、最も広い区間の中央を追加する
-    while (kept_count < min_points && kept_count < n) {
-        double best_distance      = -1.0;
-        std::size_t best_index    = 0;
-        std::size_t widest_gap    = 1;
-        std::size_t widest_mid    = 0;
-        std::size_t segment_start = 0;
-
-        for (std::size_t b = 1; b < n; ++b) {
-            if (!final_keep[b]) {
-                continue;
-            }
-
-            for (std::size_t i = segment_start + 1; i < b; ++i) {
-                const double distance =
-                    pointToLineDistance(points[i], points[segment_start], points[b]);
-
-                if (distance > best_distance) {
-                    best_distance = distance;
-                    best_index    = i;
-                }
-            }
-
-            if (b - segment_start > widest_gap) {
-                widest_gap = b - segment_start;
-                widest_mid = segment_start + (b - segment_start) / 2;
-            }
-
-            segment_start = b;
-        }
-
-        const std::size_t chosen = (best_distance > 1e-9) ? best_index : widest_mid;
-
-        final_keep[chosen] = true;
-        ++kept_count;
-    }
-
-    //  元の経路順のまま、残した点だけ取り出す
-    std::vector<Point> important_points;
-    important_points.reserve(kept_count);
-
-    for (std::size_t i = 0; i < n; ++i) {
-        if (final_keep[i]) {
-            important_points.push_back(points[i]);
-        }
-    }
-
+    path_pub_->publish(path_msg);
     RCLCPP_INFO(
-        this->get_logger(),
-        "Important points: %zu (RDP: %zu) / A* points: %zu",
-        important_points.size(),
-        rdp_indices.size(),
-        n
+        this->get_logger(), "Published planned_path with %zu points.", path_msg.poses.size()
     );
-
-    return important_points;
 }
 
-bool PathPlannerNode::isSmoothPathValid(const std::vector<std::pair<double, double>>& path)
-{
-    if (path.empty()) {
-        return false;
-    }
-    const gn10_navigation::GridSafety grid(
-        planning_grid_, width_, height_, resolution_, origin_x_, origin_y_
-    );
-    if (!grid.point_passable(path.front().first, path.front().second)) {
-        return false;
-    }
-    for (std::size_t point_index = 1; point_index < path.size(); ++point_index) {
-        if (!grid.segment_passable(
-                path[point_index - 1].first,
-                path[point_index - 1].second,
-                path[point_index].first,
-                path[point_index].second
-            )) {
-            return false;
-        }
-    }
-    return true;
-}
-
-std::vector<std::pair<double, double>> PathPlannerNode::evaluateBSplinePath(
-    const std::vector<std::pair<double, double>>& control_points
-)
-{
-    using Point = std::pair<double, double>;
-
-    std::vector<Point> sampled;
-
-    constexpr int degree = 3;
-
-    if (control_points.size() < degree + 1) {
-        return sampled;
-    }
-
-    const int control_count = static_cast<int>(control_points.size());
-    const int max_t         = control_count - degree;  // パラメータtの範囲は0〜max_t
-
-    // ノット列: 両端はdegree+1個重複、間は等間隔
-    std::vector<double> knots(control_count + degree + 1);
-
-    for (int i = 0; i < static_cast<int>(knots.size()); ++i) {
-        if (i <= degree) {
-            knots[i] = 0.0;
-        } else if (i >= control_count) {
-            knots[i] = static_cast<double>(max_t);
-        } else {
-            knots[i] = static_cast<double>(i - degree);
-        }
-    }
-
-    // De Boorのアルゴリズムで、パラメータtの点を求める
-    auto evaluate = [&](double t) -> Point {
-        if (t <= 0.0) {
-            return control_points.front();
-        }
-        if (t >= static_cast<double>(max_t)) {
-            return control_points.back();
-        }
-
-        // tが属するノット区間を探す
-        int span = degree;
-        for (int i = degree; i < control_count; ++i) {
-            if (t >= knots[i] && t < knots[i + 1]) {
-                span = i;
-                break;
-            }
-        }
-
-        std::vector<Point> d(degree + 1);
-        for (int j = 0; j <= degree; ++j) {
-            d[j] = control_points[span - degree + j];
-        }
-
-        for (int r = 1; r <= degree; ++r) {
-            for (int j = degree; j >= r; --j) {
-                const int index          = span - degree + j;
-                const double denominator = knots[index + degree - r + 1] - knots[index];
-
-                double alpha = 0.0;
-                if (denominator > 0.0) {
-                    alpha = (t - knots[index]) / denominator;
-                }
-
-                d[j].first  = (1.0 - alpha) * d[j - 1].first + alpha * d[j].first;
-                d[j].second = (1.0 - alpha) * d[j - 1].second + alpha * d[j].second;
-            }
-        }
-
-        return d[degree];
-    };
-
-    const int total_samples = std::max(1, max_t * bspline_samples_per_segment_);
-
-    sampled.reserve(total_samples + 1);
-
-    for (int i = 0; i <= total_samples; ++i) {
-        const double t = static_cast<double>(max_t) * static_cast<double>(i) /
-                         static_cast<double>(total_samples);
-
-        sampled.push_back(evaluate(t));
-    }
-
-    return sampled;
-}
-
-std::vector<std::pair<double, double>> PathPlannerNode::bsplineSmoothPath(
-    const std::vector<std::pair<int, int>>& path
-)
-{
-    using Point = std::pair<double, double>;
-
-    // 失敗したときに返す、A*経路そのもの
-    auto make_astar_path = [&]() {
-        std::vector<Point> result;
-        for (const auto& cell : path) {
-            result.push_back(gridToWorld(cell.first, cell.second));
-        }
-        return result;
-    };
-
-    if (path.empty()) {
-        return {};
-    }
-
-    auto control_points = extractImportantPoints(path);
-
-    // 3次B-splineは制御点が4点以上必要
-    if (control_points.size() < 4) {
-        RCLCPP_WARN(this->get_logger(), "Too few control points. Using A* path.");
-        return make_astar_path();
-    }
-
-    // 平滑化の前に、まず元の制御点で曲線が有効か確認する
-    if (!isSmoothPathValid(evaluateBSplinePath(control_points))) {
-        RCLCPP_WARN(this->get_logger(), "Initial B-spline path is invalid. Using A* path.");
-        return make_astar_path();
-    }
-
-    // 制御点の平滑化
-    // weightが大きいほどalphaが1に近づき、1回の移動量が増える
-    const double smoothness_weight = std::max(0.0, bspline_smoothness_weight_);
-    const double smoothness_alpha  = smoothness_weight / (smoothness_weight + 1.0);
-    const int smoothing_iterations = std::max(0, bspline_smoothing_iterations_);
-    const double smoothing_step = std::max(0.001, bspline_control_point_step_) * smoothness_alpha;
-
-    for (int iteration = 0; iteration < smoothing_iterations; ++iteration) {
-        bool changed = false;
-
-        // 始点と終点は動かさない
-        for (std::size_t i = 1; i + 1 < control_points.size(); ++i) {
-            const Point original = control_points[i];
-            const Point previous = control_points[i - 1];
-            const Point next     = control_points[i + 1];
-
-            // 両隣の中点へ向かうベクトル
-            const double dx       = 0.5 * (previous.first + next.first) - original.first;
-            const double dy       = 0.5 * (previous.second + next.second) - original.second;
-            const double distance = std::hypot(dx, dy);
-
-            if (distance < 1e-9) {
-                continue;
-            }
-
-            // 中点を行き過ぎないよう、stepと距離の小さい方だけ動く
-            const double move = std::min(smoothing_step, distance);
-
-            control_points[i] = {
-                original.first + dx / distance * move, original.second + dy / distance * move
-            };
-
-            // 動かした結果が障害物に入るなら取り消す
-            if (!isSmoothPathValid(evaluateBSplinePath(control_points))) {
-                control_points[i] = original;
-                continue;
-            }
-
-            changed = true;
-        }
-
-        if (!changed) {
-            break;  // どの点も動かなければ終了
-        }
-    }
-
-    // 　 最適化: 基準値(これとの比でコストを測る)
-    const auto initial_path          = evaluateBSplinePath(control_points);
-    const double base_length         = calculatePathLength(initial_path);
-    const double base_curvature      = calculateCurvatureCost(initial_path);
-    const double base_smoothness     = calculateSmoothnessCost(initial_path);
-    const double base_control_smooth = calculateControlPointSmoothnessCost(control_points);
-
-    double current_cost = calculatePathCost(
-        initial_path,
-        control_points,
-        base_length,
-        base_curvature,
-        base_smoothness,
-        base_control_smooth
-    );
-
-    const int iterations = std::max(1, bspline_optimization_iterations_);
-    const double step    = std::max(0.001, bspline_control_point_step_);
-
-    // 8方向
-    const double directions[8][2] = {
-        {        1.0,         0.0},
-        {       -1.0,         0.0},
-        {        0.0,         1.0},
-        {        0.0,        -1.0},
-        { 0.70710678,  0.70710678},
-        { 0.70710678, -0.70710678},
-        {-0.70710678,  0.70710678},
-        {-0.70710678, -0.70710678}
-    };
-
-    for (int iteration = 0; iteration < iterations; ++iteration) {
-        bool improved = false;
-
-        // 始点・終点は動かさない
-        for (std::size_t i = 1; i + 1 < control_points.size(); ++i) {
-            const Point original = control_points[i];
-            const Point previous = control_points[i - 1];
-            const Point next     = control_points[i + 1];
-
-            std::vector<Point> candidates;
-
-            // 候補1: 両隣の中点方向
-            const double mx = 0.5 * (previous.first + next.first) - original.first;
-            const double my = 0.5 * (previous.second + next.second) - original.second;
-            const double ml = std::hypot(mx, my);
-
-            if (ml > 1e-9) {
-                candidates.push_back(
-                    {original.first + mx / ml * step, original.second + my / ml * step}
-                );
-            }
-
-            // 候補2: 8方向
-            for (const auto& d : directions) {
-                candidates.push_back({original.first + d[0] * step, original.second + d[1] * step});
-            }
-
-            Point best_point = original;
-            double best_cost = current_cost;
-
-            for (const auto& candidate : candidates) {
-                control_points[i] = candidate;
-
-                const auto candidate_path = evaluateBSplinePath(control_points);
-
-                // 障害物に入る候補は却下
-                if (!isSmoothPathValid(candidate_path)) {
-                    continue;
-                }
-
-                const double cost = calculatePathCost(
-                    candidate_path,
-                    control_points,
-                    base_length,
-                    base_curvature,
-                    base_smoothness,
-                    base_control_smooth
-                );
-
-                if (cost < best_cost) {
-                    best_cost  = cost;
-                    best_point = candidate;
-                }
-            }
-
-            // 最良の候補だけ採用(なければ元に戻る)
-            control_points[i] = best_point;
-
-            if (best_cost < current_cost) {
-                current_cost = best_cost;
-                improved     = true;
-            }
-        }
-
-        if (!improved) {
-            break;  // どの点も改善しなければ終了
-        }
-    }
-
-    const auto result = evaluateBSplinePath(control_points);
-
-    if (!isSmoothPathValid(result)) {
-        RCLCPP_WARN(this->get_logger(), "Optimized B-spline path is invalid. Using A* path.");
-        return make_astar_path();
-    }
-
-    RCLCPP_INFO(
-        this->get_logger(),
-        "B-spline: control_points=%zu, samples=%zu, smoothing alpha=%.3f, iterations=%d",
-        control_points.size(),
-        result.size(),
-        smoothness_alpha,
-        smoothing_iterations
-    );
-
-    RCLCPP_INFO(
-        this->get_logger(),
-        "len=%.3f curv=%.6f smooth=%.6f ctrl=%.6f obs=%.3f",
-        calculatePathLength(result),
-        calculateCurvatureCost(result),
-        calculateSmoothnessCost(result),
-        calculateControlPointSmoothnessCost(control_points),
-        calculateObstacleCost(result)
-    );
-
-    RCLCPP_INFO(
-        this->get_logger(),
-        "B-spline optimized: length %.3f -> %.3f, curvature %.6f -> %.6f, obstacle %.3f -> %.3f",
-        base_length,
-        calculatePathLength(result),
-        base_curvature,
-        calculateCurvatureCost(result),
-        calculateObstacleCost(initial_path),
-        calculateObstacleCost(result)
-    );
-
-    return result;
-}
-
-// cost計算関数群
-
-// pathの長さを計算
-double PathPlannerNode::calculatePathLength(const std::vector<std::pair<double, double>>& path)
-{
-    double length = 0.0;
-    for (std::size_t i = 1; i < path.size(); ++i) {
-        length +=
-            std::hypot(path[i].first - path[i - 1].first, path[i].second - path[i - 1].second);
-    }
-    return length;
-}
-
-// 曲率の二乗を、道のり方向に積分したもの(急カーブほど大きい)
-double PathPlannerNode::calculateCurvatureCost(const std::vector<std::pair<double, double>>& path)
-{
-    if (path.size() < 3) {
-        return 0.0;
-    }
-
-    double cost = 0.0;
-
-    for (std::size_t i = 1; i + 1 < path.size(); ++i) {
-        const double ax = path[i].first - path[i - 1].first;
-        const double ay = path[i].second - path[i - 1].second;
-        const double bx = path[i + 1].first - path[i].first;
-        const double by = path[i + 1].second - path[i].second;
-
-        const double a = std::hypot(ax, ay);
-        const double b = std::hypot(bx, by);
-        const double c = std::hypot(
-            path[i + 1].first - path[i - 1].first, path[i + 1].second - path[i - 1].second
-        );
-
-        if (a < 1e-9 || b < 1e-9 || c < 1e-9) {
-            continue;
-        }
-
-        // 3点を通る円の曲率 = 2|cross| / (a*b*c)
-        const double cross     = ax * by - ay * bx;
-        const double curvature = 2.0 * std::abs(cross) / (a * b * c);
-
-        cost += curvature * curvature * 0.5 * (a + b);
-    }
-
-    return cost;
-}
-
-// 曲率の変化量の二乗和(曲がり方が急に変わるほど大きい)
-double PathPlannerNode::calculateSmoothnessCost(const std::vector<std::pair<double, double>>& path)
-{
-    if (path.size() < 4) {
-        return 0.0;
-    }
-
-    std::vector<double> curvature;
-    curvature.reserve(path.size() - 2);
-
-    for (std::size_t i = 1; i + 1 < path.size(); ++i) {
-        const double dx1 = path[i].first - path[i - 1].first;
-        const double dy1 = path[i].second - path[i - 1].second;
-        const double dx2 = path[i + 1].first - path[i].first;
-        const double dy2 = path[i + 1].second - path[i].second;
-
-        const double a = std::hypot(dx1, dy1);
-        const double b = std::hypot(dx2, dy2);
-        const double c = std::hypot(
-            path[i + 1].first - path[i - 1].first, path[i + 1].second - path[i - 1].second
-        );
-
-        if (a < 1e-6 || b < 1e-6 || c < 1e-6) {
-            curvature.push_back(0.0);
-            continue;
-        }
-
-        curvature.push_back(2.0 * std::abs(dx1 * dy2 - dy1 * dx2) / (a * b * c));
-    }
-
-    double smoothness = 0.0;
-    for (std::size_t i = 1; i < curvature.size(); ++i) {
-        const double d = curvature[i] - curvature[i - 1];
-        smoothness += d * d;
-    }
-
-    return smoothness;
-}
-
-// 通る各セルのコスト平均を0〜1に正規化(障害物に近い帯を通るほど大きい)
-double PathPlannerNode::calculateObstacleCost(const std::vector<std::pair<double, double>>& path)
-{
-    if (path.empty()) {
-        return 0.0;
-    }
-
-    double sum = 0.0;
-
-    for (const auto& point : path) {
-        const auto [gx, gy] = worldToGrid(point.first, point.second);
-
-        if (!isInsideGrid(gx, gy)) {
-            sum += 254.0;
-            continue;
-        }
-
-        sum += static_cast<double>(planning_grid_[gridtoIndex(gx, gy)]);
-    }
-
-    return sum / (static_cast<double>(path.size()) * 254.0);
-}
-
-// 制御点の二階差分の二乗和(制御点列のギザギザ)
-double PathPlannerNode::calculateControlPointSmoothnessCost(
-    const std::vector<std::pair<double, double>>& control_points
-)
-{
-    if (control_points.size() < 3) {
-        return 0.0;
-    }
-
-    double cost = 0.0;
-
-    for (std::size_t i = 1; i + 1 < control_points.size(); ++i) {
-        const double sx = control_points[i - 1].first - 2.0 * control_points[i].first +
-                          control_points[i + 1].first;
-        const double sy = control_points[i - 1].second - 2.0 * control_points[i].second +
-                          control_points[i + 1].second;
-        cost += sx * sx + sy * sy;
-    }
-
-    return cost;
-}
-
-// 各項を「最初の値との比」にして重みづけ合計する
-double PathPlannerNode::calculatePathCost(
-    const std::vector<std::pair<double, double>>& path,
-    const std::vector<std::pair<double, double>>& control_points,
-    double base_length,
-    double base_curvature,
-    double base_smoothness,
-    double base_control_smoothness
-)
-{
-    const double length_ratio     = calculatePathLength(path) / std::max(base_length, 1e-4);
-    const double curvature_ratio  = calculateCurvatureCost(path) / std::max(base_curvature, 1e-4);
-    const double smoothness_ratio = calculateSmoothnessCost(path) / std::max(base_smoothness, 1e-4);
-    const double control_ratio    = calculateControlPointSmoothnessCost(control_points) /
-                                    std::max(base_control_smoothness, 1e-4);
-    const double obstacle         = calculateObstacleCost(path);
-
-    return bspline_length_weight_ * length_ratio + bspline_curvature_weight_ * curvature_ratio +
-           bspline_smoothness_weight_ * (0.5 * smoothness_ratio + 0.5 * control_ratio) +
-           bspline_obstacle_cost_weight_ * obstacle;
-}
+}  // namespace gn10_navigation
 
 int main(int argc, char** argv)
 {
     rclcpp::init(argc, argv);
-    auto node = std::make_shared<PathPlannerNode>();
+    auto node = std::make_shared<gn10_navigation::PathPlannerNode>();
     rclcpp::spin(node);
     rclcpp::shutdown();
     return 0;
