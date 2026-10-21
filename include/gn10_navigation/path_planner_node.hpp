@@ -25,15 +25,65 @@ private:
     void onCostmap(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg);
     void onGoalPose(const geometry_msgs::msg::PoseStamped::ConstSharedPtr msg);
 
-    // 座標変換ヘルパー
+    /**
+     * @brief グリッドのインデックス (gx, gy) を算出
+     *
+     * @param wx ワールド座標wx
+     * @param wy ワールド座標wy
+     * @return std::pair<int, int> グリッドのインデックス
+     */
     std::pair<int, int> worldToGrid(double wx, double wy) const;
-    std::pair<double, double> gridToWorld(int gx, int gy) const;
-    bool isInsideGrid(int gx, int gy) const;
-    bool isPassable(int gx, int gy) const;
-    std::optional<std::pair<int, int>> findNearestPassable(int gx, int gy, int max_radius_cells)
-        const;
 
-    // 8方向A*探索
+    /**
+     * @brief ワールド座標 (wx, wy) を算出
+     *
+     * @param gx グリッドのインデックスgx
+     * @param gy グリッドのインデックスgy
+     * @return std::pair<double, double> ワールド座標 (wx, wy)
+     */
+    std::pair<double, double> gridToWorld(int gx, int gy) const;
+
+    /**
+     * @brief 座標 (gx, gy) がコストマップの範囲内にあるか判定
+     *
+     * @param gx グリッドのインデックスgx
+     * @param gy グリッドのインデックスgy
+     * @return true コストマップの範囲内にある
+     * @return false コストマップの範囲外
+     */
+    bool isInsideGrid(int gx, int gy) const;
+
+    /**
+     * @brief 通行可能領域かどうか 0 <= cost < 100
+     *
+     * @param gx グリッドのインデックスgx
+     * @param gy グリッドのインデックスgy
+     * @return true 通行可能領域である
+     * @return false 通行不可能である
+     */
+    bool isPassable(int gx, int gy) const;
+
+    /**
+     * @brief 指定されたセル障害物内にある場合に、その周辺から最も近い通行可能なセルを探す
+     *
+     * @param gx グリッドのインデックスgx
+     * @param gy グリッドのインデックスgy
+     * @param max_radius_cells ロボットの半径
+     * @return std::optional<std::pair<int, int>> 同心円状最も近い通行可能セル
+     */
+    std::optional<std::pair<int, int>> findNearestPassable(
+        int gx, int gy, int max_radius_cells
+    ) const;
+
+    /**
+     * @brief 8方向移動に対応したA-Star
+     *
+     * @param start_x スタート座標のグリッドのインデックスx
+     * @param start_y スタート座標のグリッドのインデックスy
+     * @param goal_x 目標座標のグリッドのインデックスx
+     * @param goal_y 目標座標のグリッドのインデックスy
+     * @return std::vector<std::pair<int, int>> (x, y)の組の配列で経路
+     */
     std::vector<std::pair<int, int>> aStarSearch(int start_x, int start_y, int goal_x, int goal_y);
 
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_sub_;
