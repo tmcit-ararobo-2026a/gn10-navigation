@@ -13,6 +13,7 @@
   <depend>builtin_interfaces</depend>
   <depend>diagnostic_msgs</depend>
   <depend>nlohmann-json-dev</depend>
+  <depend>yaml-cpp</depend>
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_cmake_pytest</test_depend>
   <test_depend>rclpy</test_depend>
@@ -29,6 +30,7 @@
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
   <depend>tf2_eigen</depend>

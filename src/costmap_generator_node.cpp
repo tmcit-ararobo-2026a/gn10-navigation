@@ -4,11 +4,14 @@
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <chrono>
 #include <cmath>
+#include <limits>
+#include <queue>
 #include <stdexcept>
 
-#include "gn10_navigation/grid_safety.hpp"
+namespace gn10_navigation {
 
-CostmapGeneratorNode::CostmapGeneratorNode() : Node("costmap_generator_node")
+CostmapGeneratorNode::CostmapGeneratorNode(const rclcpp::NodeOptions& options)
+    : Node("costmap_generator_node", options)
 {
     declareAndGetParameters();
 
@@ -31,6 +34,8 @@ CostmapGeneratorNode::CostmapGeneratorNode() : Node("costmap_generator_node")
     timer_ = this->create_wall_timer(
         std::chrono::seconds(1), std::bind(&CostmapGeneratorNode::publishCachedCostmap, this)
     );
+
+    RCLCPP_INFO(this->get_logger(), "CostmapGeneratorNode initialized.");
 }
 
 void CostmapGeneratorNode::declareAndGetParameters()
@@ -39,28 +44,25 @@ void CostmapGeneratorNode::declareAndGetParameters()
     this->declare_parameter("map_file_path", "");
 
     // コストマップの範囲・解像度設定
-    this->declare_parameter("resolution", 0.05);  // 5cm/cell
+    this->declare_parameter("resolution", 0.05);  // 0.05 m/cell
     this->declare_parameter("map_bounds.min_x", -6.0);
     this->declare_parameter("map_bounds.max_x", 6.0);
     this->declare_parameter("map_bounds.min_y", -6.5);
     this->declare_parameter("map_bounds.max_y", 6.5);
-    this->declare_parameter("robot_clearance.z_min", 0.00);  // ロボットが乗り越えられる高さ閾値
-    this->declare_parameter("robot_clearance.z_max", 1.40);  // ロボットの高さ
+    this->declare_parameter("robot_clearance.z_min", 0.00);
+    this->declare_parameter("robot_clearance.z_max", 1.40);
 
     // 膨張コスト（インフレーション）のパラメータ設定
     this->declare_parameter(
         "inflation.robot_radius", 0.35
-    );                                                  // ロボット物理半径 [m] (絶対侵入不可領域)
-    this->declare_parameter("inflation.margin", 0.50);  // 基準となる最大の膨張余白 [m]
-    this->declare_parameter(
-        "inflation.cost_scale_factor", 1.0
-    );  // コストによるマージン変化の度合い (0.0〜2.0程度)
+    );  // ロボット物理半径 [m] (絶対不可侵: 254)
+    this->declare_parameter("inflation.margin", 0.50);  // コスト波及マージン幅 [m]
 
-    // オブジェクト別コスト定義のパラメータ化
-    this->declare_parameter("costs.wall", 120);          // 外壁
-    this->declare_parameter("costs.partition", 200);     // 中央仕切り・教壇
-    this->declare_parameter("costs.obstacle", 254);      // バケツ・机・椅子・旗など（絶対接触NG）
-    this->declare_parameter("costs.default_cost", 254);  // デフォルト
+    // オブジェクト別コスト定義
+    this->declare_parameter("costs.wall", 120);          // 外壁: 120
+    this->declare_parameter("costs.partition", 200);     // 仕切り板: 200
+    this->declare_parameter("costs.obstacle", 254);      // 絶対不可侵障害物: 254
+    this->declare_parameter("costs.default_cost", 254);  // デフォルト: 254
 
     map_source_type_ = this->get_parameter("map_source_type").as_string();
     map_file_path_   = this->get_parameter("map_file_path").as_string();
@@ -73,22 +75,20 @@ void CostmapGeneratorNode::declareAndGetParameters()
     robot_z_min_ = this->get_parameter("robot_clearance.z_min").as_double();
     robot_z_max_ = this->get_parameter("robot_clearance.z_max").as_double();
 
-    // 膨張パラメータの取得
-    robot_radius_      = this->get_parameter("inflation.robot_radius").as_double();
-    inflation_margin_  = this->get_parameter("inflation.margin").as_double();
-    cost_scale_factor_ = this->get_parameter("inflation.cost_scale_factor").as_double();
+    robot_radius_     = this->get_parameter("inflation.robot_radius").as_double();
+    inflation_margin_ = this->get_parameter("inflation.margin").as_double();
 
-    // コストパラメータの取得
     cost_wall_      = static_cast<int>(this->get_parameter("costs.wall").as_int());
     cost_partition_ = static_cast<int>(this->get_parameter("costs.partition").as_int());
     cost_obstacle_  = static_cast<int>(this->get_parameter("costs.obstacle").as_int());
     cost_default_   = static_cast<int>(this->get_parameter("costs.default_cost").as_int());
+
     for (const auto cost : {cost_wall_, cost_partition_, cost_obstacle_, cost_default_}) {
         if (cost < 0 || cost > 254) {
-            throw std::invalid_argument("Custom cost must be within [0,254]");
+            throw std::invalid_argument("Custom cost must be within [0, 254]");
         }
     }
-    if (!std::isfinite(resolution_) || resolution_ <= 0 || !std::isfinite(map_min_x_) ||
+    if (!std::isfinite(resolution_) || resolution_ <= 0.0 || !std::isfinite(map_min_x_) ||
         !std::isfinite(map_max_x_) || !std::isfinite(map_min_y_) || !std::isfinite(map_max_y_) ||
         map_min_x_ >= map_max_x_ || map_min_y_ >= map_max_y_) {
         throw std::invalid_argument("Invalid map bounds/resolution");
@@ -112,9 +112,6 @@ rcl_interfaces::msg::SetParametersResult CostmapGeneratorNode::onSetParameters(
         } else if (name == "inflation.margin") {
             inflation_margin_ = param.as_double();
             need_regenerate   = true;
-        } else if (name == "inflation.cost_scale_factor") {
-            cost_scale_factor_ = param.as_double();
-            need_regenerate    = true;
         } else if (name == "costs.wall") {
             cost_wall_      = static_cast<int>(param.as_int());
             need_regenerate = true;
@@ -142,14 +139,9 @@ int CostmapGeneratorNode::getObjectCost(const std::string& comment, ObjectType /
 {
     if (comment.find("外壁") != std::string::npos) {
         return cost_wall_;
-    } else if (
-        comment.find("仕切り板") != std::string::npos || comment.find("教壇") != std::string::npos
-    ) {
+    } else if (comment.find("仕切り板") != std::string::npos || comment.find("教壇") != std::string::npos) {
         return cost_partition_;
-    } else if (
-        comment.find("バケツ") != std::string::npos || comment.find("机") != std::string::npos ||
-        comment.find("椅子") != std::string::npos || comment.find("旗") != std::string::npos
-    ) {
+    } else if (comment.find("バケツ") != std::string::npos || comment.find("机") != std::string::npos || comment.find("椅子") != std::string::npos || comment.find("旗") != std::string::npos) {
         return cost_obstacle_;
     }
     return cost_default_;
@@ -188,13 +180,12 @@ nav_msgs::msg::OccupancyGrid CostmapGeneratorNode::generateCostmap()
     costmap_msg.info.origin.position.z    = 0.0;
     costmap_msg.info.origin.orientation.w = 1.0;
 
-    // 初期化 (全て自由領域 0)
-    costmap_msg.data.resize(costmap_msg.info.width * costmap_msg.info.height, 0);
-
     const double origin_x = map_min_x_;
     const double origin_y = map_min_y_;
     const int width       = static_cast<int>(costmap_msg.info.width);
     const int height      = static_cast<int>(costmap_msg.info.height);
+
+    std::vector<uint8_t> base_costs(width * height, 0);
 
     // ① 原理障害物のレイアウト配置 (各オブジェクトの基準コストを設定)
     for (const auto& obj : map_objects) {
@@ -218,10 +209,8 @@ nav_msgs::msg::OccupancyGrid CostmapGeneratorNode::generateCostmap()
 
             for (int x = min_x_idx; x <= max_x_idx; ++x) {
                 for (int y = min_y_idx; y <= max_y_idx; ++y) {
-                    int idx               = y * width + x;
-                    costmap_msg.data[idx] = gn10_navigation::merge_cost(
-                        costmap_msg.data[idx], static_cast<uint8_t>(cost)
-                    );
+                    int idx         = y * width + x;
+                    base_costs[idx] = std::max(base_costs[idx], static_cast<uint8_t>(cost));
                 }
             }
         } else if (obj.type == CYLINDER) {
@@ -245,94 +234,120 @@ nav_msgs::msg::OccupancyGrid CostmapGeneratorNode::generateCostmap()
                                      (cell_y - obj.center_y) * (cell_y - obj.center_y);
 
                     if (dist_sq <= radius * radius) {
-                        int idx               = y * width + x;
-                        costmap_msg.data[idx] = gn10_navigation::merge_cost(
-                            costmap_msg.data[idx], static_cast<uint8_t>(cost)
-                        );
+                        int idx         = y * width + x;
+                        base_costs[idx] = std::max(base_costs[idx], static_cast<uint8_t>(cost));
                     }
                 }
             }
         }
     }
 
-    // ② コストおよびスケーリングファクターに基づく可変マージン付きインフレーションの適用
-    applyInflation(costmap_msg);
+    // ② Multi-Source BFSによる波及コスト計算およびOccupancyGridスケーリング
+    costmap_msg.data.resize(width * height, 0);
+    applyMultiSourceBfsInflation(base_costs, width, height, costmap_msg.data);
 
     RCLCPP_INFO(this->get_logger(), "Generated Costmap cache (%dx%d)", width, height);
     return costmap_msg;
 }
 
-void CostmapGeneratorNode::applyInflation(nav_msgs::msg::OccupancyGrid& costmap_msg)
+void CostmapGeneratorNode::applyMultiSourceBfsInflation(
+    const std::vector<uint8_t>& base_costs, int width, int height, std::vector<int8_t>& output_grid
+)
 {
-    if (robot_radius_ <= 0.0 && inflation_margin_ <= 0.0) {
+    const double max_dist = robot_radius_ + inflation_margin_;
+    if (max_dist <= 0.0) {
+        for (size_t i = 0; i < base_costs.size(); ++i) {
+            output_grid[i] =
+                (base_costs[i] == 254) ? 100 : static_cast<int8_t>((base_costs[i] * 99) / 253);
+        }
         return;
     }
 
-    const int width  = static_cast<int>(costmap_msg.info.width);
-    const int height = static_cast<int>(costmap_msg.info.height);
-
-    struct SourceCell {
+    struct BfsItem {
         int x;
         int y;
-        int cost;
+        int src_x;
+        int src_y;
+        uint8_t base_cost;
     };
-    std::vector<SourceCell> obstacle_cells;
 
+    std::queue<BfsItem> q;
+    std::vector<uint8_t> computed_cost(width * height, 0);
+    std::vector<float> min_dist_sq(width * height, std::numeric_limits<float>::infinity());
+
+    // 初期シード: 障害物セルをキューに登録
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
-            int c = static_cast<uint8_t>(costmap_msg.data[y * width + x]);
-            if (c > 0) {
-                obstacle_cells.push_back({x, y, c});
+            int idx = y * width + x;
+            if (base_costs[idx] > 0) {
+                computed_cost[idx] = 254;  // 障害物セル自身は一律254
+                min_dist_sq[idx]   = 0.0f;
+                q.push({x, y, x, y, base_costs[idx]});
             }
         }
     }
 
-    std::vector<uint8_t> inflated_data(costmap_msg.data.begin(), costmap_msg.data.end());
+    const int dx[8] = {-1, 1, 0, 0, -1, -1, 1, 1};
+    const int dy[8] = {0, 0, -1, 1, -1, 1, -1, 1};
 
-    for (const auto& source : obstacle_cells) {
-        // コスト(0〜254)に応じたマージン率の計算 (0.0〜1.0)
-        double cost_ratio = static_cast<double>(source.cost) / 254.0;
+    while (!q.empty()) {
+        BfsItem item = q.front();
+        q.pop();
 
-        // cost_scale_factor_ に応じて高コストほどマージンが広くなるよう可変スケール
-        // (例: factor=1.0 のとき、コスト254なら100%マージン、コスト120なら約47%マージン)
-        double scaled_margin = inflation_margin_ * (1.0 - cost_scale_factor_ * (1.0 - cost_ratio));
-        scaled_margin        = std::max(0.0, scaled_margin);  // 負の値を防ぐ
+        for (int dir = 0; dir < 8; ++dir) {
+            int nx = item.x + dx[dir];
+            int ny = item.y + dy[dir];
 
-        double effective_total_radius = robot_radius_ + scaled_margin;
-        int radius_cells = static_cast<int>(std::ceil(effective_total_radius / resolution_));
+            if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+                continue;
+            }
 
-        int min_x = std::max(0, source.x - radius_cells);
-        int max_x = std::min(width - 1, source.x + radius_cells);
-        int min_y = std::max(0, source.y - radius_cells);
-        int max_y = std::min(height - 1, source.y + radius_cells);
+            int nidx      = ny * width + nx;
+            int diff_x    = nx - item.src_x;
+            int diff_y    = ny - item.src_y;
+            float dist_sq = static_cast<float>(
+                (diff_x * diff_x + diff_y * diff_y) * (resolution_ * resolution_)
+            );
 
-        for (int y = min_y; y <= max_y; ++y) {
-            for (int x = min_x; x <= max_x; ++x) {
-                int dx      = x - source.x;
-                int dy      = y - source.y;
-                double dist = std::hypot(dx, dy) * resolution_;
+            if (dist_sq > static_cast<float>(max_dist * max_dist)) {
+                continue;
+            }
 
-                int calculated_cost = 0;
-                if (dist <= robot_radius_) {
-                    calculated_cost = 254;  // ロボット物理半径は絶対不可侵
-                } else if (dist <= effective_total_radius && scaled_margin > 0.0) {
-                    // 個別の scaled_margin に基づいてグラデーションコストを計算
-                    double ratio    = (effective_total_radius - dist) / scaled_margin;
-                    calculated_cost = static_cast<int>(ratio * source.cost);
-                } else {
-                    continue;
-                }
+            double dist  = std::sqrt(dist_sq);
+            uint8_t cost = 0;
+            if (dist <= robot_radius_) {
+                cost = 254;
+            } else if (dist <= max_dist && inflation_margin_ > 0.0) {
+                double factor = 1.0 - (dist - robot_radius_) / inflation_margin_;
+                cost =
+                    static_cast<uint8_t>(std::clamp(std::round(item.base_cost * factor), 0.0, 253.0)
+                    );
+            }
 
-                int idx = y * width + x;
-                if (calculated_cost > inflated_data[idx]) {
-                    inflated_data[idx] = static_cast<uint8_t>(calculated_cost);
-                }
+            if (cost > computed_cost[nidx]) {
+                computed_cost[nidx] = cost;
+                min_dist_sq[nidx]   = dist_sq;
+                q.push({nx, ny, item.src_x, item.src_y, item.base_cost});
+            } else if (cost == computed_cost[nidx] && dist_sq < min_dist_sq[nidx]) {
+                min_dist_sq[nidx] = dist_sq;
+                q.push({nx, ny, item.src_x, item.src_y, item.base_cost});
             }
         }
     }
 
-    for (size_t i = 0; i < costmap_msg.data.size(); ++i) {
-        costmap_msg.data[i] = static_cast<int8_t>(inflated_data[i]);
+    // 仕様書:
+    // 「送信時は、コスト254のセルを100に、それ以外の波及コスト（0〜253）を0〜99の範囲にスケール変換してOccupancyGrid（int8_t）のdata配列へ格納する。」
+    for (size_t i = 0; i < computed_cost.size(); ++i) {
+        uint8_t c = computed_cost[i];
+        if (c >= 254) {
+            output_grid[i] = 100;
+        } else if (c == 0) {
+            output_grid[i] = 0;
+        } else {
+            output_grid[i] = static_cast<int8_t>(
+                std::clamp(static_cast<int>(std::round(c * 99.0 / 253.0)), 1, 99)
+            );
+        }
     }
 }
 
@@ -346,10 +361,12 @@ void CostmapGeneratorNode::publishCachedCostmap()
     costmap_pub_->publish(cached_costmap_msg_);
 }
 
+}  // namespace gn10_navigation
+
 int main(int argc, char** argv)
 {
     rclcpp::init(argc, argv);
-    auto node = std::make_shared<CostmapGeneratorNode>();
+    auto node = std::make_shared<gn10_navigation::CostmapGeneratorNode>();
     rclcpp::spin(node);
     rclcpp::shutdown();
     return 0;

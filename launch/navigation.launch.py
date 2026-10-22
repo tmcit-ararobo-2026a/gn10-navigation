@@ -26,7 +26,17 @@ def start_navigation(context):
     follower_parameters.append(clock)
     planner_parameters.append(clock)
     rviz_config = LaunchConfiguration('rviz_config').perform(context)
+
+    target_manager_params = [
+        {'yaml_file_path': ParameterValue(
+            LaunchConfiguration('shooting_points_path'), value_type=str)},
+        clock
+    ]
+
     nodes = [
+        Node(package='gn10_navigation', executable='target_manager_node',
+             name='target_manager_node', output='screen',
+             parameters=target_manager_params),
         Node(package='gn10_navigation', executable='costmap_generator_node',
              name='costmap_generator_node', output='screen',
              parameters=[LaunchConfiguration('costmap_params'), clock,
@@ -51,6 +61,9 @@ def generate_launch_description():
         DeclareLaunchArgument('use_rviz', default_value='false', description='RViz2 を起動する'),
         DeclareLaunchArgument('use_sim_time', default_value='false',
                               description='実機は false、rosbag の /clock 利用時は true'),
+        DeclareLaunchArgument('shooting_points_path',
+                              default_value=str(share / 'config/shooting_points.yaml'),
+                              description='投擲ポイント定義 YAML ファイルパス'),
         DeclareLaunchArgument('planner_params',
                               default_value=str(share / 'config/path_planner_params.yaml')),
         DeclareLaunchArgument('follower_params',
