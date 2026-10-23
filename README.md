@@ -20,7 +20,7 @@ NHKロボコン2026等の自動走行要求を満たすナビゲーションパ�
 - **target_manager_node**: メインマイコンからの指示に応じた最適な投擲・目標座標（`/goal_pose`）の管理と発行。VSCode Extension等からのメモリ更新およびYAML保存サービスを提供。
 - **costmap_generator_node**: フィールド定義（`nhk2026_map.json`）に基づくMulti-Source BFSを用いた波及コスト付き地図データ（`nav_msgs/msg/OccupancyGrid`）の生成。
 - **path_planner_node**: コストマップと目標姿勢に基づく8方向A*標準実装による最短・低コストな格子経路（`nav_msgs/msg/Path`）の算定。
-- **path_follower_node**: ナビゲーション状態（`NavigationStatus`）のステートマシン管理、Pure Pursuitおよび終端15cm位置偏差フィードバックによる運動制御（3cm以下の目標停止精度）。
+- **path_follower_node**: ナビゲーション状態（`NavigationStatus`）のステートマシン管理、S字速度プロファイル付きPure Pursuitによる運動制御。経路進捗は単調に管理し、到達後は経路を破棄して再送された同一`Move`を無視する。経路逸脱・古いTF・不正なTFは停止して`Fail`へ遷移する。
 
 ---
 
