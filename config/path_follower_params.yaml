@@ -1,15 +1,46 @@
 path_follower_node:
   ros__parameters:
-    control_rate: 50.0
-    max_speed: 1.5
+    # 制御周期 [Hz]
+    control_rate: 60.0
+    # 最大並進速度 [m/s]
+    max_speed: 2.0
+    # 最大並進加速度 [m/s^2]
+    max_acceleration: 1.8
+    # 最大並進減速度 [m/s^2]
+    max_deceleration: 2.5
+    # 最大躍度（加速度の変化率）[m/s^3]
+    max_jerk: 12.0
+    # 最大横加速度 [m/s^2]
+    max_lateral_acceleration: 1.6
+    # 曲率を計算する距離の窓幅 [m]
+    curvature_window: 0.10
+    # 最大角速度 [rad/s]
     max_angular_velocity: 2.0
-    max_acceleration: 1.0
-    min_lookahead: 0.4
-    goal_tolerance: 0.03
+    # 最大角加速度 [rad/s^2]
+    max_angular_acceleration: 4.0
+    # 最小先読み距離 [m]
+    min_lookahead: 0.15
+    # 最大先読み距離 [m]
+    max_lookahead: 0.40
+    # 速度に対する先読み距離の比例ゲイン [s]
+    lookahead_gain: 0.10
+    # ゴール到達とみなす位置誤差の許容値 [m]
+    goal_tolerance: 0.06
+    # ゴール付近で使用する接近速度の上限 [m/s]
+    goal_approach_speed: 0.60
+    # 経路追従中に許容する経路からの最大距離 [m]
+    max_path_error: 0.30
+    # 経路追従開始時だけ許容する経路からの最大距離 [m]
+    max_initial_path_error: 0.45
+    # 自己位置の最大許容経過時間 [s]
+    max_pose_age: 0.5
+    # 目標方位誤差に対する角速度の比例ゲイン [1/s]
     heading_gain: 2.0
-    creep_gain: 2.0
-    min_creep_speed: 0.05
+    # 地図座標系の TF フレーム名
     map_frame: "map"
+    # ロボット本体の TF フレーム名
     base_frame: "base_link"
+    # バケットの TF フレーム名
     bucket_frame: "bucket_bottom"
+    # バケット位置の TF の最大許容経過時間 [s]
     max_bucket_age: 0.5
