@@ -15,6 +15,7 @@ path_follower_node:
     goal_tolerance: 0.06
     goal_approach_speed: 0.30
     max_path_error: 0.30
+    max_initial_path_error: 0.45
     max_pose_age: 0.5
     heading_gain: 2.0
     map_frame: "map"

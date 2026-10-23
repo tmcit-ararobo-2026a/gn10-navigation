@@ -89,6 +89,7 @@ private:
     double goal_tolerance_;
     double goal_approach_speed_;
     double max_path_error_;
+    double max_initial_path_error_;
     double max_pose_age_;
     double heading_gain_;
 

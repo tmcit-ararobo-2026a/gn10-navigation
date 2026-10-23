@@ -205,6 +205,7 @@ void PathFollowerNode::declareAndGetParameters()
     this->declare_parameter("goal_tolerance", 0.06);
     this->declare_parameter("goal_approach_speed", 0.30);
     this->declare_parameter("max_path_error", 0.30);
+    this->declare_parameter("max_initial_path_error", 0.45);
     this->declare_parameter("max_pose_age", 0.5);
     this->declare_parameter("heading_gain", 2.0);
 
@@ -228,6 +229,7 @@ void PathFollowerNode::declareAndGetParameters()
     goal_tolerance_           = this->get_parameter("goal_tolerance").as_double();
     goal_approach_speed_      = this->get_parameter("goal_approach_speed").as_double();
     max_path_error_           = this->get_parameter("max_path_error").as_double();
+    max_initial_path_error_   = this->get_parameter("max_initial_path_error").as_double();
     max_pose_age_             = this->get_parameter("max_pose_age").as_double();
     heading_gain_             = this->get_parameter("heading_gain").as_double();
 
@@ -246,6 +248,8 @@ void PathFollowerNode::declareAndGetParameters()
         !std::isfinite(curvature_window_) || curvature_window_ <= 0.0 ||
         curvature_window_ > min_lookahead_ ||
         !std::isfinite(max_path_error_) || max_path_error_ <= 0.0 ||
+        !std::isfinite(max_initial_path_error_) ||
+        max_initial_path_error_ < max_path_error_ ||
         map_frame_.empty() || base_frame_.empty()) {
         throw std::invalid_argument("Invalid path follower configuration");
     }
@@ -284,6 +288,8 @@ rcl_interfaces::msg::SetParametersResult PathFollowerNode::onSetParameters(
             goal_approach_speed_ = param.as_double();
         } else if (name == "max_path_error") {
             max_path_error_ = param.as_double();
+        } else if (name == "max_initial_path_error") {
+            max_initial_path_error_ = param.as_double();
         } else if (name == "max_pose_age") {
             max_pose_age_ = param.as_double();
         } else if (name == "heading_gain") {
@@ -602,12 +608,17 @@ void PathFollowerNode::controlLoop()
                 break;
             }
             const auto nearest = project(robot_x, robot_y);
-            if (nearest.error > max_path_error_) {
+            double path_error_limit = max_path_error_;
+            if (progress_ <= kEpsilon) {
+                path_error_limit = max_initial_path_error_;
+            }
+            if (nearest.error > path_error_limit) {
                 status_ = NavigationStatus::Fail;
                 stop();
                 RCLCPP_WARN_THROTTLE(
                     this->get_logger(), *this->get_clock(), 2000,
-                    "Path deviation %.3f m exceeds limit.", nearest.error);
+                    "Path deviation %.3f m exceeds limit %.3f m.",
+                    nearest.error, path_error_limit);
                 break;
             }
             progress_ = std::max(progress_, nearest.distance);
@@ -647,9 +658,11 @@ void PathFollowerNode::controlLoop()
                 desired_speed * (target.y - robot_y) / target_distance : 0.0;
             double desired_ax = (desired_vx - command_vx_world_) / delta_time;
             double desired_ay = (desired_vy - command_vy_world_) / delta_time;
-            limitVector(
-                desired_ax, desired_ay,
-                desired_speed < command_speed ? max_deceleration_ : max_acceleration_);
+            double acceleration_limit = max_acceleration_;
+            if (desired_speed < command_speed) {
+                acceleration_limit = max_deceleration_;
+            }
+            limitVector(desired_ax, desired_ay, acceleration_limit);
             double delta_ax = desired_ax - command_ax_world_;
             double delta_ay = desired_ay - command_ay_world_;
             limitVector(delta_ax, delta_ay, max_jerk_ * delta_time);
