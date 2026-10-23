@@ -86,6 +86,24 @@ private:
      */
     std::vector<std::pair<int, int>> aStarSearch(int start_x, int start_y, int goal_x, int goal_y);
 
+    /**
+     * @brief A* の格子経路を 3 次 clamped B-spline で平滑化する。
+     *
+     * @param grid_path A* が生成した格子経路
+     * @return 平滑化後のワールド座標列。安全性を満たさない場合は空配列
+     */
+    std::vector<std::pair<double, double>> smoothPath(
+        const std::vector<std::pair<int, int>>& grid_path
+    ) const;
+
+    /**
+     * @brief ワールド座標列がすべて通行可能なセル上にあるか確認する。
+     *
+     * @param path ワールド座標列
+     * @return 全点が通行可能な場合は true
+     */
+    bool isSmoothPathValid(const std::vector<std::pair<double, double>>& path) const;
+
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_sub_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_pose_sub_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
@@ -97,6 +115,8 @@ private:
     std::string map_frame_;
     std::string base_frame_;
     double planning_cost_factor_;  // a_star.planning_cost (3.0)
+    int bspline_samples_per_segment_;
+    double bspline_smoothing_strength_;
 
     // コストマップ情報
     nav_msgs::msg::OccupancyGrid latest_costmap_;

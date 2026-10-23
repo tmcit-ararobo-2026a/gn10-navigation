@@ -5,3 +5,8 @@ path_planner_node:
       base_frame: "base_link"
     a_star:
       planning_cost: 3.0
+    bspline:
+      # B-spline の隣接制御点間を分割して生成するサンプル数
+      samples_per_segment: 10
+      # 内部制御点を隣接点の中点へ寄せる割合。0.0 は従来経路、1.0 は最大平滑化
+      smoothing_strength: 0.5

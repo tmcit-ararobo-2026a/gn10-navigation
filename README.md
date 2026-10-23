@@ -19,7 +19,7 @@ NHKロボコン2026等の自動走行要求を満たすナビゲーションパ�
 
 - **target_manager_node**: メインマイコンからの指示に応じた最適な投擲・目標座標（`/goal_pose`）の管理と発行。VSCode Extension等からのメモリ更新およびYAML保存サービスを提供。
 - **costmap_generator_node**: フィールド定義（`nhk2026_map.json`）に基づくMulti-Source BFSを用いた波及コスト付き地図データ（`nav_msgs/msg/OccupancyGrid`）の生成。
-- **path_planner_node**: コストマップと目標姿勢に基づく8方向A*標準実装による最短・低コストな格子経路（`nav_msgs/msg/Path`）の算定。
+- **path_planner_node**: コストマップと目標姿勢に基づく8方向A*標準実装で経路を算定し、障害物との交差を検証した3次B-spline経路（`nav_msgs/msg/Path`）を発行。
 - **path_follower_node**: ナビゲーション状態（`NavigationStatus`）のステートマシン管理、S字速度プロファイル付きPure Pursuitによる運動制御。経路進捗は単調に管理し、到達後は経路を破棄して再送された同一`Move`を無視する。経路逸脱・古いTF・不正なTFは停止して`Fail`へ遷移する。
 
 ---
@@ -99,7 +99,7 @@ ros2 launch gn10_navigation navigation.launch.py use_rviz:=true
 ## 5. パラメータ設定
 
 - `config/costmap_params.yaml`: 解像度、マップ限界、インフレーション半径 (0.35m)・マージン (0.50m)、基準コスト設定
-- `config/path_planner_params.yaml`: map/baseフレーム、A*ペナルティ倍率
+- `config/path_planner_params.yaml`: map/baseフレーム、A*ペナルティ倍率、B-splineのサンプル密度・平滑化強度
 - `config/path_follower_params.yaml`: 制御周期 (50Hz)、最高速度 (1.5m/s)、最大加速度 (1.0m/s^2)、注視距離 (0.4m)、停止許容誤差 (0.03m)
 - `config/shooting_points.yaml`: 各TargetId (0〜7) の投擲・目標座標、姿勢、メモ
 

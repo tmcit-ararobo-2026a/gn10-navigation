@@ -2,10 +2,12 @@
 
 #include <tf2/LinearMath/Quaternion.h>
 
+#include <array>
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <queue>
+#include <stdexcept>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 namespace gn10_navigation {
@@ -41,10 +43,21 @@ void PathPlannerNode::declareAndGetParameters()
     this->declare_parameter("map_configs.map_frame", "map");
     this->declare_parameter("map_configs.base_frame", "base_link");
     this->declare_parameter("a_star.planning_cost", 3.0);
+    this->declare_parameter("bspline.samples_per_segment", 10);
+    this->declare_parameter("bspline.smoothing_strength", 0.0);
 
     map_frame_            = this->get_parameter("map_configs.map_frame").as_string();
     base_frame_           = this->get_parameter("map_configs.base_frame").as_string();
     planning_cost_factor_ = this->get_parameter("a_star.planning_cost").as_double();
+    bspline_samples_per_segment_ =
+        std::max(1, static_cast<int>(
+                         this->get_parameter("bspline.samples_per_segment").as_int()));
+    bspline_smoothing_strength_ =
+        this->get_parameter("bspline.smoothing_strength").as_double();
+    if (!std::isfinite(bspline_smoothing_strength_) ||
+        bspline_smoothing_strength_ < 0.0 || bspline_smoothing_strength_ > 1.0) {
+        throw std::invalid_argument("bspline.smoothing_strength must be in [0.0, 1.0]");
+    }
 }
 
 void PathPlannerNode::onCostmap(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg)
@@ -235,6 +248,112 @@ std::vector<std::pair<int, int>> PathPlannerNode::aStarSearch(
     return path;
 }
 
+std::vector<std::pair<double, double>> PathPlannerNode::smoothPath(
+    const std::vector<std::pair<int, int>>& grid_path
+) const
+{
+    using Point = std::pair<double, double>;
+    std::vector<Point> control_points;
+    control_points.reserve(grid_path.size());
+
+    for (const auto& cell : grid_path) {
+        control_points.push_back(gridToWorld(cell.first, cell.second));
+    }
+    if (control_points.size() < 4) {
+        return control_points;
+    }
+
+    const double smoothing_strength = bspline_smoothing_strength_;
+    if (smoothing_strength > 0.0) {
+        const auto original_control_points = control_points;
+        for (std::size_t index = 1; index + 1 < control_points.size(); ++index) {
+            const auto& previous = original_control_points[index - 1];
+            const auto& current = original_control_points[index];
+            const auto& next = original_control_points[index + 1];
+            const Point midpoint{
+                0.5 * (previous.first + next.first),
+                0.5 * (previous.second + next.second)};
+            control_points[index].first =
+                current.first + smoothing_strength * (midpoint.first - current.first);
+            control_points[index].second =
+                current.second + smoothing_strength * (midpoint.second - current.second);
+        }
+    }
+
+    constexpr int degree = 3;
+    const int control_count = static_cast<int>(control_points.size());
+    const int last_span = control_count - degree;
+    std::vector<double> knots(control_count + degree + 1);
+    for (int index = 0; index < static_cast<int>(knots.size()); ++index) {
+        if (index <= degree) {
+            knots[index] = 0.0;
+        } else if (index >= control_count) {
+            knots[index] = static_cast<double>(last_span);
+        } else {
+            knots[index] = static_cast<double>(index - degree);
+        }
+    }
+
+    const auto evaluate = [&](double parameter) {
+        if (parameter <= 0.0) {
+            return control_points.front();
+        }
+        if (parameter >= static_cast<double>(last_span)) {
+            return control_points.back();
+        }
+
+        int span = degree;
+        for (int index = degree; index < control_count; ++index) {
+            if (parameter >= knots[index] && parameter < knots[index + 1]) {
+                span = index;
+                break;
+            }
+        }
+
+        std::array<Point, degree + 1> values{};
+        for (int offset = 0; offset <= degree; ++offset) {
+            values[offset] = control_points[span - degree + offset];
+        }
+        for (int order = 1; order <= degree; ++order) {
+            for (int offset = degree; offset >= order; --offset) {
+                const int knot_index = span - degree + offset;
+                const double denominator =
+                    knots[knot_index + degree - order + 1] - knots[knot_index];
+                double alpha = 0.0;
+                if (denominator > 0.0) {
+                    alpha = (parameter - knots[knot_index]) / denominator;
+                }
+                values[offset].first =
+                    (1.0 - alpha) * values[offset - 1].first + alpha * values[offset].first;
+                values[offset].second =
+                    (1.0 - alpha) * values[offset - 1].second + alpha * values[offset].second;
+            }
+        }
+        return values[degree];
+    };
+
+    const int sample_count = last_span * bspline_samples_per_segment_;
+    std::vector<Point> smoothed_path;
+    smoothed_path.reserve(sample_count + 1);
+    for (int sample = 0; sample <= sample_count; ++sample) {
+        const double parameter =
+            static_cast<double>(last_span) * sample / static_cast<double>(sample_count);
+        smoothed_path.push_back(evaluate(parameter));
+    }
+    return smoothed_path;
+}
+
+bool PathPlannerNode::isSmoothPathValid(const std::vector<std::pair<double, double>>& path) const
+{
+    for (const auto& point : path) {
+        const auto [grid_x, grid_y] = worldToGrid(point.first, point.second);
+        if (!isPassable(grid_x, grid_y)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void PathPlannerNode::onGoalPose(const geometry_msgs::msg::PoseStamped::ConstSharedPtr msg)
 {
     if (!has_costmap_) {
@@ -326,15 +445,28 @@ void PathPlannerNode::onGoalPose(const geometry_msgs::msg::PoseStamped::ConstSha
         return;
     }
 
-    // 4. 仕様書:
-    // 「探索された格子点列はB-spline等の重厚な平滑化・局所最適化を行わず、そのままワールド座標に変換して/planned_path（nav_msgs/msg/Path）として発行する。」
+    // 4. B-spline で平滑化し、障害物へ侵入した場合は A* 経路へ戻す。
+    const auto original_path = [&]() {
+        std::vector<std::pair<double, double>> points;
+        points.reserve(grid_path.size());
+        for (const auto& cell : grid_path) {
+            points.push_back(gridToWorld(cell.first, cell.second));
+        }
+        return points;
+    }();
+    auto smoothed_path = smoothPath(grid_path);
+    if (smoothed_path.size() >= 4 && !isSmoothPathValid(smoothed_path)) {
+        RCLCPP_WARN(this->get_logger(), "B-spline path enters an obstacle. Using A* path.");
+        smoothed_path = original_path;
+    }
+
     nav_msgs::msg::Path path_msg;
     path_msg.header.stamp    = this->now();
     path_msg.header.frame_id = map_frame_;
 
-    path_msg.poses.resize(grid_path.size());
-    for (size_t i = 0; i < grid_path.size(); ++i) {
-        auto [wx, wy]                     = gridToWorld(grid_path[i].first, grid_path[i].second);
+    path_msg.poses.resize(smoothed_path.size());
+    for (std::size_t i = 0; i < smoothed_path.size(); ++i) {
+        const auto [wx, wy] = smoothed_path[i];
         path_msg.poses[i].header.stamp    = path_msg.header.stamp;
         path_msg.poses[i].header.frame_id = map_frame_;
         path_msg.poses[i].pose.position.x = wx;
@@ -343,8 +475,8 @@ void PathPlannerNode::onGoalPose(const geometry_msgs::msg::PoseStamped::ConstSha
 
         // 姿勢の計算
         double yaw = 0.0;
-        if (i + 1 < grid_path.size()) {
-            auto [next_wx, next_wy] = gridToWorld(grid_path[i + 1].first, grid_path[i + 1].second);
+        if (i + 1 < smoothed_path.size()) {
+            const auto [next_wx, next_wy] = smoothed_path[i + 1];
             yaw                     = std::atan2(next_wy - wy, next_wx - wx);
             tf2::Quaternion q;
             q.setRPY(0.0, 0.0, yaw);
