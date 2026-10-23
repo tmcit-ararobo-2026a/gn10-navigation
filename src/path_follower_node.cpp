@@ -346,6 +346,40 @@ void PathFollowerNode::onTargetId(const std_msgs::msg::UInt8::ConstSharedPtr msg
 
 void PathFollowerNode::onPlannedPath(const nav_msgs::msg::Path::ConstSharedPtr msg)
 {
+    if ((status_ == NavigationStatus::Moving || status_ == NavigationStatus::Goal) &&
+        has_path_ && !msg->poses.empty()) {
+        const auto& incoming_goal = msg->poses.back().pose.position;
+        const double goal_difference = std::hypot(
+            incoming_goal.x - goal_pose_.pose.position.x,
+            incoming_goal.y - goal_pose_.pose.position.y);
+        if (msg->header.frame_id == map_frame_ && goal_difference <= kEpsilon) {
+            return;
+        }
+    }
+
+    bool same_path = has_path_ || goal_latched_;
+    if (same_path && msg->header.frame_id != map_frame_) {
+        same_path = false;
+    }
+    if (same_path && msg->poses.size() != source_path_.size()) {
+        same_path = false;
+    }
+    if (same_path) {
+        for (std::size_t index = 0; index < msg->poses.size(); ++index) {
+            const auto& incoming_pose = msg->poses[index].pose.position;
+            const auto& stored_pose = source_path_[index].pose.position;
+            if (std::hypot(
+                    incoming_pose.x - stored_pose.x,
+                    incoming_pose.y - stored_pose.y) > kEpsilon) {
+                same_path = false;
+                break;
+            }
+        }
+    }
+    if (same_path) {
+        return;
+    }
+
     if (msg->poses.empty()) {
         RCLCPP_WARN(this->get_logger(), "Received empty planned path.");
         if (status_ == NavigationStatus::Moving) {
@@ -355,12 +389,14 @@ void PathFollowerNode::onPlannedPath(const nav_msgs::msg::Path::ConstSharedPtr m
         stop();
         has_path_ = false;
         path_.clear();
+        source_path_.clear();
         progress_ = 0.0;
         return;
     }
 
     stop();
     path_.clear();
+    source_path_ = msg->poses;
     progress_ = 0.0;
     goal_latched_ = false;
     if (msg->header.frame_id != map_frame_) {
@@ -368,6 +404,7 @@ void PathFollowerNode::onPlannedPath(const nav_msgs::msg::Path::ConstSharedPtr m
             this->get_logger(), "Rejected path in frame '%s'; expected '%s'",
             msg->header.frame_id.c_str(), map_frame_.c_str());
         has_path_ = false;
+        source_path_.clear();
         return;
     }
 
@@ -375,6 +412,7 @@ void PathFollowerNode::onPlannedPath(const nav_msgs::msg::Path::ConstSharedPtr m
         if (!finitePose(pose) ||
             (!pose.header.frame_id.empty() && pose.header.frame_id != map_frame_)) {
             path_.clear();
+            source_path_.clear();
             has_path_ = false;
             RCLCPP_WARN(this->get_logger(), "Rejected path with invalid point or frame.");
             return;
@@ -404,6 +442,7 @@ void PathFollowerNode::onPlannedPath(const nav_msgs::msg::Path::ConstSharedPtr m
 
     if (path_.size() < 2) {
         path_.clear();
+        source_path_.clear();
         has_path_ = false;
         RCLCPP_WARN(this->get_logger(), "Path needs at least two distinct points.");
         return;

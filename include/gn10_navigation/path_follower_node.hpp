@@ -104,6 +104,7 @@ private:
     TargetId current_target_id_{TargetId::StartZone};
 
     std::vector<SpeedPoint> path_;
+    std::vector<geometry_msgs::msg::PoseStamped> source_path_;
     geometry_msgs::msg::PoseStamped goal_pose_;
     bool has_path_{false};
     bool goal_latched_{false};
