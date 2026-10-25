@@ -204,6 +204,7 @@ void PathFollowerNode::declareAndGetParameters()
     this->declare_parameter("lookahead_gain", 0.10);
     this->declare_parameter("goal_tolerance", 0.06);
     this->declare_parameter("goal_approach_speed", 0.30);
+    this->declare_parameter("goal_position_gain", 4.0);
     this->declare_parameter("goal_angle_adjust_distance", 0.50);
     this->declare_parameter("goal_yaw_tolerance", 0.05);
     this->declare_parameter("max_path_error", 0.30);
@@ -230,6 +231,7 @@ void PathFollowerNode::declareAndGetParameters()
     lookahead_gain_           = this->get_parameter("lookahead_gain").as_double();
     goal_tolerance_             = this->get_parameter("goal_tolerance").as_double();
     goal_approach_speed_        = this->get_parameter("goal_approach_speed").as_double();
+    goal_position_gain_         = this->get_parameter("goal_position_gain").as_double();
     goal_angle_adjust_distance_ = this->get_parameter("goal_angle_adjust_distance").as_double();
     goal_yaw_tolerance_         = this->get_parameter("goal_yaw_tolerance").as_double();
     max_path_error_             = this->get_parameter("max_path_error").as_double();
@@ -254,6 +256,7 @@ void PathFollowerNode::declareAndGetParameters()
         !std::isfinite(max_path_error_) || max_path_error_ <= 0.0 ||
         !std::isfinite(max_initial_path_error_) ||
         max_initial_path_error_ < max_path_error_ ||
+        !std::isfinite(goal_position_gain_) || goal_position_gain_ <= 0.0 ||
         map_frame_.empty() || base_frame_.empty()) {
         throw std::invalid_argument("Invalid path follower configuration");
     }
@@ -268,6 +271,12 @@ rcl_interfaces::msg::SetParametersResult PathFollowerNode::onSetParameters(
 
     for (const auto& param : parameters) {
         const auto& name = param.get_name();
+        if (name == "goal_position_gain" &&
+            (!std::isfinite(param.as_double()) || param.as_double() <= 0.0)) {
+            result.successful = false;
+            result.reason = "goal_position_gain must be finite and greater than zero";
+            return result;
+        }
         if (name == "max_speed") {
             max_speed_ = param.as_double();
         } else if (name == "max_acceleration") {
@@ -290,6 +299,8 @@ rcl_interfaces::msg::SetParametersResult PathFollowerNode::onSetParameters(
             goal_tolerance_ = param.as_double();
         } else if (name == "goal_approach_speed") {
             goal_approach_speed_ = param.as_double();
+        } else if (name == "goal_position_gain") {
+            goal_position_gain_ = param.as_double();
         } else if (name == "goal_angle_adjust_distance") {
             goal_angle_adjust_distance_ = param.as_double();
         } else if (name == "goal_yaw_tolerance") {
@@ -715,7 +726,7 @@ void PathFollowerNode::controlLoop()
                     desired_speed, std::sqrt(std::max(0.0, 2.0 * max_deceleration_ * remaining)));
                 if (remaining <= goal_tolerance_ && goal_distance > goal_tolerance_) {
                     desired_speed = std::min(
-                        {goal_approach_speed_, max_speed_, 1.5 * goal_distance});
+                        {goal_approach_speed_, max_speed_, goal_position_gain_ * goal_distance});
                 }
             }
             const double desired_vx = target_distance > kEpsilon ?

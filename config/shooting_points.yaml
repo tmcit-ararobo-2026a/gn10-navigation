@@ -8,8 +8,8 @@ shooting_points:
   - target_id: 1
     name: "FixedBucket1"
     x: 0.847
-    y: -0.88
-    yaw: -1.593
+    y: -0.883
+    yaw: -1.586
     memo: "Fixed bucket 1 shooting spot"
   - target_id: 2
     name: "FixedBucket2"

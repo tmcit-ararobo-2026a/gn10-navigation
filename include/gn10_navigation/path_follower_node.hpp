@@ -88,6 +88,7 @@ private:
     double lookahead_gain_;
     double goal_tolerance_;
     double goal_approach_speed_;
+    double goal_position_gain_;
     double goal_angle_adjust_distance_;
     double goal_yaw_tolerance_;
     double max_path_error_;
