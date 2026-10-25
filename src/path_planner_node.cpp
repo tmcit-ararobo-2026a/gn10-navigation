@@ -1,5 +1,6 @@
 #include "gn10_navigation/path_planner_node.hpp"
 
+#include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Quaternion.h>
 
 #include <array>
@@ -11,6 +12,35 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 namespace gn10_navigation {
+
+namespace {
+
+double normalizeAngle(double angle)
+{
+    while (angle > M_PI) {
+        angle -= 2.0 * M_PI;
+    }
+    while (angle < -M_PI) {
+        angle += 2.0 * M_PI;
+    }
+    return angle;
+}
+
+double getYawFromQuaternion(const geometry_msgs::msg::Quaternion& q_msg)
+{
+    const double q_norm =
+        q_msg.x * q_msg.x + q_msg.y * q_msg.y + q_msg.z * q_msg.z + q_msg.w * q_msg.w;
+    if (q_norm <= 1e-4) {
+        return 0.0;
+    }
+    tf2::Quaternion q(q_msg.x, q_msg.y, q_msg.z, q_msg.w);
+    tf2::Matrix3x3 m(q);
+    double roll, pitch, yaw;
+    m.getRPY(roll, pitch, yaw);
+    return yaw;
+}
+
+}  // namespace
 
 PathPlannerNode::PathPlannerNode(const rclcpp::NodeOptions& options)
     : Node("path_planner_node", options)
@@ -46,6 +76,18 @@ void PathPlannerNode::declareAndGetParameters()
     this->declare_parameter("bspline.samples_per_segment", 10);
     this->declare_parameter("bspline.smoothing_strength", 0.0);
 
+    // デフォルト: 縦0.85m (x: ±0.425), 横0.8m (y: ±0.4) の長方形
+    const std::vector<double> default_polygon = {
+        0.425, 0.4,
+        -0.425, 0.4,
+        -0.425, -0.4,
+        0.425, -0.4
+    };
+    this->declare_parameter("footprint.polygon", default_polygon);
+    this->declare_parameter("rotation_planning.turn_max_cost", 20);
+    this->declare_parameter("rotation_planning.angle_step", 0.1);
+    this->declare_parameter("rotation_planning.turn_distance", 0.6);
+
     map_frame_            = this->get_parameter("map_configs.map_frame").as_string();
     base_frame_           = this->get_parameter("map_configs.base_frame").as_string();
     planning_cost_factor_ = this->get_parameter("a_star.planning_cost").as_double();
@@ -58,6 +100,25 @@ void PathPlannerNode::declareAndGetParameters()
         bspline_smoothing_strength_ < 0.0 || bspline_smoothing_strength_ > 1.0) {
         throw std::invalid_argument("bspline.smoothing_strength must be in [0.0, 1.0]");
     }
+
+    const auto polygon_flat = this->get_parameter("footprint.polygon").as_double_array();
+    footprint_polygon_.clear();
+    for (std::size_t i = 0; i + 1 < polygon_flat.size(); i += 2) {
+        footprint_polygon_.emplace_back(polygon_flat[i], polygon_flat[i + 1]);
+    }
+    if (footprint_polygon_.size() < 3) {
+        RCLCPP_WARN(this->get_logger(), "Footprint polygon has fewer than 3 vertices, using default 0.85x0.8 rect.");
+        footprint_polygon_ = {
+            {0.425, 0.4},
+            {-0.425, 0.4},
+            {-0.425, -0.4},
+            {0.425, -0.4}
+        };
+    }
+
+    turn_max_cost_ = static_cast<int>(this->get_parameter("rotation_planning.turn_max_cost").as_int());
+    angle_step_    = this->get_parameter("rotation_planning.angle_step").as_double();
+    turn_distance_ = this->get_parameter("rotation_planning.turn_distance").as_double();
 }
 
 void PathPlannerNode::onCostmap(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg)
@@ -354,6 +415,210 @@ bool PathPlannerNode::isSmoothPathValid(const std::vector<std::pair<double, doub
     return true;
 }
 
+bool PathPlannerNode::isFootprintSafe(double wx, double wy, double yaw, int max_cost) const
+{
+    if (footprint_polygon_.empty() || !has_costmap_) {
+        return false;
+    }
+
+    const double cos_yaw = std::cos(yaw);
+    const double sin_yaw = std::sin(yaw);
+    const int num_vertices = static_cast<int>(footprint_polygon_.size());
+    const double resolution = latest_costmap_.info.resolution;
+    const int width = static_cast<int>(latest_costmap_.info.width);
+
+    // 各頂点のワールド座標を算出
+    std::vector<std::pair<double, double>> world_poly(num_vertices);
+    for (int i = 0; i < num_vertices; ++i) {
+        const double lx = footprint_polygon_[i].first;
+        const double ly = footprint_polygon_[i].second;
+        world_poly[i] = {
+            wx + lx * cos_yaw - ly * sin_yaw,
+            wy + lx * sin_yaw + ly * cos_yaw
+        };
+    }
+
+    // 各辺をサンプリングしてコストチェック
+    for (int i = 0; i < num_vertices; ++i) {
+        const auto& p1 = world_poly[i];
+        const auto& p2 = world_poly[(i + 1) % num_vertices];
+        const double dist = std::hypot(p2.first - p1.first, p2.second - p1.second);
+        const int steps = std::max(1, static_cast<int>(std::ceil(dist / (0.5 * resolution))));
+
+        for (int s = 0; s <= steps; ++s) {
+            const double frac = static_cast<double>(s) / steps;
+            const double sx = p1.first + frac * (p2.first - p1.first);
+            const double sy = p1.second + frac * (p2.second - p1.second);
+            const auto [gx, gy] = worldToGrid(sx, sy);
+            if (!isInsideGrid(gx, gy)) {
+                return false;
+            }
+            int8_t cost = latest_costmap_.data[gy * width + gx];
+            // 負値（未知領域）または max_cost 超過または 100以上（障害物）は安全でない
+            if (cost < 0 || cost > max_cost || cost >= 100) {
+                return false;
+            }
+        }
+    }
+
+    // 代表点（ロボット中心）もチェック
+    const auto [cgx, cgy] = worldToGrid(wx, wy);
+    if (!isInsideGrid(cgx, cgy)) {
+        return false;
+    }
+    int8_t center_cost = latest_costmap_.data[cgy * width + cgx];
+    if (center_cost < 0 || center_cost > max_cost || center_cost >= 100) {
+        return false;
+    }
+
+    return true;
+}
+
+std::vector<geometry_msgs::msg::PoseStamped> PathPlannerNode::planOrientations(
+    const std::vector<std::pair<double, double>>& smoothed_path,
+    double start_yaw,
+    double goal_yaw
+) const
+{
+    const std::size_t n = smoothed_path.size();
+    std::vector<geometry_msgs::msg::PoseStamped> poses;
+    if (n == 0) {
+        return poses;
+    }
+
+    if (n == 1) {
+        poses.resize(1);
+        poses[0].header.stamp = this->now();
+        poses[0].header.frame_id = map_frame_;
+        poses[0].pose.position.x = smoothed_path[0].first;
+        poses[0].pose.position.y = smoothed_path[0].second;
+        poses[0].pose.position.z = 0.0;
+        tf2::Quaternion q;
+        q.setRPY(0.0, 0.0, goal_yaw);
+        poses[0].pose.orientation = tf2::toMsg(q);
+        return poses;
+    }
+
+    // 累積移動距離を計算
+    std::vector<double> accum_dist(n, 0.0);
+    for (std::size_t i = 1; i < n; ++i) {
+        accum_dist[i] = accum_dist[i - 1] + std::hypot(
+            smoothed_path[i].first - smoothed_path[i - 1].first,
+            smoothed_path[i].second - smoothed_path[i - 1].second
+        );
+    }
+    const double total_dist = accum_dist.back();
+
+    // 各点におけるコストマップの値を取得（未知/範囲外は最大コスト100とする）
+    std::vector<int> point_costs(n, 100);
+    const int width = static_cast<int>(latest_costmap_.info.width);
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto [gx, gy] = worldToGrid(smoothed_path[i].first, smoothed_path[i].second);
+        if (isInsideGrid(gx, gy)) {
+            int8_t c = latest_costmap_.data[gy * width + gx];
+            point_costs[i] = (c >= 0) ? c : 100;
+        }
+    }
+
+    const double delta_yaw = normalizeAngle(goal_yaw - start_yaw);
+    const double step_angle = std::max(0.01, angle_step_);
+    const int yaw_check_steps = std::max(2, static_cast<int>(std::ceil(std::abs(delta_yaw) / step_angle)));
+
+    // フットプリントを考慮し、start_yaw から goal_yaw までの全回転角度で安全（<= turn_max_cost）な地点を探索
+    // 安全マージン確保のため、複数ある場合はゴール側（インデックス大）を優先
+    int best_safe_idx = -1;
+    int min_peak_cost = std::numeric_limits<int>::max();
+    int min_cost_fallback_idx = 0;
+
+    for (int i = static_cast<int>(n) - 1; i >= 0; --i) {
+        const auto [wx, wy] = smoothed_path[i];
+        if (point_costs[i] < min_peak_cost) {
+            min_peak_cost = point_costs[i];
+            min_cost_fallback_idx = i;
+        }
+
+        bool is_safe_for_all_angles = true;
+        for (int k = 0; k <= yaw_check_steps; ++k) {
+            const double frac = static_cast<double>(k) / yaw_check_steps;
+            const double test_yaw = normalizeAngle(start_yaw + frac * delta_yaw);
+            if (!isFootprintSafe(wx, wy, test_yaw, turn_max_cost_)) {
+                is_safe_for_all_angles = false;
+                break;
+            }
+        }
+        if (is_safe_for_all_angles) {
+            best_safe_idx = i;
+            break;
+        }
+    }
+
+    // もし厳密に turn_max_cost_ を満たす点がなければ、通行可能（cost < 100）な範囲で最もコストの低い点で旋回
+    if (best_safe_idx < 0) {
+        best_safe_idx = min_cost_fallback_idx;
+        RCLCPP_WARN(
+            this->get_logger(),
+            "No location found where footprint cost <= %d during rotation. Falling back to index %d (cost=%d).",
+            turn_max_cost_, best_safe_idx, point_costs[best_safe_idx]
+        );
+    } else {
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Selected safe rotation point at index %d (dist=%.2f m, cost=%d).",
+            best_safe_idx, accum_dist[best_safe_idx], point_costs[best_safe_idx]
+        );
+    }
+
+    const double center_dist = accum_dist[best_safe_idx];
+    const double desired_turn_dist = std::clamp(turn_distance_, 0.2, std::max(0.2, total_dist * 0.8));
+
+    double turn_start_dist = center_dist - 0.5 * desired_turn_dist;
+    double turn_end_dist   = center_dist + 0.5 * desired_turn_dist;
+
+    // ゴールより前に確実に回転を完了させる（ゴール近傍での旋回衝突を防止）
+    if (turn_end_dist > total_dist) {
+        const double shift = turn_end_dist - total_dist;
+        turn_start_dist -= shift;
+        turn_end_dist = total_dist;
+    }
+    if (turn_start_dist < 0.0) {
+        turn_start_dist = 0.0;
+    }
+    if (turn_end_dist <= turn_start_dist) {
+        turn_end_dist = total_dist;
+        turn_start_dist = 0.0;
+    }
+
+    poses.resize(n);
+    const auto stamp = this->now();
+    for (std::size_t i = 0; i < n; ++i) {
+        poses[i].header.stamp = stamp;
+        poses[i].header.frame_id = map_frame_;
+        poses[i].pose.position.x = smoothed_path[i].first;
+        poses[i].pose.position.y = smoothed_path[i].second;
+        poses[i].pose.position.z = 0.0;
+
+        const double d = accum_dist[i];
+        double yaw = start_yaw;
+
+        if (d <= turn_start_dist) {
+            yaw = start_yaw;
+        } else if (d >= turn_end_dist) {
+            yaw = goal_yaw;
+        } else {
+            // S字（Smoothstep）補間: 3t^2 - 2t^3
+            const double t = (d - turn_start_dist) / (turn_end_dist - turn_start_dist);
+            const double smooth_t = t * t * (3.0 - 2.0 * t);
+            yaw = normalizeAngle(start_yaw + smooth_t * delta_yaw);
+        }
+
+        tf2::Quaternion q;
+        q.setRPY(0.0, 0.0, yaw);
+        poses[i].pose.orientation = tf2::toMsg(q);
+    }
+
+    return poses;
+}
+
 void PathPlannerNode::onGoalPose(const geometry_msgs::msg::PoseStamped::ConstSharedPtr msg)
 {
     if (!has_costmap_) {
@@ -460,32 +725,13 @@ void PathPlannerNode::onGoalPose(const geometry_msgs::msg::PoseStamped::ConstSha
         smoothed_path = original_path;
     }
 
+    const double start_yaw = getYawFromQuaternion(tf_stamped.transform.rotation);
+    const double goal_yaw  = getYawFromQuaternion(msg->pose.orientation);
+
     nav_msgs::msg::Path path_msg;
     path_msg.header.stamp    = this->now();
     path_msg.header.frame_id = map_frame_;
-
-    path_msg.poses.resize(smoothed_path.size());
-    for (std::size_t i = 0; i < smoothed_path.size(); ++i) {
-        const auto [wx, wy] = smoothed_path[i];
-        path_msg.poses[i].header.stamp    = path_msg.header.stamp;
-        path_msg.poses[i].header.frame_id = map_frame_;
-        path_msg.poses[i].pose.position.x = wx;
-        path_msg.poses[i].pose.position.y = wy;
-        path_msg.poses[i].pose.position.z = 0.0;
-
-        // 姿勢の計算
-        double yaw = 0.0;
-        if (i + 1 < smoothed_path.size()) {
-            const auto [next_wx, next_wy] = smoothed_path[i + 1];
-            yaw                     = std::atan2(next_wy - wy, next_wx - wx);
-            tf2::Quaternion q;
-            q.setRPY(0.0, 0.0, yaw);
-            path_msg.poses[i].pose.orientation = tf2::toMsg(q);
-        } else {
-            // ゴール点では goal_pose の orientation をそのまま使用
-            path_msg.poses[i].pose.orientation = msg->pose.orientation;
-        }
-    }
+    path_msg.poses           = planOrientations(smoothed_path, start_yaw, goal_yaw);
 
     path_pub_->publish(path_msg);
     RCLCPP_INFO(

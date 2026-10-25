@@ -436,8 +436,9 @@ void PathFollowerNode::onPlannedPath(const nav_msgs::msg::Path::ConstSharedPtr m
             RCLCPP_WARN(this->get_logger(), "Rejected path with invalid point or frame.");
             return;
         }
+        const double pose_yaw = getYawFromQuaternion(pose.pose.orientation);
         if (path_.empty()) {
-            path_.push_back({pose.pose.position.x, pose.pose.position.y, 0.0, max_speed_, 0.0});
+            path_.push_back({pose.pose.position.x, pose.pose.position.y, pose_yaw, 0.0, max_speed_, 0.0});
             continue;
         }
         const auto start = path_.back();
@@ -448,11 +449,13 @@ void PathFollowerNode::onPlannedPath(const nav_msgs::msg::Path::ConstSharedPtr m
         }
         const int steps = std::max(
             1, static_cast<int>(std::ceil(step_distance / kPathStep - kEpsilon)));
+        const double delta_yaw = normalizeAngle(pose_yaw - start.yaw);
         for (int step = 1; step <= steps; ++step) {
             const double fraction = static_cast<double>(step) / steps;
             path_.push_back({
                 start.x + fraction * (pose.pose.position.x - start.x),
                 start.y + fraction * (pose.pose.position.y - start.y),
+                normalizeAngle(start.yaw + fraction * delta_yaw),
                 start.distance + fraction * step_distance,
                 max_speed_,
                 0.0});
@@ -568,9 +571,11 @@ PathFollowerNode::SpeedPoint PathFollowerNode::sample(double distance) const
     const auto& previous = *(iterator - 1);
     const double fraction =
         (distance - previous.distance) / std::max(iterator->distance - previous.distance, kEpsilon);
+    const double delta_yaw = normalizeAngle(iterator->yaw - previous.yaw);
     return {
         previous.x + fraction * (iterator->x - previous.x),
         previous.y + fraction * (iterator->y - previous.y),
+        normalizeAngle(previous.yaw + fraction * delta_yaw),
         distance,
         previous.speed + fraction * (iterator->speed - previous.speed),
         previous.time + fraction * (iterator->time - previous.time)};
@@ -749,14 +754,13 @@ void PathFollowerNode::controlLoop()
             command_vy_world_ += command_ay_world_ * delta_time;
             limitVector(command_vx_world_, command_vy_world_, max_speed_);
 
-            // ゴール到達直前にロボットの角度を調整
-            double target_yaw_rate = 0.0;
-            if (remaining <= goal_angle_adjust_distance_ || goal_distance <= goal_angle_adjust_distance_ || position_reached) {
-                target_yaw_rate = std::clamp(
-                    heading_gain_ * yaw_error,
-                    -max_angular_velocity_, max_angular_velocity_
-                );
-            }
+            // パス上で計画された目標姿勢(Orientation)に対するヨー角制御
+            const double desired_yaw = position_reached ? goal_yaw : target.yaw;
+            const double current_yaw_error = normalizeAngle(desired_yaw - robot_yaw);
+            double target_yaw_rate = std::clamp(
+                heading_gain_ * current_yaw_error,
+                -max_angular_velocity_, max_angular_velocity_
+            );
             command_yaw_rate_ += std::clamp(
                 target_yaw_rate - command_yaw_rate_,
                 -max_angular_acceleration_ * delta_time,

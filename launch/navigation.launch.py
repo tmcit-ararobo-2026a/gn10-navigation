@@ -73,7 +73,7 @@ def generate_launch_description():
         DeclareLaunchArgument('costmap_params',
                               default_value=str(share / 'config/costmap_params.yaml')),
         DeclareLaunchArgument('map_file_path',
-                              default_value=str(share / 'config/test.json'),
+                              default_value=str(share / 'config/nhk2026_map.json'),
                               description='自己位置推定と同じフィールドの JSON マップ'),
         DeclareLaunchArgument('rviz_config',
                               default_value=str(rviz_config) if rviz_config.is_file() else '',

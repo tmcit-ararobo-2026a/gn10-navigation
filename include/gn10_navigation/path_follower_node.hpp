@@ -27,6 +27,7 @@ private:
     struct SpeedPoint {
         double x;
         double y;
+        double yaw;
         double distance;
         double speed;
         double time;

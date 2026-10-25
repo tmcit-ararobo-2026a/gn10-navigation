@@ -29,7 +29,7 @@ path_follower_node:
     # ゴール付近で使用する接近速度の上限 [m/s]
     goal_approach_speed: 0.60
     # ゴール位置誤差に対する補正速度ゲイン [1/s]
-    goal_position_gain: 4.0
+    goal_position_gain: 6.0
     # ゴール角度調整を開始する残距離 [m]
     goal_angle_adjust_distance: 0.50
     # ゴール到達とみなす角度誤差の許容値 [rad]
@@ -41,7 +41,7 @@ path_follower_node:
     # 自己位置の最大許容経過時間 [s]
     max_pose_age: 0.5
     # 目標方位誤差に対する角速度の比例ゲイン [1/s]
-    heading_gain: -2.0
+    heading_gain: 3.0
     # 地図座標系の TF フレーム名
     map_frame: "map"
     # ロボット本体の TF フレーム名
