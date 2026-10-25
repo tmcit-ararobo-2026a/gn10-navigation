@@ -28,6 +28,10 @@ path_follower_node:
     goal_tolerance: 0.06
     # ゴール付近で使用する接近速度の上限 [m/s]
     goal_approach_speed: 0.60
+    # ゴール角度調整を開始する残距離 [m]
+    goal_angle_adjust_distance: 0.50
+    # ゴール到達とみなす角度誤差の許容値 [rad]
+    goal_yaw_tolerance: 0.05
     # 経路追従中に許容する経路からの最大距離 [m]
     max_path_error: 0.30
     # 経路追従開始時だけ許容する経路からの最大距離 [m]

@@ -204,6 +204,8 @@ void PathFollowerNode::declareAndGetParameters()
     this->declare_parameter("lookahead_gain", 0.10);
     this->declare_parameter("goal_tolerance", 0.06);
     this->declare_parameter("goal_approach_speed", 0.30);
+    this->declare_parameter("goal_angle_adjust_distance", 0.50);
+    this->declare_parameter("goal_yaw_tolerance", 0.05);
     this->declare_parameter("max_path_error", 0.30);
     this->declare_parameter("max_initial_path_error", 0.45);
     this->declare_parameter("max_pose_age", 0.5);
@@ -226,9 +228,11 @@ void PathFollowerNode::declareAndGetParameters()
     min_lookahead_            = this->get_parameter("min_lookahead").as_double();
     max_lookahead_            = this->get_parameter("max_lookahead").as_double();
     lookahead_gain_           = this->get_parameter("lookahead_gain").as_double();
-    goal_tolerance_           = this->get_parameter("goal_tolerance").as_double();
-    goal_approach_speed_      = this->get_parameter("goal_approach_speed").as_double();
-    max_path_error_           = this->get_parameter("max_path_error").as_double();
+    goal_tolerance_             = this->get_parameter("goal_tolerance").as_double();
+    goal_approach_speed_        = this->get_parameter("goal_approach_speed").as_double();
+    goal_angle_adjust_distance_ = this->get_parameter("goal_angle_adjust_distance").as_double();
+    goal_yaw_tolerance_         = this->get_parameter("goal_yaw_tolerance").as_double();
+    max_path_error_             = this->get_parameter("max_path_error").as_double();
     max_initial_path_error_   = this->get_parameter("max_initial_path_error").as_double();
     max_pose_age_             = this->get_parameter("max_pose_age").as_double();
     heading_gain_             = this->get_parameter("heading_gain").as_double();
@@ -286,6 +290,10 @@ rcl_interfaces::msg::SetParametersResult PathFollowerNode::onSetParameters(
             goal_tolerance_ = param.as_double();
         } else if (name == "goal_approach_speed") {
             goal_approach_speed_ = param.as_double();
+        } else if (name == "goal_angle_adjust_distance") {
+            goal_angle_adjust_distance_ = param.as_double();
+        } else if (name == "goal_yaw_tolerance") {
+            goal_yaw_tolerance_ = param.as_double();
         } else if (name == "max_path_error") {
             max_path_error_ = param.as_double();
         } else if (name == "max_initial_path_error") {
@@ -664,15 +672,31 @@ void PathFollowerNode::controlLoop()
             const double goal_distance = std::hypot(
                 robot_x - goal_pose_.pose.position.x, robot_y - goal_pose_.pose.position.y);
             const double remaining = path_.back().distance - progress_;
-            if (progress_ >= path_.back().distance - goal_tolerance_ &&
-                goal_distance <= goal_tolerance_) {
+
+            // 目標姿勢のヨー角を取得
+            double goal_yaw = 0.0;
+            const auto& q_msg = goal_pose_.pose.orientation;
+            const double q_norm = q_msg.x * q_msg.x + q_msg.y * q_msg.y + q_msg.z * q_msg.z + q_msg.w * q_msg.w;
+            if (q_norm > 1e-4) {
+                tf2::Quaternion q(q_msg.x, q_msg.y, q_msg.z, q_msg.w);
+                tf2::Matrix3x3 m(q);
+                double roll, pitch;
+                m.getRPY(roll, pitch, goal_yaw);
+            }
+            const double yaw_error = normalizeAngle(goal_yaw - robot_yaw);
+            const double yaw_diff  = std::abs(yaw_error);
+
+            // ゴール到達判定（位置およびゴール直前調整後の角度許容判定）
+            const bool position_reached = (progress_ >= path_.back().distance - goal_tolerance_ &&
+                                           goal_distance <= goal_tolerance_);
+            if (position_reached && yaw_diff <= goal_yaw_tolerance_) {
                 goal_latched_ = true;
                 status_ = NavigationStatus::Goal;
                 path_.clear();
                 has_path_ = false;
                 progress_ = 0.0;
                 stop();
-                RCLCPP_INFO(this->get_logger(), "Path complete.");
+                RCLCPP_INFO(this->get_logger(), "Path and orientation complete.");
                 break;
             }
 
@@ -683,13 +707,16 @@ void PathFollowerNode::controlLoop()
                 min_lookahead_, max_lookahead_);
             const auto target = sample(progress_ + lookahead);
             const double target_distance = std::hypot(target.x - robot_x, target.y - robot_y);
-            double desired_speed = sample(
-                progress_ + std::min(0.5 * lookahead, 0.5 * remaining)).speed;
-            desired_speed = std::min(
-                desired_speed, std::sqrt(std::max(0.0, 2.0 * max_deceleration_ * remaining)));
-            if (remaining <= goal_tolerance_ && goal_distance > goal_tolerance_) {
+            double desired_speed = 0.0;
+            if (!position_reached) {
+                desired_speed = sample(
+                    progress_ + std::min(0.5 * lookahead, 0.5 * remaining)).speed;
                 desired_speed = std::min(
-                    {goal_approach_speed_, max_speed_, 1.5 * goal_distance});
+                    desired_speed, std::sqrt(std::max(0.0, 2.0 * max_deceleration_ * remaining)));
+                if (remaining <= goal_tolerance_ && goal_distance > goal_tolerance_) {
+                    desired_speed = std::min(
+                        {goal_approach_speed_, max_speed_, 1.5 * goal_distance});
+                }
             }
             const double desired_vx = target_distance > kEpsilon ?
                 desired_speed * (target.x - robot_x) / target_distance : 0.0;
@@ -711,12 +738,26 @@ void PathFollowerNode::controlLoop()
             command_vy_world_ += command_ay_world_ * delta_time;
             limitVector(command_vx_world_, command_vy_world_, max_speed_);
 
+            // ゴール到達直前にロボットの角度を調整
+            double target_yaw_rate = 0.0;
+            if (remaining <= goal_angle_adjust_distance_ || goal_distance <= goal_angle_adjust_distance_ || position_reached) {
+                target_yaw_rate = std::clamp(
+                    heading_gain_ * yaw_error,
+                    -max_angular_velocity_, max_angular_velocity_
+                );
+            }
+            command_yaw_rate_ += std::clamp(
+                target_yaw_rate - command_yaw_rate_,
+                -max_angular_acceleration_ * delta_time,
+                max_angular_acceleration_ * delta_time
+            );
+
             const double cosine = std::cos(robot_yaw);
             const double sine = std::sin(robot_yaw);
             publishCmdVel(
                 cosine * command_vx_world_ + sine * command_vy_world_,
                 -sine * command_vx_world_ + cosine * command_vy_world_,
-                0.0);
+                command_yaw_rate_);
             publishLookaheadMarker(target.x, target.y);
             break;
         }
