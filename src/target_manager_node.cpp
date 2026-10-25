@@ -223,9 +223,12 @@ void TargetManagerNode::onNavigationCommand(const std_msgs::msg::UInt8::ConstSha
         toString(current_nav_cmd_)
     );
 
-    if (current_nav_cmd_ == NavigationCommand::Move) {
+    // Moveに遷移したタイミングのみ目的地をpublish
+    if (current_nav_cmd_ == NavigationCommand::Move && prev_nav_cmd_ != NavigationCommand::Move) {
         publishGoalPose(current_target_id_);
     }
+
+    prev_nav_cmd_ = current_nav_cmd_;
 }
 
 void TargetManagerNode::publishGoalPose(uint8_t target_id)

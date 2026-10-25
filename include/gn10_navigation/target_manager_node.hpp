@@ -62,6 +62,8 @@ private:
     NavigationCommand current_nav_cmd_{NavigationCommand::Stanby};
 
     std::map<uint8_t, TargetPoint> shooting_points_;
+
+    NavigationCommand prev_nav_cmd_{};
 };
 
 }  // namespace gn10_navigation
