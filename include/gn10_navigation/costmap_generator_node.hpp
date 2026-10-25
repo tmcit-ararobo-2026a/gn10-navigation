@@ -27,6 +27,8 @@ private:
      * @return nav_msgs::msg::OccupancyGrid コストマップ
      */
     nav_msgs::msg::OccupancyGrid generateCostmap();
+    nav_msgs::msg::OccupancyGrid generateCostmapFromJSON();
+    nav_msgs::msg::OccupancyGrid generateCostmapFromESDF();
 
     /**
      * @brief オブジェクトのコストを返す関数

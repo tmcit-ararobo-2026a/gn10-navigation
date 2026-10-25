@@ -40,6 +40,8 @@ def start_navigation(context):
         Node(package='gn10_navigation', executable='costmap_generator_node',
              name='costmap_generator_node', output='screen',
              parameters=[LaunchConfiguration('costmap_params'), clock,
+                         {'map_source_type': ParameterValue(
+                             LaunchConfiguration('map_source_type'), value_type=str)},
                          {'map_file_path': ParameterValue(
                              LaunchConfiguration('map_file_path'), value_type=str)}]),
         Node(package='gn10_navigation', executable='path_planner_node',
@@ -72,9 +74,12 @@ def generate_launch_description():
                               description='最高並進速度 [m/s]。空欄なら follower_params の値'),
         DeclareLaunchArgument('costmap_params',
                               default_value=str(share / 'config/costmap_params.yaml')),
+        DeclareLaunchArgument('map_source_type',
+                              default_value='json',
+                              description='マップのソース形式 ("json" または "esdf")'),
         DeclareLaunchArgument('map_file_path',
                               default_value=str(share / 'config/test.json'),
-                              description='自己位置推定と同じフィールドの JSON マップ'),
+                              description='自己位置推定と同じフィールドの JSON または ESDF マップ'),
         DeclareLaunchArgument('rviz_config',
                               default_value=str(rviz_config) if rviz_config.is_file() else '',
                               description='RViz設定ファイル。空欄なら標準表示で起動'),

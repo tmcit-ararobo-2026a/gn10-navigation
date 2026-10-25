@@ -4,6 +4,7 @@
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <chrono>
 #include <cmath>
+#include <fstream>
 #include <limits>
 #include <queue>
 #include <stdexcept>
@@ -156,6 +157,14 @@ int CostmapGeneratorNode::getObjectCost(const FieldObject& obj) const
 
 nav_msgs::msg::OccupancyGrid CostmapGeneratorNode::generateCostmap()
 {
+    if (map_source_type_ == "esdf") {
+        return generateCostmapFromESDF();
+    }
+    return generateCostmapFromJSON();
+}
+
+nav_msgs::msg::OccupancyGrid CostmapGeneratorNode::generateCostmapFromJSON()
+{
     std::vector<FieldObject> map_objects;
 
     if (map_source_type_ == "json") {
@@ -258,7 +267,120 @@ nav_msgs::msg::OccupancyGrid CostmapGeneratorNode::generateCostmap()
     costmap_msg.data.resize(width * height, 0);
     applyMultiSourceBfsInflation(obstacle_costs, penalty_costs, width, height, costmap_msg.data);
 
-    RCLCPP_INFO(this->get_logger(), "Generated Costmap cache (%dx%d)", width, height);
+    RCLCPP_INFO(this->get_logger(), "Generated Costmap from JSON (%dx%d)", width, height);
+    return costmap_msg;
+}
+
+nav_msgs::msg::OccupancyGrid CostmapGeneratorNode::generateCostmapFromESDF()
+{
+    nav_msgs::msg::OccupancyGrid costmap_msg;
+    std::string esdf_path = map_file_path_;
+    if (esdf_path.empty()) {
+        RCLCPP_ERROR(this->get_logger(), "map_file_path is empty for ESDF map source.");
+        return costmap_msg;
+    }
+
+    std::ifstream ifs(esdf_path, std::ios::binary);
+    if (!ifs.is_open()) {
+        RCLCPP_ERROR(this->get_logger(), "Failed to open ESDF file: %s", esdf_path.c_str());
+        return costmap_msg;
+    }
+
+#pragma pack(push, 1)
+    struct ESDFHeader {
+        float resolution{0.05f};
+        int32_t size_x{0};
+        int32_t size_y{0};
+        int32_t size_z{0};
+        float min_x{0.0f};
+        float min_y{0.0f};
+        float min_z{0.0f};
+        float max_dist_thresh{0.5f};
+    } header;
+#pragma pack(pop)
+
+    ifs.read(reinterpret_cast<char*>(&header), sizeof(ESDFHeader));
+    if (!ifs || header.size_x <= 0 || header.size_y <= 0 || header.size_z <= 0 ||
+        header.resolution <= 0.0f) {
+        RCLCPP_ERROR(this->get_logger(), "Invalid ESDF header in file: %s", esdf_path.c_str());
+        return costmap_msg;
+    }
+
+    size_t total_voxels = static_cast<size_t>(header.size_x) * header.size_y * header.size_z;
+    std::vector<float> esdf_data(total_voxels);
+    ifs.read(reinterpret_cast<char*>(esdf_data.data()), total_voxels * sizeof(float));
+    if (!ifs && ifs.gcount() != static_cast<std::streamsize>(total_voxels * sizeof(float))) {
+        RCLCPP_ERROR(
+            this->get_logger(), "Failed to read full ESDF voxel data from: %s", esdf_path.c_str()
+        );
+        return costmap_msg;
+    }
+
+    costmap_msg.header.frame_id           = "map";
+    costmap_msg.info.resolution           = header.resolution;
+    costmap_msg.info.width                = static_cast<uint32_t>(header.size_x);
+    costmap_msg.info.height               = static_cast<uint32_t>(header.size_y);
+    costmap_msg.info.origin.position.x    = header.min_x;
+    costmap_msg.info.origin.position.y    = header.min_y;
+    costmap_msg.info.origin.position.z    = 0.0;
+    costmap_msg.info.origin.orientation.w = 1.0;
+
+    int k_min = std::max(
+        0, static_cast<int>(std::floor((robot_z_min_ - header.min_z) / header.resolution))
+    );
+    int k_max = std::min(
+        header.size_z - 1,
+        static_cast<int>(std::ceil((robot_z_max_ - header.min_z) / header.resolution))
+    );
+
+    const int width        = header.size_x;
+    const int height       = header.size_y;
+    const size_t xy_stride = static_cast<size_t>(width) * height;
+
+    costmap_msg.data.resize(static_cast<size_t>(width) * height, 0);
+
+    // Z軸最小値射影（最も近い障害物までの距離を取得してインフレーション）
+    for (int y = 0; y < height; ++y) {
+        const size_t y_offset = static_cast<size_t>(y) * width;
+        for (int x = 0; x < width; ++x) {
+            float min_dist = std::numeric_limits<float>::infinity();
+
+            for (int z = k_min; z <= k_max; ++z) {
+                size_t idx =
+                    static_cast<size_t>(x) + y_offset + static_cast<size_t>(z) * xy_stride;
+                float d = esdf_data[idx];
+                if (d < min_dist) {
+                    min_dist = d;
+                }
+            }
+
+            int8_t cell_cost = 0;
+            if (min_dist <= robot_radius_) {
+                cell_cost = 100;
+            } else if (min_dist <= (robot_radius_ + inflation_margin_) && inflation_margin_ > 0.0) {
+                float factor = 1.0f - (min_dist - robot_radius_) / inflation_margin_;
+                cell_cost    = static_cast<int8_t>(
+                    std::clamp(static_cast<int>(std::round(factor * 99.0f)), 1, 99)
+                );
+            } else {
+                cell_cost = 0;
+            }
+
+            costmap_msg.data[y_offset + x] = cell_cost;
+        }
+    }
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Generated Costmap from 3D ESDF: %s (%dx%d, z=[%.2f, %.2f]m, r=%.2f, margin=%.2f)",
+        esdf_path.c_str(),
+        width,
+        height,
+        robot_z_min_,
+        robot_z_max_,
+        robot_radius_,
+        inflation_margin_
+    );
     return costmap_msg;
 }
 
