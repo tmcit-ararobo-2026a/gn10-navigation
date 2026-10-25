@@ -3,13 +3,13 @@ shooting_points:
     name: "StartZone"
     x: 0.3
     y: -0.3
-    yaw: -1.57079632679
+    yaw: 0.0
     memo: "Start zone default position"
   - target_id: 1
     name: "FixedBucket1"
-    x: 0.55
-    y: -0.5
-    yaw: -1.57079632679
+    x: 0.847
+    y: -0.88
+    yaw: -1.593
     memo: "Fixed bucket 1 shooting spot"
   - target_id: 2
     name: "FixedBucket2"

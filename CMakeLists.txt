@@ -38,19 +38,34 @@ include_directories(
   include
 )
 
+# Target repository library
+add_library(target_repository
+  src/target_repository.cpp
+)
+target_include_directories(target_repository PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+target_compile_definitions(target_repository PUBLIC
+  GN10_NAVIGATION_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(target_repository
+  yaml-cpp
+)
+
 # 1. target_manager_node
 add_executable(target_manager_node
   src/target_manager_node.cpp
 )
 ament_target_dependencies(target_manager_node
   rclcpp
-  ament_index_cpp
   std_msgs
   std_srvs
   geometry_msgs
   tf2
 )
 target_link_libraries(target_manager_node
+  target_repository
   yaml-cpp
 )
 rosidl_get_typesupport_target(cpp_typesupport_target
@@ -99,11 +114,14 @@ ament_target_dependencies(path_follower_node
 
 # インストール設定 (Launch, Config, Node)
 install(TARGETS 
+  target_repository
   target_manager_node
   costmap_generator_node
   path_planner_node
   path_follower_node
-  DESTINATION lib/${PROJECT_NAME}
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
 install(DIRECTORY launch config rviz
