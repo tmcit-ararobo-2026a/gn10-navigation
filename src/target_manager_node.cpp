@@ -1,12 +1,8 @@
 #include "gn10_navigation/target_manager_node.hpp"
 
 #include <tf2/LinearMath/Quaternion.h>
-#include <yaml-cpp/yaml.h>
 
-#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <cmath>
-#include <filesystem>
-#include <fstream>
 
 namespace gn10_navigation {
 
@@ -15,19 +11,19 @@ TargetManagerNode::TargetManagerNode(const rclcpp::NodeOptions& options)
 {
     loadParameters();
 
-    resolved_file_path_ = resolveFilePath(yaml_file_path_);
-    if (!loadFromFile(resolved_file_path_)) {
+    repository_.setFilePath(yaml_file_path_);
+    if (!repository_.load()) {
         RCLCPP_WARN(
             this->get_logger(),
             "Could not load shooting points from '%s'. Starting with empty points.",
-            resolved_file_path_.c_str()
+            repository_.getResolvedFilePath().c_str()
         );
     } else {
         RCLCPP_INFO(
             this->get_logger(),
             "Successfully loaded %zu shooting points from '%s'.",
-            shooting_points_.size(),
-            resolved_file_path_.c_str()
+            repository_.size(),
+            repository_.getResolvedFilePath().c_str()
         );
     }
 
@@ -77,131 +73,6 @@ void TargetManagerNode::loadParameters()
     map_frame_      = this->get_parameter("map_frame").as_string();
 }
 
-std::string TargetManagerNode::resolveFilePath(const std::string& path)
-{
-    if (std::filesystem::exists(path)) {
-        return path;
-    }
-
-    try {
-        std::string share_dir = ament_index_cpp::get_package_share_directory("gn10_navigation");
-        std::string pkg_path  = share_dir + "/" + path;
-        if (std::filesystem::exists(pkg_path)) {
-            return pkg_path;
-        }
-    } catch (const std::exception& e) {
-        RCLCPP_DEBUG(this->get_logger(), "Failed to get share directory: %s", e.what());
-    }
-
-    return path;
-}
-
-bool TargetManagerNode::loadFromFile(const std::string& file_path)
-{
-    try {
-        YAML::Node config = YAML::LoadFile(file_path);
-        if (!config["shooting_points"]) {
-            RCLCPP_ERROR(this->get_logger(), "YAML does not contain 'shooting_points' key.");
-            return false;
-        }
-
-        shooting_points_.clear();
-        auto sp = config["shooting_points"];
-
-        if (sp.IsMap()) {
-            for (auto it = sp.begin(); it != sp.end(); ++it) {
-                uint8_t id = static_cast<uint8_t>(it->first.as<int>());
-                TargetPoint pt;
-                if (it->second["name"]) {
-                    pt.name = it->second["name"].as<std::string>();
-                }
-                if (it->second["x"]) {
-                    pt.x = it->second["x"].as<double>();
-                }
-                if (it->second["y"]) {
-                    pt.y = it->second["y"].as<double>();
-                }
-                if (it->second["yaw"]) {
-                    pt.yaw = it->second["yaw"].as<double>();
-                }
-                if (it->second["memo"]) {
-                    pt.memo = it->second["memo"].as<std::string>();
-                }
-                shooting_points_[id] = pt;
-            }
-        } else if (sp.IsSequence()) {
-            for (size_t i = 0; i < sp.size(); ++i) {
-                uint8_t id = static_cast<uint8_t>(i);
-                auto node  = sp[i];
-                if (node["target_id"]) {
-                    id = static_cast<uint8_t>(node["target_id"].as<int>());
-                } else if (node["id"]) {
-                    id = static_cast<uint8_t>(node["id"].as<int>());
-                }
-                TargetPoint pt;
-                if (node["name"]) {
-                    pt.name = node["name"].as<std::string>();
-                }
-                if (node["x"]) {
-                    pt.x = node["x"].as<double>();
-                }
-                if (node["y"]) {
-                    pt.y = node["y"].as<double>();
-                }
-                if (node["yaw"]) {
-                    pt.yaw = node["yaw"].as<double>();
-                }
-                if (node["memo"]) {
-                    pt.memo = node["memo"].as<std::string>();
-                }
-                shooting_points_[id] = pt;
-            }
-        }
-        return true;
-    } catch (const std::exception& e) {
-        RCLCPP_ERROR(
-            this->get_logger(), "Error reading YAML '%s': %s", file_path.c_str(), e.what()
-        );
-        return false;
-    }
-}
-
-bool TargetManagerNode::saveToFile(const std::string& file_path)
-{
-    try {
-        YAML::Node root;
-        for (const auto& [id, pt] : shooting_points_) {
-            YAML::Node node;
-            node["target_id"] = static_cast<int>(id);
-            node["name"]      = pt.name;
-            node["x"]         = pt.x;
-            node["y"]         = pt.y;
-            node["yaw"]       = pt.yaw;
-            node["memo"]      = pt.memo;
-            root["shooting_points"].push_back(node);
-        }
-
-        std::filesystem::path p(file_path);
-        if (p.has_parent_path()) {
-            std::filesystem::create_directories(p.parent_path());
-        }
-
-        std::ofstream fout(file_path);
-        if (!fout.is_open()) {
-            RCLCPP_ERROR(this->get_logger(), "Cannot open file for writing: %s", file_path.c_str());
-            return false;
-        }
-        fout << root;
-        fout.close();
-        return true;
-    } catch (const std::exception& e) {
-        RCLCPP_ERROR(
-            this->get_logger(), "Error writing YAML '%s': %s", file_path.c_str(), e.what()
-        );
-        return false;
-    }
-}
-
 void TargetManagerNode::onTargetId(const std_msgs::msg::UInt8::ConstSharedPtr msg)
 {
     current_target_id_ = msg->data;
@@ -230,13 +101,13 @@ void TargetManagerNode::onNavigationCommand(const std_msgs::msg::UInt8::ConstSha
 
 void TargetManagerNode::publishGoalPose(uint8_t target_id)
 {
-    auto it = shooting_points_.find(target_id);
-    if (it == shooting_points_.end()) {
+    auto pt_opt = repository_.get(target_id);
+    if (!pt_opt.has_value()) {
         RCLCPP_WARN(this->get_logger(), "No shooting point found for TargetId %u", target_id);
         return;
     }
 
-    const auto& pt = it->second;
+    const auto& pt = pt_opt.value();
 
     geometry_msgs::msg::PoseStamped pose_msg;
     pose_msg.header.stamp    = this->now();
@@ -271,14 +142,20 @@ void TargetManagerNode::handleUpdatePoint(
 )
 {
     uint8_t id = request->target_id;
-    auto& pt   = shooting_points_[id];
-    pt.x       = request->x;
-    pt.y       = request->y;
-    pt.yaw     = request->yaw;
-    pt.memo    = request->memo;
+    TargetPoint pt;
+    auto existing = repository_.get(id);
+    if (existing.has_value()) {
+        pt = existing.value();
+    }
+    pt.x   = request->x;
+    pt.y   = request->y;
+    pt.yaw = request->yaw;
+    pt.memo = request->memo;
     if (pt.name.empty()) {
         pt.name = toString(static_cast<TargetId>(id));
     }
+
+    repository_.update(id, pt);
 
     RCLCPP_INFO(
         this->get_logger(),
@@ -299,13 +176,14 @@ void TargetManagerNode::handleSavePoints(
     std::shared_ptr<std_srvs::srv::Trigger::Response> response
 )
 {
-    if (saveToFile(resolved_file_path_)) {
+    const std::string& path = repository_.getResolvedFilePath();
+    if (repository_.save()) {
         response->success = true;
-        response->message = "Successfully saved shooting points to " + resolved_file_path_;
+        response->message = "Successfully saved shooting points to " + path;
         RCLCPP_INFO(this->get_logger(), "%s", response->message.c_str());
     } else {
         response->success = false;
-        response->message = "Failed to save shooting points to " + resolved_file_path_;
+        response->message = "Failed to save shooting points to " + path;
         RCLCPP_ERROR(this->get_logger(), "%s", response->message.c_str());
     }
 }
@@ -320,3 +198,4 @@ int main(int argc, char** argv)
     rclcpp::shutdown();
     return 0;
 }
+
