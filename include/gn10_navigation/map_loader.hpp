@@ -6,9 +6,13 @@
 
 #include "gn10_navigation/field_object.hpp"
 
+namespace gn10_navigation {
+
 class MapLoader
 {
 public:
     // JSONファイルからマップを読み込み
     static std::vector<FieldObject> loadFromJSON(const std::string& file_path);
 };
+
+}  // namespace gn10_navigation
