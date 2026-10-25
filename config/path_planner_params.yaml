@@ -10,3 +10,19 @@ path_planner_node:
       samples_per_segment: 10
       # 内部制御点を隣接点の中点へ寄せる割合。0.0 は従来経路、1.0 は最大平滑化
       smoothing_strength: 0.5
+    footprint:
+      # 縦0.85m (x: -0.425 ~ +0.425), 横0.8m (y: -0.4 ~ +0.4) の長方形
+      # 頂点座標の平坦配列 [x0, y0, x1, y1, ...]
+      polygon: [
+        0.5, 0.5,
+        -0.5, 0.5,
+        -0.5, -0.5,
+        0.5, -0.5
+      ]
+    rotation_planning:
+      # 旋回を許可する最大コスト (0~99: 通行可能, 100: 障害物)
+      turn_max_cost: 20
+      # 旋回干渉判定の角度ステップ [rad] (約5.7度)
+      angle_step: 0.1
+      # 旋回区間の移動距離 [m]
+      turn_distance: 0.6

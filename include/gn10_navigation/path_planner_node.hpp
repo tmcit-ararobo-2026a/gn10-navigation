@@ -100,9 +100,36 @@ private:
      * @brief ワールド座標列がすべて通行可能なセル上にあるか確認する。
      *
      * @param path ワールド座標列
-     * @return 全点が通行可能な場合は true
+     * @return true すべて通行可能
+     * @return false 障害物と干渉している
      */
     bool isSmoothPathValid(const std::vector<std::pair<double, double>>& path) const;
+
+    /**
+     * @brief 指定した位置 (wx, wy) および姿勢 (yaw) において、ロボットのフットプリントが安全か判定する。
+     *
+     * @param wx ワールドX座標
+     * @param wy ワールドY座標
+     * @param yaw ロボットのヨー角
+     * @param max_cost 許容する最大コスト値 (0〜100)
+     * @return true すべてのフットプリント領域が max_cost 以下で安全
+     * @return false 障害物または max_cost 超過のセルと接触
+     */
+    bool isFootprintSafe(double wx, double wy, double yaw, int max_cost) const;
+
+    /**
+     * @brief パス上のコストが低い安全区間を探索し、各ポーズのYaw角を計画する。
+     *
+     * @param smoothed_path 平滑化された座標列 (x, y)
+     * @param start_yaw スタート時のロボットのYaw角
+     * @param goal_yaw ゴール目標のYaw角
+     * @return std::vector<geometry_msgs::msg::PoseStamped> 姿勢(Orientation)付きポーズ列
+     */
+    std::vector<geometry_msgs::msg::PoseStamped> planOrientations(
+        const std::vector<std::pair<double, double>>& smoothed_path,
+        double start_yaw,
+        double goal_yaw
+    ) const;
 
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_sub_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_pose_sub_;
@@ -117,6 +144,12 @@ private:
     double planning_cost_factor_;  // a_star.planning_cost (3.0)
     int bspline_samples_per_segment_;
     double bspline_smoothing_strength_;
+
+    // フットプリントおよび旋回計画パラメータ
+    std::vector<std::pair<double, double>> footprint_polygon_;
+    int turn_max_cost_{20};
+    double angle_step_{0.1};
+    double turn_distance_{0.6};
 
     // コストマップ情報
     nav_msgs::msg::OccupancyGrid latest_costmap_;
