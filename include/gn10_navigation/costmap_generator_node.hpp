@@ -31,22 +31,23 @@ private:
     /**
      * @brief オブジェクトのコストを返す関数
      *
-     * @param comment オブジェクトのコメント（文字列一致でコストを決定）
-     * @param type オブジェクト形状など
+     * @param obj フィールドオブジェクト（cost が指定されていれば優先、未指定なら comment から判定）
      * @return int コスト
      */
-    int getObjectCost(const std::string& comment, ObjectType type) const;
+    int getObjectCost(const FieldObject& obj) const;
 
     /**
      * @brief BFSを用いたコストの波及処理
      *
-     * @param base_costs 入力コストマップ
+     * @param obstacle_costs 入力障害物コストマップ
+     * @param penalty_costs 通過可能ペナルティ領域（避けたい場所）マップ
      * @param width コストマップの幅（セル数）
      * @param height コストマップの高さ（セル数）
      * @param output_grid コスト波及処理後の出力コストマップ
      */
     void applyMultiSourceBfsInflation(
-        const std::vector<uint8_t>& base_costs,
+        const std::vector<uint8_t>& obstacle_costs,
+        const std::vector<uint8_t>& penalty_costs,
         int width,
         int height,
         std::vector<int8_t>& output_grid
