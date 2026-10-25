@@ -92,26 +92,15 @@
     "cost": 120
   },
   {
-    "comment": "外壁",
+    "comment": "バケツ",
     "type": "BOX",
-    "x": 1.2,
-    "y": -0.2,
+    "x": 0.9,
+    "y": -0.42,
     "z_min": 0.0,
     "z_max": 0.73,
-    "half_x": 0.2,
-    "half_y": 0.2,
-    "cost": 254
-  },
-  {
-    "comment": "避けたい場所（ペナルティゾーン・通行可能）",
-    "type": "ZONE",
-    "x": 2.0,
-    "y": -0.5,
-    "z_min": 0.0,
-    "z_max": 1.0,
-    "half_x": 0.3,
-    "half_y": 0.3,
-    "cost": 80,
-    "passable": true
+    "half_x": 0.005,
+    "half_y": 0.005,
+    "cost": 200,
+    "passable": false
   }
 ]
