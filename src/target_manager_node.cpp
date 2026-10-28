@@ -75,7 +75,7 @@ void TargetManagerNode::loadParameters()
 
 void TargetManagerNode::onTargetId(const std_msgs::msg::UInt8::ConstSharedPtr msg)
 {
-    if (current_target_id_ == msg->data) {
+    if (current_target_id_ != msg->data) {
         RCLCPP_INFO(
             this->get_logger(),
             "Target ID updated to: %u (%s)",
@@ -89,7 +89,7 @@ void TargetManagerNode::onTargetId(const std_msgs::msg::UInt8::ConstSharedPtr ms
 void TargetManagerNode::onNavigationCommand(const std_msgs::msg::UInt8::ConstSharedPtr msg)
 {
     NavigationCommand received_command = static_cast<NavigationCommand>(msg->data);
-    if (received_command == current_nav_cmd_) {
+    if (received_command != current_nav_cmd_) {
         RCLCPP_INFO(
             this->get_logger(),
             "Navigation command received: %u (%s)",
