@@ -47,10 +47,9 @@ private:
     std::string map_frame_;
 
     uint8_t current_target_id_{0};
-    NavigationCommand current_nav_cmd_{NavigationCommand::Stanby};
+    NavigationCommand nav_cmd_{NavigationCommand::Stanby};
 
     TargetRepository repository_;
 };
 
 }  // namespace gn10_navigation
-
