@@ -89,7 +89,7 @@ void TargetManagerNode::onTargetId(const std_msgs::msg::UInt8::ConstSharedPtr ms
 void TargetManagerNode::onNavigationCommand(const std_msgs::msg::UInt8::ConstSharedPtr msg)
 {
     NavigationCommand received_command = static_cast<NavigationCommand>(msg->data);
-    if (received_command == current_nav_command_) {
+    if (received_command == current_nav_cmd_) {
         RCLCPP_INFO(
             this->get_logger(),
             "Navigation command received: %u (%s)",
@@ -98,7 +98,7 @@ void TargetManagerNode::onNavigationCommand(const std_msgs::msg::UInt8::ConstSha
         );
     }
 
-    current_nav_cmd_ received_command;
+    current_nav_cmd_ = received_command;
 
     if (current_nav_cmd_ == NavigationCommand::Move) {
         publishGoalPose(current_target_id_);
