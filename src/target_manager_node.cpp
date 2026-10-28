@@ -75,24 +75,30 @@ void TargetManagerNode::loadParameters()
 
 void TargetManagerNode::onTargetId(const std_msgs::msg::UInt8::ConstSharedPtr msg)
 {
+    if (current_target_id_ == msg->data) {
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Target ID updated to: %u (%s)",
+            current_target_id_,
+            toString(static_cast<TargetId>(current_target_id_))
+        );
+    }
     current_target_id_ = msg->data;
-    RCLCPP_INFO(
-        this->get_logger(),
-        "Target ID updated to: %u (%s)",
-        current_target_id_,
-        toString(static_cast<TargetId>(current_target_id_))
-    );
 }
 
 void TargetManagerNode::onNavigationCommand(const std_msgs::msg::UInt8::ConstSharedPtr msg)
 {
-    current_nav_cmd_ = static_cast<NavigationCommand>(msg->data);
-    RCLCPP_INFO(
-        this->get_logger(),
-        "Navigation command received: %u (%s)",
-        msg->data,
-        toString(current_nav_cmd_)
-    );
+    NavigationCommand received_command = static_cast<NavigationCommand>(msg->data);
+    if (received_command == current_nav_command_) {
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Navigation command received: %u (%s)",
+            msg->data,
+            toString(received_command)
+        );
+    }
+
+    current_nav_cmd_ received_command;
 
     if (current_nav_cmd_ == NavigationCommand::Move) {
         publishGoalPose(current_target_id_);
@@ -147,9 +153,9 @@ void TargetManagerNode::handleUpdatePoint(
     if (existing.has_value()) {
         pt = existing.value();
     }
-    pt.x   = request->x;
-    pt.y   = request->y;
-    pt.yaw = request->yaw;
+    pt.x    = request->x;
+    pt.y    = request->y;
+    pt.yaw  = request->yaw;
     pt.memo = request->memo;
     if (pt.name.empty()) {
         pt.name = toString(static_cast<TargetId>(id));
@@ -198,4 +204,3 @@ int main(int argc, char** argv)
     rclcpp::shutdown();
     return 0;
 }
-
