@@ -6,11 +6,19 @@ costmap_generator_node:
       max_x: 6.0
       min_y: -6.5
       max_y: 6.5
+    # SVGは平面図のみ。高さは従来値を明示（実機高さは別途計測）。
+    robot_clearance:
+      z_min: 0.0
+      z_max: 1.4
     inflation:
-      robot_radius: 0.4
+      # 壁際への接近用に不可侵半径を0.45 mへ縮小（全障害物共通）。
+      # 外接半径約0.596 m未満。中心点の判定では姿勢によって機体の接触を許容。
+      robot_radius: 0.45
       margin: 0.3
     costs:
-      wall: 120
+      # 壁の減衰コストだけを最小化。0は壁の障害物シード自体を消すので使用しない。
+      # JSONにcostがある場合はそちらが優先（nhk2026_map.jsonも1に統一）。
+      wall: 1
       partition: 200
       obstacle: 254
       default_cost: 254

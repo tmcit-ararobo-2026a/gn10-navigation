@@ -78,7 +78,7 @@ private:
     double robot_z_max_;
 
     // 膨張コスト（インフレーション）パラメータ
-    double robot_radius_;      // ロボット物理半径 [m] (絶対不可侵: 254)
+    double robot_radius_;      // 中心点の不可侵半径 [m] (絶対不可侵: 254)
     double inflation_margin_;  // コスト波及マージン幅 [m]
 
     // オブジェクト別基準コスト

@@ -1,4 +1,5 @@
 #include "gn10_navigation/costmap_generator_node.hpp"
+#include "gn10_navigation/robot_geometry.hpp"
 
 #include <algorithm>
 #include <ament_index_cpp/get_package_share_directory.hpp>
@@ -54,9 +55,9 @@ void CostmapGeneratorNode::declareAndGetParameters()
 
     // 膨張コスト（インフレーション）のパラメータ設定
     this->declare_parameter(
-        "inflation.robot_radius", 0.35
-    );  // ロボット物理半径 [m] (絶対不可侵: 254)
-    this->declare_parameter("inflation.margin", 0.50);  // コスト波及マージン幅 [m]
+        "inflation.robot_radius", kDefaultRobotRadius
+    );  // 中心点の不可侵半径 [m] (絶対不可侵: 254)
+    this->declare_parameter("inflation.margin", kDefaultInflationMargin);  // コスト波及マージン幅 [m]
 
     // オブジェクト別コスト定義
     this->declare_parameter("costs.wall", 120);          // 外壁: 120

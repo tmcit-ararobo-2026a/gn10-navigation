@@ -1,4 +1,5 @@
 #include "gn10_navigation/path_planner_node.hpp"
+#include "gn10_navigation/robot_geometry.hpp"
 
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Quaternion.h>
@@ -76,14 +77,7 @@ void PathPlannerNode::declareAndGetParameters()
     this->declare_parameter("bspline.samples_per_segment", 10);
     this->declare_parameter("bspline.smoothing_strength", 0.0);
 
-    // デフォルト: 縦0.85m (x: ±0.425), 横0.8m (y: ±0.4) の長方形
-    const std::vector<double> default_polygon = {
-        0.425, 0.4,
-        -0.425, 0.4,
-        -0.425, -0.4,
-        0.425, -0.4
-    };
-    this->declare_parameter("footprint.polygon", default_polygon);
+    this->declare_parameter("footprint.polygon", kDefaultFootprint);
     this->declare_parameter("rotation_planning.turn_max_cost", 20);
     this->declare_parameter("rotation_planning.angle_step", 0.1);
     this->declare_parameter("rotation_planning.turn_distance", 0.6);
@@ -106,14 +100,10 @@ void PathPlannerNode::declareAndGetParameters()
     for (std::size_t i = 0; i + 1 < polygon_flat.size(); i += 2) {
         footprint_polygon_.emplace_back(polygon_flat[i], polygon_flat[i + 1]);
     }
-    if (footprint_polygon_.size() < 3) {
-        RCLCPP_WARN(this->get_logger(), "Footprint polygon has fewer than 3 vertices, using default 0.85x0.8 rect.");
-        footprint_polygon_ = {
-            {0.425, 0.4},
-            {-0.425, 0.4},
-            {-0.425, -0.4},
-            {0.425, -0.4}
-        };
+    if (polygon_flat.size() % 2 != 0 || footprint_polygon_.size() < 3 ||
+        !std::all_of(polygon_flat.begin(), polygon_flat.end(),
+                     [](double value) { return std::isfinite(value); })) {
+        throw std::invalid_argument("footprint.polygon must contain at least 3 finite x/y pairs");
     }
 
     turn_max_cost_ = static_cast<int>(this->get_parameter("rotation_planning.turn_max_cost").as_int());
