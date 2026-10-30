@@ -11,9 +11,10 @@ namespace gn10_navigation {
 
 struct TargetPoint {
     std::string name;
-    double x   = 0.0;
-    double y   = 0.0;
-    double yaw = 0.0;
+    double x               = 0.0;
+    double y               = 0.0;
+    double yaw             = 0.0;
+    double target_velocity = 0.0;
     std::string memo;
 };
 

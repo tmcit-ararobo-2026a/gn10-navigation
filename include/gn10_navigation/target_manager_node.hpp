@@ -8,6 +8,7 @@
 #include "gn10_navigation/srv/update_point.hpp"
 #include "gn10_navigation/target_repository.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/u_int8.hpp"
 #include "std_srvs/srv/trigger.hpp"
 
@@ -25,6 +26,7 @@ private:
     void onNavigationCommand(const std_msgs::msg::UInt8::ConstSharedPtr msg);
 
     void publishGoalPose(uint8_t target_id);
+    void publishBeltLauncherSpeed(uint8_t target_id);
 
     void handleUpdatePoint(
         const std::shared_ptr<gn10_navigation::srv::UpdatePoint::Request> request,
@@ -39,6 +41,7 @@ private:
     rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr target_id_sub_;
     rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr nav_cmd_sub_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr goal_pose_pub_;
+    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr belt_launcher_speed_pub_;
 
     rclcpp::Service<gn10_navigation::srv::UpdatePoint>::SharedPtr update_point_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr save_points_srv_;

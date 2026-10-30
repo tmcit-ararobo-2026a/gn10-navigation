@@ -2,8 +2,10 @@ uint8 target_id
 float64 x
 float64 y
 float64 yaw
+float64 target_velocity
 string memo
 ---
 bool success
 string message
+
 

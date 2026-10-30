@@ -4,46 +4,54 @@ shooting_points:
     x: 0.3
     y: -0.3
     yaw: 0.0
+    target_velocity: 0.0
     memo: "Start zone default position"
   - target_id: 1
     name: "FixedBucket1"
     x: 0.847
     y: -0.883
     yaw: -1.586
+    target_velocity: 0.0
     memo: "Fixed bucket 1 shooting spot"
   - target_id: 2
     name: "FixedBucket2"
     x: 1.27
     y: -0.5
     yaw: -1.57079632679
+    target_velocity: 0.0
     memo: "Fixed bucket 2 shooting spot"
   - target_id: 3
     name: "FixedBucket3"
     x: 2.5
     y: -0.5
     yaw: -1.57079632679
+    target_velocity: 0.0
     memo: "Fixed bucket 3 shooting spot"
   - target_id: 4
     name: "Desk1"
     x: 2.5
     y: -0.2
     yaw: 1.57079632679
+    target_velocity: 0.0
     memo: "Desk 1 shooting spot"
   - target_id: 5
     name: "Desk2"
     x: 3.395
     y: 2.8
     yaw: 1.57079632679
+    target_velocity: 0.0
     memo: "Desk 2 shooting spot"
   - target_id: 6
     name: "Flag"
     x: 0.55
     y: 4.2
     yaw: -1.57079632679
+    target_velocity: 0.0
     memo: "Flag shooting spot"
   - target_id: 7
     name: "MovingBucket"
     x: 0.0
     y: 0.0
     yaw: 0.0
+    target_velocity: 0.0
     memo: "Moving bucket target (tracking mode)"

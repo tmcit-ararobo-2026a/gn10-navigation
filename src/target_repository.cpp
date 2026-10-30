@@ -102,6 +102,9 @@ bool TargetRepository::loadFromFile(const std::string& file_path)
                 if (it->second["yaw"]) {
                     pt.yaw = it->second["yaw"].as<double>();
                 }
+                if (it->second["target_velocity"]) {
+                    pt.target_velocity = it->second["target_velocity"].as<double>();
+                }
                 if (it->second["memo"]) {
                     pt.memo = it->second["memo"].as<std::string>();
                 }
@@ -129,6 +132,9 @@ bool TargetRepository::loadFromFile(const std::string& file_path)
                 if (node["yaw"]) {
                     pt.yaw = node["yaw"].as<double>();
                 }
+                if (node["target_velocity"]) {
+                    pt.target_velocity = node["target_velocity"].as<double>();
+                }
                 if (node["memo"]) {
                     pt.memo = node["memo"].as<std::string>();
                 }
@@ -149,12 +155,13 @@ bool TargetRepository::saveToFile(const std::string& file_path) const
         YAML::Node root;
         for (const auto& [id, pt] : shooting_points_) {
             YAML::Node node;
-            node["target_id"] = static_cast<int>(id);
-            node["name"]      = pt.name;
-            node["x"]         = pt.x;
-            node["y"]         = pt.y;
-            node["yaw"]       = pt.yaw;
-            node["memo"]      = pt.memo;
+            node["target_id"]       = static_cast<int>(id);
+            node["name"]            = pt.name;
+            node["x"]               = pt.x;
+            node["y"]               = pt.y;
+            node["yaw"]             = pt.yaw;
+            node["target_velocity"] = pt.target_velocity;
+            node["memo"]            = pt.memo;
             root["shooting_points"].push_back(node);
         }
 
