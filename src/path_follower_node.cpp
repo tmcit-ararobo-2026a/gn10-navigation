@@ -215,7 +215,10 @@ void PathFollowerNode::declareAndGetParameters()
     this->declare_parameter("heading_ki", 0.05);
     this->declare_parameter("heading_kd", 0.35);
     this->declare_parameter("heading_integral_max", 0.5);
+    this->declare_parameter("turn_yaw_rate_ratio", 0.75);
     this->declare_parameter("min_turn_speed", 0.3);
+    this->declare_parameter("control_comm_delay", 0.025);
+    this->declare_parameter("max_delay_compensation", 0.20);
 
     this->declare_parameter("map_frame", "map");
     this->declare_parameter("base_frame", "base_link");
@@ -247,7 +250,10 @@ void PathFollowerNode::declareAndGetParameters()
     heading_ki_               = this->get_parameter("heading_ki").as_double();
     heading_kd_               = this->get_parameter("heading_kd").as_double();
     heading_integral_max_     = this->get_parameter("heading_integral_max").as_double();
+    turn_yaw_rate_ratio_      = this->get_parameter("turn_yaw_rate_ratio").as_double();
     min_turn_speed_           = this->get_parameter("min_turn_speed").as_double();
+    control_comm_delay_       = this->get_parameter("control_comm_delay").as_double();
+    max_delay_compensation_   = this->get_parameter("max_delay_compensation").as_double();
 
     // heading_gain が指定された場合のフォールバック
     if (this->has_parameter("heading_gain") && !this->has_parameter("heading_kp")) {
@@ -275,6 +281,10 @@ void PathFollowerNode::declareAndGetParameters()
         !std::isfinite(max_initial_path_error_) ||
         max_initial_path_error_ < max_path_error_ ||
         !std::isfinite(goal_position_gain_) || goal_position_gain_ <= 0.0 ||
+        !std::isfinite(turn_yaw_rate_ratio_) || turn_yaw_rate_ratio_ <= 0.0 ||
+        turn_yaw_rate_ratio_ > 1.0 || !std::isfinite(min_turn_speed_) || min_turn_speed_ <= 0.0 ||
+        !std::isfinite(control_comm_delay_) || control_comm_delay_ < 0.0 ||
+        !std::isfinite(max_delay_compensation_) || max_delay_compensation_ < 0.0 ||
         map_frame_.empty() || base_frame_.empty()) {
         throw std::invalid_argument("Invalid path follower configuration");
     }
@@ -350,8 +360,14 @@ rcl_interfaces::msg::SetParametersResult PathFollowerNode::onSetParameters(
             heading_integral_max_ = param.as_double();
             heading_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
             tracking_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
+        } else if (name == "turn_yaw_rate_ratio") {
+            turn_yaw_rate_ratio_ = std::clamp(param.as_double(), 0.05, 1.0);
         } else if (name == "min_turn_speed") {
-            min_turn_speed_ = param.as_double();
+            min_turn_speed_ = std::max(0.01, param.as_double());
+        } else if (name == "control_comm_delay") {
+            control_comm_delay_ = std::max(0.0, param.as_double());
+        } else if (name == "max_delay_compensation") {
+            max_delay_compensation_ = std::max(0.0, param.as_double());
         }
     }
     return result;
@@ -366,11 +382,15 @@ void PathFollowerNode::onNavigationCommand(const std_msgs::msg::UInt8::ConstShar
             return;
         }
         if (current_target_id_ == TargetId::MovingBucket) {
-            status_ = NavigationStatus::Tracking;
-            RCLCPP_INFO(this->get_logger(), "Transition to TRACKING for MovingBucket.");
+            if (status_ != NavigationStatus::Tracking) {
+                status_ = NavigationStatus::Tracking;
+                RCLCPP_INFO(this->get_logger(), "Transition to TRACKING for MovingBucket.");
+            }
         } else {
-            status_ = NavigationStatus::Moving;
-            RCLCPP_INFO(this->get_logger(), "Transition to MOVING.");
+            if (status_ != NavigationStatus::Moving) {
+                status_ = NavigationStatus::Moving;
+                RCLCPP_INFO(this->get_logger(), "Transition to MOVING.");
+            }
         }
     } else if (last_cmd_ == NavigationCommand::Stanby || last_cmd_ == NavigationCommand::Sleep) {
         goal_latched_ = false;
@@ -525,14 +545,17 @@ void PathFollowerNode::onPlannedPath(const nav_msgs::msg::Path::ConstSharedPtr m
                 max_speed_, std::sqrt(max_lateral_acceleration_ / std::max(curvature, kEpsilon)));
         }
 
-        // 旋回角速度要求（|dθ/ds|）に応じた並進速度制限
-        // 旋回中に高速直進すると旋回が追いつかずパスから大きく乖離するため、
-        // v * |dθ/ds| <= max_angular_velocity * 0.75 となるよう速度上限を制限
+        // 旋回角速度要求（|dθ/ds|）に応じた並進速度制限:
+        // 運動連鎖則: ω = dθ/dt = (dθ/ds) * (ds/dt) = yaw_rate_spatial * v
+        // 最大許容角速度 max_angular_velocity_ に対し、PIDフィードバック補正用のヘッドルームを残すため、
+        // 計画時の許容角速度上限を (max_angular_velocity_ * turn_yaw_rate_ratio_) とする。
+        // これにより、急旋回区間で高速直進して旋回が追いつかなくなる現象を防止する。
         const double delta_dist = std::max(path_[index].distance - path_[index - 1].distance, kEpsilon);
         const double delta_yaw  = std::abs(normalizeAngle(path_[index].yaw - path_[index - 1].yaw));
         if (delta_yaw > 1e-4) {
-            const double yaw_rate_spatial = delta_yaw / delta_dist;
-            const double turn_speed_limit = (max_angular_velocity_ * 0.75) / yaw_rate_spatial;
+            const double yaw_rate_spatial      = delta_yaw / delta_dist;
+            const double allowed_plan_yaw_rate = max_angular_velocity_ * turn_yaw_rate_ratio_;
+            const double turn_speed_limit      = allowed_plan_yaw_rate / yaw_rate_spatial;
             path_[index].speed = std::min(path_[index].speed, std::max(min_turn_speed_, turn_speed_limit));
         }
     }
@@ -822,10 +845,14 @@ void PathFollowerNode::controlLoop()
                 max_angular_acceleration_ * delta_time
             );
 
-            // 自己位置遅延（pose_age）および通信・マイコン処理遅延（約20ms）による機体回転ずれを補正
-            const double effective_delay = std::clamp(pose_age + 0.02, 0.0, 0.2);
+            // 自己位置計測遅延 (pose_age) と通信・制御実行遅延 (control_comm_delay_) による旋回中ドリフトの予測補正
+            // 合計遅延時間 τ の間に機体はさらに command_yaw_rate_ * τ だけ回転するため、
+            // 実際に地面に車輪駆動力が作用する瞬間の姿勢角 predicted_robot_yaw に基づいてローカル速度へ変換する。
+            const double total_delay = std::clamp(
+                pose_age + control_comm_delay_, 0.0, max_delay_compensation_
+            );
             const double predicted_robot_yaw =
-                normalizeAngle(robot_yaw + command_yaw_rate_ * effective_delay);
+                normalizeAngle(robot_yaw + command_yaw_rate_ * total_delay);
             const double cosine = std::cos(predicted_robot_yaw);
             const double sine   = std::sin(predicted_robot_yaw);
             publishCmdVel(

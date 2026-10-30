@@ -171,7 +171,10 @@ private:
     double heading_ki_{0.05};
     double heading_kd_{0.35};
     double heading_integral_max_{0.5};
+    double turn_yaw_rate_ratio_{0.75};
     double min_turn_speed_{0.3};
+    double control_comm_delay_{0.025};
+    double max_delay_compensation_{0.20};
 
     AnglePidController heading_pid_;
     AnglePidController tracking_pid_;

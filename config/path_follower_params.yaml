@@ -47,8 +47,14 @@ path_follower_node:
     heading_ki: 0.05
     heading_kd: 0.35
     heading_integral_max: 0.5
-    # 旋回時の最低並進速度 [m/s]
+    # 旋回時角速度利用率 (PIDフィードバック余裕を残すため最大角速度に対する割合) [0.1~1.0]
+    turn_yaw_rate_ratio: 0.75
+    # 旋回時の最低並進速度下限値 [m/s]
     min_turn_speed: 0.3
+    # 制御指令送信・マイコン通信およびアクチュエータ応答の推定遅延時間 [s]
+    control_comm_delay: 0.025
+    # 遅延補償で許容する最大予測外挿時間幅 [s]
+    max_delay_compensation: 0.20
     # 地図座標系の TF フレーム名
     map_frame: "map"
     # ロボット本体の TF フレーム名
