@@ -17,7 +17,7 @@ NHKロボコン2026等の自動走行要求を満たすナビゲーションパ�
 
 ## 1. 概要
 
-- **target_manager_node**: メインマイコンからの指示に応じた最適な投擲・目標座標（`/goal_pose`）の管理と発行。VSCode Extension等からのメモリ更新およびYAML保存サービスを提供。
+- **target_manager_node**: メインマイコンからの指示に応じた最適な投擲・目標座標（`/goal_pose`）および射出ベルト速度（`/robot/operation/belt_launcher_speed`、MovingBucket時を除く）の管理と発行。VSCode Extension等からのメモリ更新およびYAML保存サービスを提供。
 - **costmap_generator_node**: フィールド定義（`nhk2026_map.json`）に基づくMulti-Source BFSを用いた波及コスト付き地図データ（`nav_msgs/msg/OccupancyGrid`）の生成。
 - **path_planner_node**: コストマップと目標姿勢に基づく8方向A*標準実装で経路を算定し、障害物との交差を検証した3次B-spline経路（`nav_msgs/msg/Path`）を発行。
 - **path_follower_node**: ナビゲーション状態（`NavigationStatus`）のステートマシン管理、S字速度プロファイル付きPure Pursuitによる運動制御。経路進捗は単調に管理し、到達後は経路を破棄して再送された同一`Move`を無視する。経路逸脱・古いTF・不正なTFは停止して`Fail`へ遷移する。
@@ -35,7 +35,14 @@ NHKロボコン2026等の自動走行要求を満たすナビゲーションパ�
 [target_manager_node]     [path_follower_node]                   │
    │ /goal_pose                   ▲                              │
    │ (PoseStamped)                │ /planned_path (Path)         │
+   │                              │                              │
+   │ /robot/operation/            │                              │
+   │  belt_launcher_speed         │                              │
+   │  (Float32)                   │                              │
    ▼                              │                              │
+メイン基板 (udp_node)             │                              │
+   ▲                              │                              │
+   │                              │                              │
 [path_planner_node] ──────────────┘                              │
    ▲                                                             │
    │ /costmap (OccupancyGrid)                                    │
@@ -60,10 +67,11 @@ NHKロボコン2026等の自動走行要求を満たすナビゲーションパ�
 | `/robot/target_id` | Topic | `std_msgs/msg/UInt8` | udp_node | TargetMgr / Follower | 目的地・追従対象ID (0..7) |
 | `/robot/operation/navigation_status` | Topic | `std_msgs/msg/UInt8` | PathFollower | udp_node | ナビゲーション現在状態 (Stanby=0, Ready=1, Moving=2, Tracking=3, Goal=4, Fail=5) |
 | `/robot/operation/cmd_vel` | Topic | `geometry_msgs/msg/Twist` | PathFollower | udp_node | 機体ローカル座標系速度指示値 |
+| `/robot/operation/belt_launcher_speed` | Topic | `std_msgs/msg/Float32` | TargetMgr | udp_node | 射出ベルト直動目標速度[m/s]（MovingBucket時は非送信） |
 | `/costmap` | Topic | `nav_msgs/msg/OccupancyGrid` | CostmapGen | PathPlanner | 障害物コスト・波及勾配付きコストマップ |
 | `/goal_pose` | Topic | `geometry_msgs/msg/PoseStamped` | TargetMgr | PathPlanner | 投擲ポイント（目標姿勢） |
 | `/planned_path` | Topic | `nav_msgs/msg/Path` | PathPlanner | PathFollower | A*生成経路 |
-| `/target_manager/update_point` | Service | `gn10_navigation/srv/UpdatePoint` | VSCode Ext | TargetManager | 投擲ポイント（座標・角度・メモ）のメモリ更新 |
+| `/target_manager/update_point` | Service | `gn10_navigation/srv/UpdatePoint` | VSCode Ext | TargetManager | 投擲ポイント（座標・角度・目標速度・メモ）のメモリ更新 |
 | `/target_manager/save_points` | Service | `std_srvs/srv/Trigger` | VSCode Ext | TargetManager | メモリ上の座標データをYAMLへ書き出し |
 | `/debug/lookahead_point` | Topic | `visualization_msgs/msg/Marker` | PathFollower | RViz2 (Debug) | Pure Pursuit 注視点可視化 |
 | `map -> base_link` | TF | TransformStamped | Localizer | Planner / Follower | 機体現在位置・姿勢 |

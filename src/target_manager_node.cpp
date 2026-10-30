@@ -40,8 +40,10 @@ TargetManagerNode::TargetManagerNode(const rclcpp::NodeOptions& options)
         std::bind(&TargetManagerNode::onNavigationCommand, this, std::placeholders::_1)
     );
 
-    // Publisher
+    // Publishers
     goal_pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/goal_pose", 10);
+    belt_launcher_speed_pub_ =
+        this->create_publisher<std_msgs::msg::Float32>("/robot/operation/belt_launcher_speed", 10);
 
     // Services
     update_point_srv_ = this->create_service<gn10_navigation::srv::UpdatePoint>(
@@ -155,6 +157,37 @@ void TargetManagerNode::publishGoalPose(uint8_t target_id)
         pt.y,
         pt.yaw
     );
+
+    publishBeltLauncherSpeed(target_id);
+}
+
+void TargetManagerNode::publishBeltLauncherSpeed(uint8_t target_id)
+{
+    if (target_id == static_cast<uint8_t>(TargetId::MovingBucket)) {
+        RCLCPP_DEBUG(
+            this->get_logger(),
+            "Skipping belt_launcher_speed publication for MovingBucket (target_id=%u)",
+            target_id
+        );
+        return;
+    }
+
+    auto pt_opt = repository_.get(target_id);
+    if (!pt_opt.has_value()) {
+        return;
+    }
+
+    const auto& pt = pt_opt.value();
+    std_msgs::msg::Float32 speed_msg;
+    speed_msg.data = static_cast<float>(pt.target_velocity);
+    belt_launcher_speed_pub_->publish(speed_msg);
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Published belt_launcher_speed for target %u (%s): %.3f m/s",
+        target_id,
+        pt.name.c_str(),
+        speed_msg.data
+    );
 }
 
 void TargetManagerNode::handleUpdatePoint(
@@ -168,10 +201,11 @@ void TargetManagerNode::handleUpdatePoint(
     if (existing.has_value()) {
         pt = existing.value();
     }
-    pt.x    = request->x;
-    pt.y    = request->y;
-    pt.yaw  = request->yaw;
-    pt.memo = request->memo;
+    pt.x               = request->x;
+    pt.y               = request->y;
+    pt.yaw             = request->yaw;
+    pt.target_velocity = request->target_velocity;
+    pt.memo            = request->memo;
     if (pt.name.empty()) {
         pt.name = toString(static_cast<TargetId>(id));
     }
@@ -180,11 +214,12 @@ void TargetManagerNode::handleUpdatePoint(
 
     RCLCPP_INFO(
         this->get_logger(),
-        "Updated in-memory point for target %u: x=%.3f, y=%.3f, yaw=%.3f, memo='%s'",
+        "Updated in-memory point for target %u: x=%.3f, y=%.3f, yaw=%.3f, target_velocity=%.3f, memo='%s'",
         id,
         pt.x,
         pt.y,
         pt.yaw,
+        pt.target_velocity,
         pt.memo.c_str()
     );
 
