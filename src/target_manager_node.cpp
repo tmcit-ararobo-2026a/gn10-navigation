@@ -75,15 +75,20 @@ void TargetManagerNode::loadParameters()
 
 void TargetManagerNode::onTargetId(const std_msgs::msg::UInt8::ConstSharedPtr msg)
 {
-    if (current_target_id_ != msg->data) {
+    const uint8_t new_target_id = msg->data;
+    if (current_target_id_ != new_target_id) {
         RCLCPP_INFO(
             this->get_logger(),
             "Target ID updated to: %u (%s)",
-            current_target_id_,
-            toString(static_cast<TargetId>(current_target_id_))
+            new_target_id,
+            toString(static_cast<TargetId>(new_target_id))
         );
+        current_target_id_ = new_target_id;
+        // すでに Move 状態のまま TargetId が切り替わった場合も即座に新目標へのゴールを発行
+        if (nav_cmd_ == NavigationCommand::Move) {
+            publishGoalPose(current_target_id_);
+        }
     }
-    current_target_id_ = msg->data;
 }
 
 void TargetManagerNode::onNavigationCommand(const std_msgs::msg::UInt8::ConstSharedPtr msg)
@@ -99,6 +104,7 @@ void TargetManagerNode::onNavigationCommand(const std_msgs::msg::UInt8::ConstSha
     }
 
     if (nav_cmd_ != NavigationCommand::Move && received_nav_cmd == NavigationCommand::Move) {
+        last_published_target_id_ = 255;  // 新規移動開始時は確実に発行
         publishGoalPose(current_target_id_);
     }
 
@@ -107,11 +113,20 @@ void TargetManagerNode::onNavigationCommand(const std_msgs::msg::UInt8::ConstSha
 
 void TargetManagerNode::publishGoalPose(uint8_t target_id)
 {
+    const auto now_time = this->now();
+    if (last_published_target_id_ == target_id &&
+        (now_time - last_published_time_).seconds() < 0.2) {
+        return;
+    }
+
     auto pt_opt = repository_.get(target_id);
     if (!pt_opt.has_value()) {
         RCLCPP_WARN(this->get_logger(), "No shooting point found for TargetId %u", target_id);
         return;
     }
+
+    last_published_target_id_ = target_id;
+    last_published_time_      = now_time;
 
     const auto& pt = pt_opt.value();
 

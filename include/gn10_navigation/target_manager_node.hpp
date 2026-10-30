@@ -48,6 +48,8 @@ private:
 
     uint8_t current_target_id_{0};
     NavigationCommand nav_cmd_{NavigationCommand::Stanby};
+    uint8_t last_published_target_id_{255};
+    rclcpp::Time last_published_time_{0, 0, RCL_ROS_TIME};
 
     TargetRepository repository_;
 };
