@@ -42,8 +42,9 @@ TargetManagerNode::TargetManagerNode(const rclcpp::NodeOptions& options)
 
     // Publishers
     goal_pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/goal_pose", 10);
-    belt_launcher_speed_pub_ =
-        this->create_publisher<std_msgs::msg::Float32>("/robot/operation/belt_launcher_speed", 10);
+    belt_launcher_speed_pub_ = this->create_publisher<std_msgs::msg::Float32>(
+        "/robot/operation/belt_launcher_speed", 10
+    );
 
     // Services
     update_point_srv_ = this->create_service<gn10_navigation::srv::UpdatePoint>(
