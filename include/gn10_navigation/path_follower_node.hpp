@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <vector>
@@ -17,6 +18,76 @@
 #include "visualization_msgs/msg/marker.hpp"
 
 namespace gn10_navigation {
+
+class AnglePidController
+{
+public:
+    AnglePidController(
+        double kp = 2.2,
+        double ki = 0.05,
+        double kd = 0.35,
+        double i_limit = 0.5
+    )
+        : kp_(kp), ki_(ki), kd_(kd), i_limit_(i_limit)
+    {
+    }
+
+    void setGains(double kp, double ki, double kd, double i_limit)
+    {
+        kp_      = kp;
+        ki_      = ki;
+        kd_      = kd;
+        i_limit_ = i_limit;
+    }
+
+    void reset()
+    {
+        integral_              = 0.0;
+        prev_error_            = 0.0;
+        has_prev_              = false;
+        d_filtered_derivative_ = 0.0;
+    }
+
+    double update(double error, double dt)
+    {
+        if (dt <= 1e-4) {
+            return 0.0;
+        }
+
+        const double p_term = kp_ * error;
+
+        integral_ += error * dt;
+        if (i_limit_ > 0.0) {
+            integral_ = std::clamp(integral_, -i_limit_, i_limit_);
+        }
+        const double i_term = ki_ * integral_;
+
+        double d_term = 0.0;
+        if (has_prev_) {
+            double diff = error - prev_error_;
+            while (diff > M_PI) diff -= 2.0 * M_PI;
+            while (diff < -M_PI) diff += 2.0 * M_PI;
+            const double raw_derivative = diff / dt;
+            // 1次ローパスフィルタで微分ノイズを低減し振動を抑制
+            d_filtered_derivative_ = 0.6 * d_filtered_derivative_ + 0.4 * raw_derivative;
+            d_term = kd_ * d_filtered_derivative_;
+        }
+        prev_error_ = error;
+        has_prev_   = true;
+
+        return p_term + i_term + d_term;
+    }
+
+private:
+    double kp_{2.2};
+    double ki_{0.05};
+    double kd_{0.35};
+    double i_limit_{0.5};
+    double integral_{0.0};
+    double prev_error_{0.0};
+    double d_filtered_derivative_{0.0};
+    bool has_prev_{false};
+};
 
 class PathFollowerNode : public rclcpp::Node
 {
@@ -96,6 +167,14 @@ private:
     double max_initial_path_error_;
     double max_pose_age_;
     double heading_gain_;
+    double heading_kp_{2.2};
+    double heading_ki_{0.05};
+    double heading_kd_{0.35};
+    double heading_integral_max_{0.5};
+    double min_turn_speed_{0.3};
+
+    AnglePidController heading_pid_;
+    AnglePidController tracking_pid_;
 
     std::string map_frame_;
     std::string base_frame_;
