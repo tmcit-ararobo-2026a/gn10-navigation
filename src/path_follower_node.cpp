@@ -327,11 +327,15 @@ void PathFollowerNode::onNavigationCommand(const std_msgs::msg::UInt8::ConstShar
             return;
         }
         if (current_target_id_ == TargetId::MovingBucket) {
-            status_ = NavigationStatus::Tracking;
-            RCLCPP_INFO(this->get_logger(), "Transition to TRACKING for MovingBucket.");
+            if (status_ != NavigationStatus::Tracking) {
+                status_ = NavigationStatus::Tracking;
+                RCLCPP_INFO(this->get_logger(), "Transition to TRACKING for MovingBucket.");
+            }
         } else {
-            status_ = NavigationStatus::Moving;
-            RCLCPP_INFO(this->get_logger(), "Transition to MOVING.");
+            if (status_ != NavigationStatus::Moving) {
+                status_ = NavigationStatus::Moving;
+                RCLCPP_INFO(this->get_logger(), "Transition to MOVING.");
+            }
         }
     } else if (last_cmd_ == NavigationCommand::Stanby || last_cmd_ == NavigationCommand::Sleep) {
         goal_latched_ = false;
