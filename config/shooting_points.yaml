@@ -36,8 +36,8 @@ shooting_points:
     memo: Desk 1 shooting spot
   - target_id: 5
     name: Desk2
-    x: 3.395
-    y: 2.7999999999999998
+    x: 3.3593000000000002
+    y: -0.83589999999999998
     yaw: 1.57079632679
     target_velocity: 0
     memo: Desk 2 shooting spot
