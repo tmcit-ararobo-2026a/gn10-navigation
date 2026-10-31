@@ -109,7 +109,7 @@ ros2 launch gn10_navigation navigation.launch.py use_rviz:=true
 - `config/costmap_params.yaml`: 解像度、マップ限界、インフレーション半径 (0.45m)・マージン (0.30m)、基準コスト設定
 - `config/path_planner_params.yaml`: map/baseフレーム、A*ペナルティ倍率、B-splineのサンプル密度・平滑化強度、8頂点のロボット外形
 - `config/path_follower_params.yaml`: 制御周期 (50Hz)、最高速度 (1.5m/s)、最大加速度 (1.0m/s^2)、注視距離 (0.4m)、停止許容誤差 (0.03m)
-- `config/shooting_points.yaml`: 各TargetId (0〜7) の投擲・目標座標、姿勢、メモ
+- `config/shooting_points.yaml`: 各TargetId (0〜7) の投擲・目標座標、姿勢、メモ（デフォルトは独立リポジトリ `data/shooting-points/shooting_points.yaml` を参照・保存します）
 
 ---
 

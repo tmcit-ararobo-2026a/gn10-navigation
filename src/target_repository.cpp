@@ -28,18 +28,56 @@ std::string TargetRepository::resolveFilePath(const std::string& path) const
 {
     namespace fs = std::filesystem;
 
-    // share / install ディレクトリが指定された場合は、ソースリポジトリ側へのマッピングを試みる
+    // 1. 環境変数が設定されている場合はそれを最優先
+    const char* env_path = std::getenv("GN10_SHOOTING_POINTS_PATH");
+    if (env_path != nullptr && fs::exists(env_path)) {
+        return fs::absolute(env_path).string();
+    }
+
+    // 2. data/shooting-points リポジトリ内の候補を列挙
+    std::string home_dir = "";
+    const char* env_home = std::getenv("HOME");
+    if (env_home != nullptr) {
+        home_dir = env_home;
+    }
+
+    std::vector<fs::path> candidate_data_paths;
+    if (!home_dir.empty()) {
+        candidate_data_paths.push_back(fs::path(home_dir) / "ros2_ws/data/shooting-points/shooting_points.yaml");
+        candidate_data_paths.push_back(fs::path(home_dir) / "ros2_ws/data/shooting-points/shooting_point.yaml");
+        candidate_data_paths.push_back(fs::path(home_dir) / "ros2_ws/data/shooting-point-config/shooting_points.yaml");
+        candidate_data_paths.push_back(fs::path(home_dir) / "ros2_ws/data/shooting-point-config/shooting_point.yaml");
+    }
+    candidate_data_paths.push_back(fs::path("data/shooting-points/shooting_points.yaml"));
+    candidate_data_paths.push_back(fs::path("data/shooting-points/shooting_point.yaml"));
+    candidate_data_paths.push_back(fs::path("../data/shooting-points/shooting_points.yaml"));
+
+    // 3. 指定された path が明示的かつ直接存在し、かつ install/share や旧 src/config ではない場合はそれを尊重
     bool is_share_or_install_path =
         (path.find("install/") != std::string::npos ||
          path.find("share/gn10_navigation") != std::string::npos);
+    bool is_old_src_config = (path.find("src/gn10-navigation/config") != std::string::npos);
 
-    if (!is_share_or_install_path && fs::exists(path)) {
+    if (!is_share_or_install_path && !is_old_src_config && fs::exists(path)) {
         return fs::absolute(path).string();
     }
 
-    // パッケージソースディレクトリ（コンパイル時マクロ GN10_NAVIGATION_SOURCE_DIR）からの解決
+    // 4. data/shooting-points の候補が存在すれば最優先で使用
+    for (const auto& cand : candidate_data_paths) {
+        if (fs::exists(cand)) {
+            return fs::absolute(cand).string();
+        }
+    }
+
+    // 5. パッケージソースディレクトリからの解決（従来のフォールバック）
     std::string source_dir = GN10_NAVIGATION_SOURCE_DIR;
     if (!source_dir.empty() && fs::exists(source_dir)) {
+        // ソースディレクトリ基準で data/shooting-points を探索
+        fs::path sibling_data = fs::path(source_dir).parent_path().parent_path() / "data" / "shooting-points" / "shooting_points.yaml";
+        if (fs::exists(sibling_data)) {
+            return fs::absolute(sibling_data).string();
+        }
+
         fs::path p_in_source = fs::path(source_dir) / path;
         if (fs::exists(p_in_source)) {
             return fs::absolute(p_in_source).string();
@@ -53,21 +91,9 @@ std::string TargetRepository::resolveFilePath(const std::string& path) const
         }
     }
 
-    // ワークスペース相対パス "src/gn10-navigation/..." の探索
-    fs::path ws_src_path = fs::path("src/gn10-navigation") / path;
-    if (fs::exists(ws_src_path)) {
-        return fs::absolute(ws_src_path).string();
-    }
-
-    fs::path ws_src_config = fs::path("src/gn10-navigation/config") / fs::path(path).filename();
-    if (fs::exists(ws_src_config)) {
-        return fs::absolute(ws_src_config).string();
-    }
-
-    // 保存先として再ビルドで消えないソースリポジトリ内をデフォルトターゲットにする
-    if (!source_dir.empty() && fs::exists(source_dir)) {
-        fs::path target = fs::path(source_dir) / path;
-        return fs::absolute(target).string();
+    // 6. 保存先として data/shooting-points をデフォルトターゲットにする
+    if (!candidate_data_paths.empty()) {
+        return fs::absolute(candidate_data_paths.front()).string();
     }
 
     return path;
