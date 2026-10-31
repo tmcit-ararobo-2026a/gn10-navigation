@@ -199,21 +199,21 @@ void PathFollowerNode::declareAndGetParameters()
     this->declare_parameter("curvature_window", 0.10);
     this->declare_parameter("max_angular_velocity", 2.0);
     this->declare_parameter("max_angular_acceleration", 2.0);
-    this->declare_parameter("min_lookahead", 0.15);
-    this->declare_parameter("max_lookahead", 0.40);
-    this->declare_parameter("lookahead_gain", 0.10);
+    this->declare_parameter("min_lookahead", 0.30);
+    this->declare_parameter("max_lookahead", 0.65);
+    this->declare_parameter("lookahead_gain", 0.25);
     this->declare_parameter("goal_tolerance", 0.06);
-    this->declare_parameter("goal_approach_speed", 0.30);
-    this->declare_parameter("goal_position_gain", 4.0);
+    this->declare_parameter("goal_approach_speed", 0.18);
+    this->declare_parameter("goal_position_gain", 2.0);
     this->declare_parameter("goal_angle_adjust_distance", 0.50);
-    this->declare_parameter("goal_yaw_tolerance", 0.05);
+    this->declare_parameter("goal_yaw_tolerance", 0.035);
     this->declare_parameter("max_path_error", 0.30);
     this->declare_parameter("max_initial_path_error", 0.45);
     this->declare_parameter("max_pose_age", 0.5);
-    this->declare_parameter("heading_gain", 2.2);
-    this->declare_parameter("heading_kp", 2.2);
-    this->declare_parameter("heading_ki", 0.05);
-    this->declare_parameter("heading_kd", 0.35);
+    this->declare_parameter("heading_gain", 3.0);
+    this->declare_parameter("heading_kp", 1.2);
+    this->declare_parameter("heading_ki", 0.01);
+    this->declare_parameter("heading_kd", 0.15);
     this->declare_parameter("heading_integral_max", 0.5);
     this->declare_parameter("turn_yaw_rate_ratio", 0.75);
     this->declare_parameter("min_turn_speed", 0.3);
@@ -600,6 +600,7 @@ void PathFollowerNode::stop()
     command_ax_world_ = 0.0;
     command_ay_world_ = 0.0;
     command_yaw_rate_ = 0.0;
+    position_reached_latch_ = false;
     heading_pid_.reset();
     tracking_pid_.reset();
     publishCmdVel(0.0, 0.0, 0.0);
@@ -779,15 +780,24 @@ void PathFollowerNode::controlLoop()
             const double yaw_error = normalizeAngle(goal_yaw - robot_yaw);
             const double yaw_diff  = std::abs(yaw_error);
 
-            // ゴール到達判定（位置およびゴール直前調整後の角度許容判定）
-            const bool position_reached = (progress_ >= path_.back().distance - goal_tolerance_ &&
-                                           goal_distance <= goal_tolerance_);
+            // ゴール位置到達判定（ヒステリシス付きラッチ）
+            // 一度 goal_tolerance_ 以内に入ればラッチし、旋回の反動等で境界付近で暴れるのを防止
+            if (progress_ >= path_.back().distance - goal_tolerance_ && goal_distance <= goal_tolerance_) {
+                position_reached_latch_ = true;
+            } else if (goal_distance > goal_tolerance_ * 1.5) {
+                // 明らかにゴールから離れた場合のみラッチ解除
+                position_reached_latch_ = false;
+            }
+            const bool position_reached = position_reached_latch_ ||
+                (progress_ >= path_.back().distance - goal_tolerance_ && goal_distance <= goal_tolerance_);
+
             if (position_reached && yaw_diff <= goal_yaw_tolerance_) {
                 goal_latched_ = true;
                 status_ = NavigationStatus::Goal;
                 path_.clear();
                 has_path_ = false;
                 progress_ = 0.0;
+                position_reached_latch_ = false;
                 stop();
                 RCLCPP_INFO(this->get_logger(), "Path and orientation complete.");
                 break;
@@ -800,28 +810,44 @@ void PathFollowerNode::controlLoop()
                 min_lookahead_, max_lookahead_);
             const auto target = sample(progress_ + lookahead);
             const double target_distance = std::hypot(target.x - robot_x, target.y - robot_y);
+
             double desired_speed = 0.0;
             if (!position_reached) {
                 desired_speed = sample(
                     progress_ + std::min(0.5 * lookahead, 0.5 * remaining)).speed;
-                desired_speed = std::min(
-                    desired_speed, std::sqrt(std::max(0.0, 2.0 * max_deceleration_ * remaining)));
+
+                // Jerk(加加速度)制限および遅延時間を考慮した停止可能減速プロファイル
+                // 停止所要距離: d_stop = v^2 / (2 * a_dec) + v * (a_dec / (2 * j_max) + tau_delay)
+                // この二次方程式を解いて、残距離 remaining でピタッと止まれる最大許容速度を計算
+                const double tau_delay = std::clamp(pose_age + control_comm_delay_, 0.0, max_delay_compensation_);
+                const double b_term    = (max_deceleration_ / (2.0 * max_jerk_)) + tau_delay;
+                const double safe_rem  = std::max(0.0, remaining);
+                const double jerk_aware_speed_limit =
+                    max_deceleration_ * (std::sqrt(b_term * b_term + (2.0 * safe_rem) / max_deceleration_) - b_term);
+
+                desired_speed = std::min(desired_speed, std::max(0.0, jerk_aware_speed_limit));
+
                 if (remaining <= goal_tolerance_ && goal_distance > goal_tolerance_) {
                     desired_speed = std::min(
                         {goal_approach_speed_, max_speed_, goal_position_gain_ * goal_distance});
                 }
             }
-            const double desired_vx = target_distance > kEpsilon ?
+
+            const double desired_vx = (target_distance > kEpsilon && !position_reached) ?
                 desired_speed * (target.x - robot_x) / target_distance : 0.0;
-            const double desired_vy = target_distance > kEpsilon ?
+            const double desired_vy = (target_distance > kEpsilon && !position_reached) ?
                 desired_speed * (target.y - robot_y) / target_distance : 0.0;
+
             double desired_ax = (desired_vx - command_vx_world_) / delta_time;
             double desired_ay = (desired_vy - command_vy_world_) / delta_time;
+
+            // 加速度制限: 減速中または位置到達停止時は制動能力を活かすため max_deceleration_ を適用
             double acceleration_limit = max_acceleration_;
-            if (desired_speed < command_speed) {
+            if (desired_speed < command_speed || position_reached) {
                 acceleration_limit = max_deceleration_;
             }
             limitVector(desired_ax, desired_ay, acceleration_limit);
+
             double delta_ax = desired_ax - command_ax_world_;
             double delta_ay = desired_ay - command_ay_world_;
             limitVector(delta_ax, delta_ay, max_jerk_ * delta_time);
@@ -829,7 +855,15 @@ void PathFollowerNode::controlLoop()
             command_ay_world_ += delta_ay;
             command_vx_world_ += command_ax_world_ * delta_time;
             command_vy_world_ += command_ay_world_ * delta_time;
-            limitVector(command_vx_world_, command_vy_world_, max_speed_);
+
+            if (position_reached && command_speed < 0.02) {
+                command_vx_world_ = 0.0;
+                command_vy_world_ = 0.0;
+                command_ax_world_ = 0.0;
+                command_ay_world_ = 0.0;
+            } else {
+                limitVector(command_vx_world_, command_vy_world_, max_speed_);
+            }
 
             // パス上で計画された目標姿勢(Orientation)に対するヨー角PID制御
             const double desired_yaw = position_reached ? goal_yaw : target.yaw;
