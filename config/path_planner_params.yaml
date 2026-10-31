@@ -4,12 +4,13 @@ path_planner_node:
       map_frame: "map"
       base_frame: "base_link"
     a_star:
-      planning_cost: 3.0
+      # コストマップ値に対するA*ペナルティ係数。過大(3.0等)だと障害物手前で不合理に大回りするため適正化
+      planning_cost: 0.08
     bspline:
       # B-spline の隣接制御点間を分割して生成するサンプル数
       samples_per_segment: 10
-      # 内部制御点を隣接点の中点へ寄せる割合。0.0 は従来経路、1.0 は最大平滑化
-      smoothing_strength: 1.0
+      # 内部制御点を隣接点の中点へ寄せる割合。
+      smoothing_strength: 0.2
     footprint:
       # config/robot_shape_dimensioned.svg の青い8頂点外形。単位 m、反時計回り。
       # 原点: 元形状の幾何中心 (SVG: 819.90, 850.332381 mm)。+x 前方、+y 左。
