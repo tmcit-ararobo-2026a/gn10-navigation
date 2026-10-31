@@ -19,6 +19,6 @@ costmap_generator_node:
       # 壁の減衰コストだけを最小化。0は壁の障害物シード自体を消すので使用しない。
       # JSONにcostがある場合はそちらが優先（nhk2026_map.jsonも1に統一）。
       wall: 1
-      partition: 200
+      partition: 1
       obstacle: 254
       default_cost: 254

@@ -3,7 +3,7 @@ path_follower_node:
     # 制御周期 [Hz]
     control_rate: 60.0
     # 最大並進速度 [m/s]
-    max_speed: 3.0
+    max_speed: 2.0
     # 最大並進加速度 [m/s^2]
     max_acceleration: 10.0
     # 最大並進減速度 [m/s^2]
