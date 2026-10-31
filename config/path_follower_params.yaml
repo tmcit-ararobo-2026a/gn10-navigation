@@ -3,13 +3,13 @@ path_follower_node:
     # 制御周期 [Hz]
     control_rate: 60.0
     # 最大並進速度 [m/s]
-    max_speed: 2.0
+    max_speed: 3.0
     # 最大並進加速度 [m/s^2]
-    max_acceleration: 2.5
+    max_acceleration: 10.0
     # 最大並進減速度 [m/s^2]
-    max_deceleration: 2.5
+    max_deceleration: 10.0
     # 最大躍度（加速度の変化率）[m/s^3]
-    max_jerk: 30.0
+    max_jerk: 60.0
     # 最大横加速度 [m/s^2]
     max_lateral_acceleration: 1.6
     # 曲率を計算する距離の窓幅 [m]
@@ -29,11 +29,11 @@ path_follower_node:
     # ゴール付近で使用する接近速度の上限 [m/s]
     goal_approach_speed: 0.60
     # ゴール位置誤差に対する補正速度ゲイン [1/s]
-    goal_position_gain: 6.0
+    goal_position_gain: 1.5
     # ゴール角度調整を開始する残距離 [m]
     goal_angle_adjust_distance: 0.50
     # ゴール到達とみなす角度誤差の許容値 [rad]
-    goal_yaw_tolerance: 0.05
+    goal_yaw_tolerance: 0.01
     # 経路追従中に許容する経路からの最大距離 [m]
     max_path_error: 0.30
     # 経路追従開始時だけ許容する経路からの最大距離 [m]
@@ -41,11 +41,11 @@ path_follower_node:
     # 自己位置の最大許容経過時間 [s]
     max_pose_age: 0.5
     # 目標方位誤差に対する角速度の比例ゲイン [1/s]
-    heading_gain: 2.2
+    heading_gain: 3.0
     # 方位PID制御パラメータ
-    heading_kp: 2.2
-    heading_ki: 0.05
-    heading_kd: 0.35
+    heading_kp: 1.2
+    heading_ki: 0.01
+    heading_kd: 0.0
     heading_integral_max: 0.5
     # 旋回時角速度利用率 (PIDフィードバック余裕を残すため最大角速度に対する割合) [0.1~1.0]
     turn_yaw_rate_ratio: 0.75
