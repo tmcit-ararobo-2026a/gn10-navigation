@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 
 #ifndef GN10_NAVIGATION_SOURCE_DIR
 #define GN10_NAVIGATION_SOURCE_DIR ""
@@ -220,6 +221,25 @@ bool TargetRepository::load()
 bool TargetRepository::save() const
 {
     return saveToFile(resolved_file_path_);
+}
+
+std::string TargetRepository::toYamlString() const
+{
+    YAML::Node root;
+    for (const auto& [id, pt] : shooting_points_) {
+        YAML::Node node;
+        node["target_id"]       = static_cast<int>(id);
+        node["name"]            = pt.name;
+        node["x"]               = pt.x;
+        node["y"]               = pt.y;
+        node["yaw"]             = pt.yaw;
+        node["target_velocity"] = pt.target_velocity;
+        node["memo"]            = pt.memo;
+        root["shooting_points"].push_back(node);
+    }
+    std::stringstream ss;
+    ss << root;
+    return ss.str();
 }
 
 bool TargetRepository::has(uint8_t id) const

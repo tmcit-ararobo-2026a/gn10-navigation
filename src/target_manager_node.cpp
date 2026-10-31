@@ -64,6 +64,13 @@ TargetManagerNode::TargetManagerNode(const rclcpp::NodeOptions& options)
         )
     );
 
+    get_points_srv_ = this->create_service<gn10_navigation::srv::GetPoints>(
+        "/target_manager/get_points",
+        std::bind(
+            &TargetManagerNode::handleGetPoints, this, std::placeholders::_1, std::placeholders::_2
+        )
+    );
+
     RCLCPP_INFO(this->get_logger(), "TargetManagerNode initialized.");
 }
 
@@ -243,6 +250,23 @@ void TargetManagerNode::handleSavePoints(
         response->message = "Failed to save shooting points to " + path;
         RCLCPP_ERROR(this->get_logger(), "%s", response->message.c_str());
     }
+}
+
+void TargetManagerNode::handleGetPoints(
+    const std::shared_ptr<gn10_navigation::srv::GetPoints::Request> /*request*/,
+    std::shared_ptr<gn10_navigation::srv::GetPoints::Response> response
+)
+{
+    response->file_path = repository_.getResolvedFilePath();
+    response->yaml_content = repository_.toYamlString();
+    response->success = !response->yaml_content.empty();
+    response->message = response->success ? "Successfully retrieved shooting points." : "Shooting points empty.";
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Sent %zu shooting points from '%s' to client",
+        repository_.size(),
+        response->file_path.c_str()
+    );
 }
 
 }  // namespace gn10_navigation

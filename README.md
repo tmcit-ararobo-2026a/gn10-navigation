@@ -71,6 +71,7 @@ NHKロボコン2026等の自動走行要求を満たすナビゲーションパ�
 | `/costmap` | Topic | `nav_msgs/msg/OccupancyGrid` | CostmapGen | PathPlanner | 障害物コスト・波及勾配付きコストマップ |
 | `/goal_pose` | Topic | `geometry_msgs/msg/PoseStamped` | TargetMgr | PathPlanner | 投擲ポイント（目標姿勢） |
 | `/planned_path` | Topic | `nav_msgs/msg/Path` | PathPlanner | PathFollower | A*生成経路 |
+| `/target_manager/get_points` | Service | `gn10_navigation/srv/GetPoints` | Tuner/Editor | TargetManager | リモートで保持・読み込まれている投擲ポイントデータ/YAMLの取得 |
 | `/target_manager/update_point` | Service | `gn10_navigation/srv/UpdatePoint` | VSCode Ext | TargetManager | 投擲ポイント（座標・角度・目標速度・メモ）のメモリ更新 |
 | `/target_manager/save_points` | Service | `std_srvs/srv/Trigger` | VSCode Ext | TargetManager | メモリ上の座標データをYAMLへ書き出し |
 | `/debug/lookahead_point` | Topic | `visualization_msgs/msg/Marker` | PathFollower | RViz2 (Debug) | Pure Pursuit 注視点可視化 |
