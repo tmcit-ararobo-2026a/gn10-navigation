@@ -31,6 +31,7 @@ find_package(rosidl_default_generators REQUIRED)
 # Generate custom interfaces
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/UpdatePoint.srv"
+  "srv/GetPoints.srv"
   DEPENDENCIES builtin_interfaces
 )
 
