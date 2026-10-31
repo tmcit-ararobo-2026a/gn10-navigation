@@ -5,11 +5,11 @@ path_follower_node:
     # 最大並進速度 [m/s]
     max_speed: 2.0
     # 最大並進加速度 [m/s^2]
-    max_acceleration: 10.0
+    max_acceleration: 7.0
     # 最大並進減速度 [m/s^2]
-    max_deceleration: 10.0
+    max_deceleration: 7.0
     # 最大躍度（加速度の変化率）[m/s^3]
-    max_jerk: 60.0
+    max_jerk: 40.0
     # 最大横加速度 [m/s^2]
     max_lateral_acceleration: 1.6
     # 曲率を計算する距離の窓幅 [m]
@@ -29,7 +29,7 @@ path_follower_node:
     # ゴール付近で使用する接近速度の上限 [m/s]
     goal_approach_speed: 0.60
     # ゴール位置誤差に対する補正速度ゲイン [1/s]
-    goal_position_gain: 1.5
+    goal_position_gain: 1.0
     # ゴール角度調整を開始する残距離 [m]
     goal_angle_adjust_distance: 0.50
     # ゴール到達とみなす角度誤差の許容値 [rad]
