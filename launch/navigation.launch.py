@@ -27,9 +27,18 @@ def start_navigation(context):
     planner_parameters.append(clock)
     rviz_config = LaunchConfiguration('rviz_config').perform(context)
 
+    share = Path(get_package_share_directory('gn10_navigation'))
+    zone = LaunchConfiguration('zone').perform(context).strip().lower()
+    sp_path = LaunchConfiguration('shooting_points_path').perform(context).strip()
+
+    if not sp_path:
+        if zone == 'red':
+            sp_path = str(share / 'config/shooting_points_red.yaml')
+        else:
+            sp_path = str(share / 'config/shooting_points_blue.yaml')
+
     target_manager_params = [
-        {'yaml_file_path': ParameterValue(
-            LaunchConfiguration('shooting_points_path'), value_type=str)},
+        {'yaml_file_path': ParameterValue(sp_path, value_type=str)},
         clock
     ]
 
@@ -61,9 +70,11 @@ def generate_launch_description():
         DeclareLaunchArgument('use_rviz', default_value='false', description='RViz2 を起動する'),
         DeclareLaunchArgument('use_sim_time', default_value='false',
                               description='実機は false、rosbag の /clock 利用時は true'),
+        DeclareLaunchArgument('zone', default_value='blue',
+                              description='フィールドゾーン ("blue" または "red")'),
         DeclareLaunchArgument('shooting_points_path',
-                              default_value=str(share / 'config/shooting_points.yaml'),
-                              description='投擲ポイント定義 YAML ファイルパス'),
+                              default_value='',
+                              description='投擲ポイント定義 YAML ファイルパス（省略時は zone に応じたファイルを自動選択）'),
         DeclareLaunchArgument('planner_params',
                               default_value=str(share / 'config/path_planner_params.yaml')),
         DeclareLaunchArgument('follower_params',
