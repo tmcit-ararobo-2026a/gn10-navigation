@@ -87,9 +87,31 @@ private:
     std::vector<std::pair<int, int>> aStarSearch(int start_x, int start_y, int goal_x, int goal_y);
 
     /**
-     * @brief A* の格子経路を 3 次 clamped B-spline で平滑化する。
+     * @brief 2つのグリッドセル間が直線で見通せる（障害物に干渉しない）か確認する
      *
-     * @param grid_path A* が生成した格子経路
+     * @param x0 始点X (グリッド)
+     * @param y0 始点Y (グリッド)
+     * @param x1 終点X (グリッド)
+     * @param y1 終点Y (グリッド)
+     * @return true 障害物なし（見通し可能）
+     * @return false 障害物あり
+     */
+    bool checkLineOfSight(int x0, int y0, int x1, int y1) const;
+
+    /**
+     * @brief A* の格子パスから不要な中間ノードを削除し、直線ショートカットパスを作成する (String Pulling)
+     *
+     * @param grid_path A* の格子ノード列
+     * @return std::vector<std::pair<int, int>> ショートカット後のキーポイント列
+     */
+    std::vector<std::pair<int, int>> shortcutPath(
+        const std::vector<std::pair<int, int>>& grid_path
+    ) const;
+
+    /**
+     * @brief A* の格子経路またはショートカット経路を 3 次 clamped B-spline で平滑化する。
+     *
+     * @param grid_path 格子経路
      * @return 平滑化後のワールド座標列。安全性を満たさない場合は空配列
      */
     std::vector<std::pair<double, double>> smoothPath(
