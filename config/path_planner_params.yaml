@@ -5,6 +5,8 @@ path_planner_node:
       base_frame: "base_link"
     a_star:
       planning_cost: 1.5
+      # 障害物・インフレーション内にスタート/ゴールがある場合の最近傍通行可能セル探索半径 [m]
+      snap_distance: 0.4
     bspline:
       # B-spline の隣接制御点間を分割して生成するサンプル数
       samples_per_segment: 10

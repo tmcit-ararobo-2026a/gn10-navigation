@@ -30,8 +30,6 @@ path_follower_node:
     goal_approach_speed: 0.60
     # ゴール位置誤差に対する補正速度ゲイン [1/s]
     goal_position_gain: 10.0
-    # ゴール角度調整を開始する残距離 [m]
-    goal_angle_adjust_distance: 0.50
     # ゴール到達とみなす角度誤差の許容値 [rad]
     goal_yaw_tolerance: 0.01
     # 経路追従中に許容する経路からの最大距離 [m]
@@ -40,13 +38,15 @@ path_follower_node:
     max_initial_path_error: 0.45
     # 自己位置の最大許容経過時間 [s]
     max_pose_age: 0.5
-    # 目標方位誤差に対する角速度の比例ゲイン [1/s]
-    heading_gain: 3.0
+    # 経路補間ステップ間隔 [m]
+    path_interpolation_step: 0.05
     # 方位PID制御パラメータ
     heading_kp: 1.2
     heading_ki: 0.1
     heading_kd: 0.0
     heading_integral_max: 0.5
+    # 方位PID微分の1次ローパスフィルタ係数 (0.0~1.0)
+    heading_d_filter_alpha: 0.4
     # 旋回時角速度利用率 (PIDフィードバック余裕を残すため最大角速度に対する割合) [0.1~1.0]
     turn_yaw_rate_ratio: 0.75
     # 旋回時の最低並進速度下限値 [m/s]

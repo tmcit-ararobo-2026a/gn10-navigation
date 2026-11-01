@@ -26,9 +26,10 @@ public:
         double kp = 2.2,
         double ki = 0.05,
         double kd = 0.35,
-        double i_limit = 0.5
+        double i_limit = 0.5,
+        double d_filter_alpha = 0.4
     )
-        : kp_(kp), ki_(ki), kd_(kd), i_limit_(i_limit)
+        : kp_(kp), ki_(ki), kd_(kd), i_limit_(i_limit), d_filter_alpha_(d_filter_alpha)
     {
     }
 
@@ -38,6 +39,11 @@ public:
         ki_      = ki;
         kd_      = kd;
         i_limit_ = i_limit;
+    }
+
+    void setFilterAlpha(double alpha)
+    {
+        d_filter_alpha_ = std::clamp(alpha, 0.0, 1.0);
     }
 
     void reset()
@@ -69,7 +75,7 @@ public:
             while (diff < -M_PI) diff += 2.0 * M_PI;
             const double raw_derivative = diff / dt;
             // 1次ローパスフィルタで微分ノイズを低減し振動を抑制
-            d_filtered_derivative_ = 0.6 * d_filtered_derivative_ + 0.4 * raw_derivative;
+            d_filtered_derivative_ = (1.0 - d_filter_alpha_) * d_filtered_derivative_ + d_filter_alpha_ * raw_derivative;
             d_term = kd_ * d_filtered_derivative_;
         }
         prev_error_ = error;
@@ -83,6 +89,7 @@ private:
     double ki_{0.05};
     double kd_{0.35};
     double i_limit_{0.5};
+    double d_filter_alpha_{0.4};
     double integral_{0.0};
     double prev_error_{0.0};
     double d_filtered_derivative_{0.0};
@@ -161,16 +168,16 @@ private:
     double goal_tolerance_;
     double goal_approach_speed_;
     double goal_position_gain_;
-    double goal_angle_adjust_distance_;
     double goal_yaw_tolerance_;
     double max_path_error_;
     double max_initial_path_error_;
     double max_pose_age_;
-    double heading_gain_;
+    double path_interpolation_step_{0.05};
     double heading_kp_{2.2};
     double heading_ki_{0.05};
     double heading_kd_{0.35};
     double heading_integral_max_{0.5};
+    double heading_d_filter_alpha_{0.4};
     double turn_yaw_rate_ratio_{0.75};
     double min_turn_speed_{0.3};
     double control_comm_delay_{0.025};

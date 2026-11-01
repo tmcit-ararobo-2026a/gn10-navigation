@@ -71,6 +71,10 @@ TargetManagerNode::TargetManagerNode(const rclcpp::NodeOptions& options)
         )
     );
 
+    param_callback_handle_ = this->add_on_set_parameters_callback(
+        std::bind(&TargetManagerNode::onSetParameters, this, std::placeholders::_1)
+    );
+
     RCLCPP_INFO(this->get_logger(), "TargetManagerNode initialized.");
 }
 
@@ -78,9 +82,49 @@ void TargetManagerNode::loadParameters()
 {
     this->declare_parameter<std::string>("yaml_file_path", "config/shooting_points.yaml");
     this->declare_parameter<std::string>("map_frame", "map");
+    this->declare_parameter<double>("goal_publish_throttle_sec", 0.2);
 
-    yaml_file_path_ = this->get_parameter("yaml_file_path").as_string();
-    map_frame_      = this->get_parameter("map_frame").as_string();
+    yaml_file_path_            = this->get_parameter("yaml_file_path").as_string();
+    map_frame_                 = this->get_parameter("map_frame").as_string();
+    goal_publish_throttle_sec_ = this->get_parameter("goal_publish_throttle_sec").as_double();
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Parameters loaded: yaml_file_path='%s', map_frame='%s', goal_publish_throttle_sec=%.2f s",
+        yaml_file_path_.c_str(), map_frame_.c_str(), goal_publish_throttle_sec_
+    );
+}
+
+rcl_interfaces::msg::SetParametersResult TargetManagerNode::onSetParameters(
+    const std::vector<rclcpp::Parameter>& parameters
+)
+{
+    rcl_interfaces::msg::SetParametersResult result;
+    result.successful = true;
+
+    for (const auto& param : parameters) {
+        const auto& name = param.get_name();
+        if (name == "goal_publish_throttle_sec") {
+            double val = param.as_double();
+            if (std::isfinite(val) && val >= 0.0) {
+                goal_publish_throttle_sec_ = val;
+                RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            } else {
+                result.successful = false;
+                result.reason = "goal_publish_throttle_sec must be non-negative";
+                return result;
+            }
+        } else if (name == "map_frame") {
+            map_frame_ = param.as_string();
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+        } else if (name == "yaml_file_path") {
+            yaml_file_path_ = param.as_string();
+            repository_.setFilePath(yaml_file_path_);
+            repository_.load();
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s and reloaded repository", name.c_str(), param.value_to_string().c_str());
+        }
+    }
+    return result;
 }
 
 void TargetManagerNode::onTargetId(const std_msgs::msg::UInt8::ConstSharedPtr msg)
@@ -125,7 +169,7 @@ void TargetManagerNode::publishGoalPose(uint8_t target_id)
 {
     const auto now_time = this->now();
     if (last_published_target_id_ == target_id &&
-        (now_time - last_published_time_).seconds() < 0.2) {
+        (now_time - last_published_time_).seconds() < goal_publish_throttle_sec_) {
         return;
     }
 

@@ -31,16 +31,27 @@ CostmapGeneratorNode::CostmapGeneratorNode(const rclcpp::NodeOptions& options)
     // 初回生成＆キャッシュ
     cached_costmap_msg_ = generateCostmap();
 
-    // 1Hzで送信するタイマー
-    timer_ = this->create_wall_timer(
-        std::chrono::seconds(1), std::bind(&CostmapGeneratorNode::publishCachedCostmap, this)
-    );
+    // 配信タイマー
+    resetTimer(publish_rate_);
 
     RCLCPP_INFO(this->get_logger(), "CostmapGeneratorNode initialized.");
 }
 
+void CostmapGeneratorNode::resetTimer(double rate)
+{
+    if (rate <= 0.0) {
+        rate = 1.0;
+    }
+    auto period = std::chrono::duration<double>(1.0 / rate);
+    timer_ = this->create_wall_timer(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(period),
+        std::bind(&CostmapGeneratorNode::publishCachedCostmap, this)
+    );
+}
+
 void CostmapGeneratorNode::declareAndGetParameters()
 {
+    this->declare_parameter("publish_rate", 1.0);
     this->declare_parameter("map_source_type", "json");
     this->declare_parameter("map_file_path", "");
 
@@ -59,12 +70,13 @@ void CostmapGeneratorNode::declareAndGetParameters()
     );  // 中心点の不可侵半径 [m] (絶対不可侵: 254)
     this->declare_parameter("inflation.margin", kDefaultInflationMargin);  // コスト波及マージン幅 [m]
 
-    // オブジェクト別コスト定義
-    this->declare_parameter("costs.wall", 120);          // 外壁: 120
-    this->declare_parameter("costs.partition", 200);     // 仕切り板: 200
-    this->declare_parameter("costs.obstacle", 254);      // 絶対不可侵障害物: 254
-    this->declare_parameter("costs.default_cost", 254);  // デフォルト: 254
+    // オブジェクト別コスト定義 (JSONで未指定時のフォールバック)
+    this->declare_parameter("costs.wall", 120);
+    this->declare_parameter("costs.partition", 200);
+    this->declare_parameter("costs.obstacle", 254);
+    this->declare_parameter("costs.default_cost", 254);
 
+    publish_rate_    = this->get_parameter("publish_rate").as_double();
     map_source_type_ = this->get_parameter("map_source_type").as_string();
     map_file_path_   = this->get_parameter("map_file_path").as_string();
 
@@ -91,9 +103,18 @@ void CostmapGeneratorNode::declareAndGetParameters()
     }
     if (!std::isfinite(resolution_) || resolution_ <= 0.0 || !std::isfinite(map_min_x_) ||
         !std::isfinite(map_max_x_) || !std::isfinite(map_min_y_) || !std::isfinite(map_max_y_) ||
-        map_min_x_ >= map_max_x_ || map_min_y_ >= map_max_y_) {
-        throw std::invalid_argument("Invalid map bounds/resolution");
+        map_min_x_ >= map_max_x_ || map_min_y_ >= map_max_y_ || !std::isfinite(publish_rate_) ||
+        publish_rate_ <= 0.0) {
+        throw std::invalid_argument("Invalid map bounds/resolution/publish_rate");
     }
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Parameters loaded: publish_rate=%.2f Hz, resolution=%.3f, bounds=[%.1f, %.1f, %.1f, %.1f], "
+        "robot_clearance=[%.2f, %.2f], robot_radius=%.3f, margin=%.3f",
+        publish_rate_, resolution_, map_min_x_, map_max_x_, map_min_y_, map_max_y_,
+        robot_z_min_, robot_z_max_, robot_radius_, inflation_margin_
+    );
 }
 
 rcl_interfaces::msg::SetParametersResult CostmapGeneratorNode::onSetParameters(
@@ -107,24 +128,69 @@ rcl_interfaces::msg::SetParametersResult CostmapGeneratorNode::onSetParameters(
     for (const auto& param : parameters) {
         const auto& name = param.get_name();
 
-        if (name == "inflation.robot_radius") {
+        if (name == "publish_rate") {
+            double rate = param.as_double();
+            if (rate > 0.0) {
+                publish_rate_ = rate;
+                resetTimer(publish_rate_);
+                RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            } else {
+                result.successful = false;
+                result.reason = "publish_rate must be positive";
+                return result;
+            }
+        } else if (name == "resolution") {
+            resolution_     = param.as_double();
+            need_regenerate = true;
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+        } else if (name == "map_bounds.min_x") {
+            map_min_x_      = param.as_double();
+            need_regenerate = true;
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+        } else if (name == "map_bounds.max_x") {
+            map_max_x_      = param.as_double();
+            need_regenerate = true;
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+        } else if (name == "map_bounds.min_y") {
+            map_min_y_      = param.as_double();
+            need_regenerate = true;
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+        } else if (name == "map_bounds.max_y") {
+            map_max_y_      = param.as_double();
+            need_regenerate = true;
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+        } else if (name == "robot_clearance.z_min") {
+            robot_z_min_    = param.as_double();
+            need_regenerate = true;
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+        } else if (name == "robot_clearance.z_max") {
+            robot_z_max_    = param.as_double();
+            need_regenerate = true;
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+        } else if (name == "inflation.robot_radius") {
             robot_radius_   = param.as_double();
             need_regenerate = true;
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "inflation.margin") {
             inflation_margin_ = param.as_double();
             need_regenerate   = true;
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "costs.wall") {
             cost_wall_      = static_cast<int>(param.as_int());
             need_regenerate = true;
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "costs.partition") {
             cost_partition_ = static_cast<int>(param.as_int());
             need_regenerate = true;
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "costs.obstacle") {
             cost_obstacle_  = static_cast<int>(param.as_int());
             need_regenerate = true;
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "costs.default_cost") {
             cost_default_   = static_cast<int>(param.as_int());
             need_regenerate = true;
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         }
     }
 

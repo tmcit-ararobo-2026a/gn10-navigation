@@ -16,7 +16,6 @@ namespace gn10_navigation {
 namespace {
 
 constexpr double kEpsilon = 1e-6;
-constexpr double kPathStep = 0.05;
 
 void limitVector(double& x, double& y, double limit)
 {
@@ -190,31 +189,31 @@ PathFollowerNode::PathFollowerNode(const rclcpp::NodeOptions& options)
 
 void PathFollowerNode::declareAndGetParameters()
 {
-    this->declare_parameter("control_rate", 50.0);
-    this->declare_parameter("max_speed", 1.5);
-    this->declare_parameter("max_acceleration", 1.0);
-    this->declare_parameter("max_deceleration", 2.5);
-    this->declare_parameter("max_jerk", 12.0);
-    this->declare_parameter("max_lateral_acceleration", 0.6);
+    this->declare_parameter("control_rate", 60.0);
+    this->declare_parameter("max_speed", 2.0);
+    this->declare_parameter("max_acceleration", 3.0);
+    this->declare_parameter("max_deceleration", 3.0);
+    this->declare_parameter("max_jerk", 40.0);
+    this->declare_parameter("max_lateral_acceleration", 1.6);
     this->declare_parameter("curvature_window", 0.10);
     this->declare_parameter("max_angular_velocity", 2.0);
-    this->declare_parameter("max_angular_acceleration", 2.0);
+    this->declare_parameter("max_angular_acceleration", 4.0);
     this->declare_parameter("min_lookahead", 0.15);
     this->declare_parameter("max_lookahead", 0.40);
-    this->declare_parameter("lookahead_gain", 0.10);
-    this->declare_parameter("goal_tolerance", 0.06);
-    this->declare_parameter("goal_approach_speed", 0.30);
-    this->declare_parameter("goal_position_gain", 4.0);
-    this->declare_parameter("goal_angle_adjust_distance", 0.50);
-    this->declare_parameter("goal_yaw_tolerance", 0.05);
+    this->declare_parameter("lookahead_gain", 0.20);
+    this->declare_parameter("goal_tolerance", 0.01);
+    this->declare_parameter("goal_approach_speed", 0.60);
+    this->declare_parameter("goal_position_gain", 10.0);
+    this->declare_parameter("goal_yaw_tolerance", 0.01);
     this->declare_parameter("max_path_error", 0.30);
     this->declare_parameter("max_initial_path_error", 0.45);
     this->declare_parameter("max_pose_age", 0.5);
-    this->declare_parameter("heading_gain", 2.2);
-    this->declare_parameter("heading_kp", 2.2);
-    this->declare_parameter("heading_ki", 0.05);
-    this->declare_parameter("heading_kd", 0.35);
+    this->declare_parameter("path_interpolation_step", 0.05);
+    this->declare_parameter("heading_kp", 1.2);
+    this->declare_parameter("heading_ki", 0.1);
+    this->declare_parameter("heading_kd", 0.0);
     this->declare_parameter("heading_integral_max", 0.5);
+    this->declare_parameter("heading_d_filter_alpha", 0.4);
     this->declare_parameter("turn_yaw_rate_ratio", 0.75);
     this->declare_parameter("min_turn_speed", 0.3);
     this->declare_parameter("control_comm_delay", 0.025);
@@ -231,37 +230,34 @@ void PathFollowerNode::declareAndGetParameters()
     max_deceleration_         = this->get_parameter("max_deceleration").as_double();
     max_jerk_                 = this->get_parameter("max_jerk").as_double();
     max_lateral_acceleration_ = this->get_parameter("max_lateral_acceleration").as_double();
-    curvature_window_        = this->get_parameter("curvature_window").as_double();
+    curvature_window_         = this->get_parameter("curvature_window").as_double();
     max_angular_velocity_     = this->get_parameter("max_angular_velocity").as_double();
     max_angular_acceleration_ = this->get_parameter("max_angular_acceleration").as_double();
     min_lookahead_            = this->get_parameter("min_lookahead").as_double();
     max_lookahead_            = this->get_parameter("max_lookahead").as_double();
     lookahead_gain_           = this->get_parameter("lookahead_gain").as_double();
-    goal_tolerance_             = this->get_parameter("goal_tolerance").as_double();
-    goal_approach_speed_        = this->get_parameter("goal_approach_speed").as_double();
-    goal_position_gain_         = this->get_parameter("goal_position_gain").as_double();
-    goal_angle_adjust_distance_ = this->get_parameter("goal_angle_adjust_distance").as_double();
-    goal_yaw_tolerance_         = this->get_parameter("goal_yaw_tolerance").as_double();
-    max_path_error_             = this->get_parameter("max_path_error").as_double();
+    goal_tolerance_           = this->get_parameter("goal_tolerance").as_double();
+    goal_approach_speed_      = this->get_parameter("goal_approach_speed").as_double();
+    goal_position_gain_       = this->get_parameter("goal_position_gain").as_double();
+    goal_yaw_tolerance_       = this->get_parameter("goal_yaw_tolerance").as_double();
+    max_path_error_           = this->get_parameter("max_path_error").as_double();
     max_initial_path_error_   = this->get_parameter("max_initial_path_error").as_double();
     max_pose_age_             = this->get_parameter("max_pose_age").as_double();
-    heading_gain_             = this->get_parameter("heading_gain").as_double();
+    path_interpolation_step_  = this->get_parameter("path_interpolation_step").as_double();
     heading_kp_               = this->get_parameter("heading_kp").as_double();
     heading_ki_               = this->get_parameter("heading_ki").as_double();
     heading_kd_               = this->get_parameter("heading_kd").as_double();
     heading_integral_max_     = this->get_parameter("heading_integral_max").as_double();
+    heading_d_filter_alpha_   = this->get_parameter("heading_d_filter_alpha").as_double();
     turn_yaw_rate_ratio_      = this->get_parameter("turn_yaw_rate_ratio").as_double();
     min_turn_speed_           = this->get_parameter("min_turn_speed").as_double();
     control_comm_delay_       = this->get_parameter("control_comm_delay").as_double();
     max_delay_compensation_   = this->get_parameter("max_delay_compensation").as_double();
 
-    // heading_gain が指定された場合のフォールバック
-    if (this->has_parameter("heading_gain") && !this->has_parameter("heading_kp")) {
-        heading_kp_ = heading_gain_;
-    }
-
     heading_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
+    heading_pid_.setFilterAlpha(heading_d_filter_alpha_);
     tracking_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
+    tracking_pid_.setFilterAlpha(heading_d_filter_alpha_);
 
     map_frame_      = this->get_parameter("map_frame").as_string();
     base_frame_     = this->get_parameter("base_frame").as_string();
@@ -277,6 +273,7 @@ void PathFollowerNode::declareAndGetParameters()
         !std::isfinite(max_lookahead_) || max_lookahead_ < min_lookahead_ ||
         !std::isfinite(curvature_window_) || curvature_window_ <= 0.0 ||
         curvature_window_ > min_lookahead_ ||
+        !std::isfinite(path_interpolation_step_) || path_interpolation_step_ <= 0.0 ||
         !std::isfinite(max_path_error_) || max_path_error_ <= 0.0 ||
         !std::isfinite(max_initial_path_error_) ||
         max_initial_path_error_ < max_path_error_ ||
@@ -285,9 +282,21 @@ void PathFollowerNode::declareAndGetParameters()
         turn_yaw_rate_ratio_ > 1.0 || !std::isfinite(min_turn_speed_) || min_turn_speed_ <= 0.0 ||
         !std::isfinite(control_comm_delay_) || control_comm_delay_ < 0.0 ||
         !std::isfinite(max_delay_compensation_) || max_delay_compensation_ < 0.0 ||
+        !std::isfinite(heading_d_filter_alpha_) || heading_d_filter_alpha_ < 0.0 ||
+        heading_d_filter_alpha_ > 1.0 ||
         map_frame_.empty() || base_frame_.empty()) {
         throw std::invalid_argument("Invalid path follower configuration");
     }
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Parameters loaded: max_speed=%.2f, max_accel=%.2f, max_decel=%.2f, max_jerk=%.1f, "
+        "lookahead=[%.2f, %.2f, gain=%.2f], goal_tol=%.3f, goal_yaw_tol=%.3f, "
+        "path_step=%.3f, heading_pid=[%.2f, %.2f, %.2f], d_filter_alpha=%.2f",
+        max_speed_, max_acceleration_, max_deceleration_, max_jerk_,
+        min_lookahead_, max_lookahead_, lookahead_gain_, goal_tolerance_, goal_yaw_tolerance_,
+        path_interpolation_step_, heading_kp_, heading_ki_, heading_kd_, heading_d_filter_alpha_
+    );
 }
 
 rcl_interfaces::msg::SetParametersResult PathFollowerNode::onSetParameters(
@@ -307,67 +316,106 @@ rcl_interfaces::msg::SetParametersResult PathFollowerNode::onSetParameters(
         }
         if (name == "max_speed") {
             max_speed_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "max_acceleration") {
             max_acceleration_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "max_deceleration") {
             max_deceleration_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "max_jerk") {
             max_jerk_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "max_angular_velocity") {
             max_angular_velocity_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "max_angular_acceleration") {
             max_angular_acceleration_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "min_lookahead") {
             min_lookahead_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "max_lookahead") {
             max_lookahead_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "lookahead_gain") {
             lookahead_gain_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "goal_tolerance") {
             goal_tolerance_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "goal_approach_speed") {
             goal_approach_speed_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "goal_position_gain") {
             goal_position_gain_ = param.as_double();
-        } else if (name == "goal_angle_adjust_distance") {
-            goal_angle_adjust_distance_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "goal_yaw_tolerance") {
             goal_yaw_tolerance_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "max_path_error") {
             max_path_error_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "max_initial_path_error") {
             max_initial_path_error_ = param.as_double();
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "max_pose_age") {
             max_pose_age_ = param.as_double();
-        } else if (name == "heading_gain") {
-            heading_gain_ = param.as_double();
-            heading_kp_   = heading_gain_;
-            heading_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
-            tracking_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+        } else if (name == "path_interpolation_step") {
+            double val = param.as_double();
+            if (std::isfinite(val) && val > 0.0) {
+                path_interpolation_step_ = val;
+                RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            } else {
+                result.successful = false;
+                result.reason = "path_interpolation_step must be positive";
+                return result;
+            }
         } else if (name == "heading_kp") {
             heading_kp_ = param.as_double();
             heading_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
             tracking_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "heading_ki") {
             heading_ki_ = param.as_double();
             heading_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
             tracking_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "heading_kd") {
             heading_kd_ = param.as_double();
             heading_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
             tracking_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "heading_integral_max") {
             heading_integral_max_ = param.as_double();
             heading_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
             tracking_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+        } else if (name == "heading_d_filter_alpha") {
+            double val = param.as_double();
+            if (std::isfinite(val) && val >= 0.0 && val <= 1.0) {
+                heading_d_filter_alpha_ = val;
+                heading_pid_.setFilterAlpha(heading_d_filter_alpha_);
+                tracking_pid_.setFilterAlpha(heading_d_filter_alpha_);
+                RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            } else {
+                result.successful = false;
+                result.reason = "heading_d_filter_alpha must be in [0.0, 1.0]";
+                return result;
+            }
         } else if (name == "turn_yaw_rate_ratio") {
             turn_yaw_rate_ratio_ = std::clamp(param.as_double(), 0.05, 1.0);
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "min_turn_speed") {
             min_turn_speed_ = std::max(0.01, param.as_double());
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "control_comm_delay") {
             control_comm_delay_ = std::max(0.0, param.as_double());
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         } else if (name == "max_delay_compensation") {
             max_delay_compensation_ = std::max(0.0, param.as_double());
+            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
         }
     }
     return result;
@@ -507,7 +555,7 @@ void PathFollowerNode::onPlannedPath(const nav_msgs::msg::Path::ConstSharedPtr m
             continue;
         }
         const int steps = std::max(
-            1, static_cast<int>(std::ceil(step_distance / kPathStep - kEpsilon)));
+            1, static_cast<int>(std::ceil(step_distance / path_interpolation_step_ - kEpsilon)));
         const double delta_yaw = normalizeAngle(pose_yaw - start.yaw);
         for (int step = 1; step <= steps; ++step) {
             const double fraction = static_cast<double>(step) / steps;
