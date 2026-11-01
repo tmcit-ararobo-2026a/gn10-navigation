@@ -194,6 +194,7 @@ private:
     geometry_msgs::msg::PoseStamped goal_pose_;
     bool has_path_{false};
     bool goal_latched_{false};
+    bool position_reached_latch_{false};
     double progress_{0.0};
 
     // 前回速度 (加速度制限用)

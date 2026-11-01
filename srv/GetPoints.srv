@@ -1,0 +1,6 @@
+---
+bool success
+string message
+string file_path
+string yaml_content
+

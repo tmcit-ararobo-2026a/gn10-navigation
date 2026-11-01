@@ -5,6 +5,7 @@
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "gn10_navigation/navigation_types.hpp"
+#include "gn10_navigation/srv/get_points.hpp"
 #include "gn10_navigation/srv/update_point.hpp"
 #include "gn10_navigation/target_repository.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -38,6 +39,11 @@ private:
         std::shared_ptr<std_srvs::srv::Trigger::Response> response
     );
 
+    void handleGetPoints(
+        const std::shared_ptr<gn10_navigation::srv::GetPoints::Request> request,
+        std::shared_ptr<gn10_navigation::srv::GetPoints::Response> response
+    );
+
     rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr target_id_sub_;
     rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr nav_cmd_sub_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr goal_pose_pub_;
@@ -45,6 +51,7 @@ private:
 
     rclcpp::Service<gn10_navigation::srv::UpdatePoint>::SharedPtr update_point_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr save_points_srv_;
+    rclcpp::Service<gn10_navigation::srv::GetPoints>::SharedPtr get_points_srv_;
 
     std::string yaml_file_path_;
     std::string map_frame_;
