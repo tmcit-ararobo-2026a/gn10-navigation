@@ -1,0 +1,77 @@
+@startuml navigation_system_architecture
+skinparam backgroundColor #FEFEFE
+skinparam componentStyle uml2
+skinparam packageStyle rectangle
+
+title gn10_navigation システム全体構成およびノード間通信図
+
+package "設定ファイル (config/)" {
+    [costmap_params.yaml] as CfgCostmap
+    [path_planner_params.yaml] as CfgPlanner
+    [path_follower_params.yaml] as CfgFollower
+    [shooting_points_*.yaml] as CfgPoints
+    [nhk2026_map.json] as CfgMapJson
+}
+
+package "gn10_navigation ノード群" {
+    node "target_manager_node" as TargetMgr
+    node "costmap_generator_node" as CostmapGen
+    node "path_planner_node" as Planner
+    node "path_follower_node" as Follower
+}
+
+package "外部システム / ハードウェア / TF" {
+    [TF: /tf, /tf_static\n(map -> base_link, bucket_bottom)] as TF
+    [上位司令 / UI\n/robot/target_id\n/robot/navigation_command] as UpperCmd
+    [足回りモーター制御\n/robot/operation/cmd_vel] as BaseActuator
+    [投擲機構制御\n/robot/operation/belt_launcher_speed] as LauncherActuator
+}
+
+CfgMapJson --> CostmapGen : 地図オブジェクト読み込み
+CfgCostmap --> CostmapGen : パラメータ読み込み
+CfgPlanner --> Planner : パラメータ読み込み
+CfgFollower --> Follower : パラメータ読み込み
+CfgPoints --> TargetMgr : 目標投擲点読み込み
+
+UpperCmd --> TargetMgr : /robot/target_id (uint8)\n/robot/navigation_command (uint8)
+UpperCmd --> Follower : /robot/navigation_command (uint8)\n/robot/target_id (uint8)
+
+TargetMgr --> Planner : /goal_pose (PoseStamped)
+TargetMgr --> LauncherActuator : /robot/operation/belt_launcher_speed (Float32)
+
+CostmapGen --> Planner : /costmap (OccupancyGrid)
+
+TF --> Planner : map -> base_link
+Planner --> Follower : /planned_path (Path)
+
+TF --> Follower : map -> base_link\nmap -> bucket_bottom
+Follower --> BaseActuator : /robot/operation/cmd_vel (Twist)
+Follower --> UpperCmd : /robot/operation/navigation_status (uint8)
+
+note right of CostmapGen
+  <b>主要パラメータ:</b>
+  - publish_rate (配信周期 [Hz])
+  - resolution, map_bounds.* (グリッド範囲・解像度)
+  - robot_clearance.* (ロボット高さ範囲)
+  - inflation.robot_radius, inflation.margin (膨張半径・マージン)
+end note
+
+note right of Planner
+  <b>主要パラメータ:</b>
+  - a_star.planning_cost (コストマップ重み)
+  - a_star.snap_distance (障害物スナップ距離)
+  - bspline.smoothing_strength (平滑化強度)
+  - rotation_planning.* (旋回計画コスト・距離)
+  - footprint.polygon (機体外形)
+end note
+
+note right of Follower
+  <b>主要パラメータ:</b>
+  - max_speed, max_accel, max_decel, max_jerk (S字速度プロファイル)
+  - lookahead_gain, min/max_lookahead (Pure Pursuit先読み)
+  - heading_kp, ki, kd, d_filter_alpha (方位PID制御)
+  - control_comm_delay, max_delay_compensation (遅延補償)
+  - goal_tolerance, goal_yaw_tolerance (ゴール判定)
+end note
+
+@enduml

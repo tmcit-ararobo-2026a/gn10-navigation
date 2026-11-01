@@ -66,6 +66,11 @@ PathPlannerNode::PathPlannerNode(const rclcpp::NodeOptions& options)
     // Publisher
     path_pub_ = this->create_publisher<nav_msgs::msg::Path>("/planned_path", 10);
 
+    // Dynamic parameters callback
+    param_callback_handle_ = this->add_on_set_parameters_callback(
+        std::bind(&PathPlannerNode::onSetParameters, this, std::placeholders::_1)
+    );
+
     RCLCPP_INFO(this->get_logger(), "PathPlannerNode initialized.");
 }
 
@@ -73,7 +78,8 @@ void PathPlannerNode::declareAndGetParameters()
 {
     this->declare_parameter("map_configs.map_frame", "map");
     this->declare_parameter("map_configs.base_frame", "base_link");
-    this->declare_parameter("a_star.planning_cost", 3.0);
+    this->declare_parameter("a_star.planning_cost", 1.5);
+    this->declare_parameter("a_star.snap_distance", 0.4);
     this->declare_parameter("bspline.samples_per_segment", 10);
     this->declare_parameter("bspline.smoothing_strength", 0.0);
 
@@ -85,6 +91,7 @@ void PathPlannerNode::declareAndGetParameters()
     map_frame_            = this->get_parameter("map_configs.map_frame").as_string();
     base_frame_           = this->get_parameter("map_configs.base_frame").as_string();
     planning_cost_factor_ = this->get_parameter("a_star.planning_cost").as_double();
+    snap_distance_        = this->get_parameter("a_star.snap_distance").as_double();
     bspline_samples_per_segment_ =
         std::max(1, static_cast<int>(
                          this->get_parameter("bspline.samples_per_segment").as_int()));
@@ -93,6 +100,9 @@ void PathPlannerNode::declareAndGetParameters()
     if (!std::isfinite(bspline_smoothing_strength_) ||
         bspline_smoothing_strength_ < 0.0 || bspline_smoothing_strength_ > 1.0) {
         throw std::invalid_argument("bspline.smoothing_strength must be in [0.0, 1.0]");
+    }
+    if (!std::isfinite(snap_distance_) || snap_distance_ <= 0.0) {
+        throw std::invalid_argument("a_star.snap_distance must be finite and positive");
     }
 
     const auto polygon_flat = this->get_parameter("footprint.polygon").as_double_array();
@@ -109,6 +119,115 @@ void PathPlannerNode::declareAndGetParameters()
     turn_max_cost_ = static_cast<int>(this->get_parameter("rotation_planning.turn_max_cost").as_int());
     angle_step_    = this->get_parameter("rotation_planning.angle_step").as_double();
     turn_distance_ = this->get_parameter("rotation_planning.turn_distance").as_double();
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Parameters loaded: planning_cost=%.2f, snap_distance=%.3f, "
+        "bspline_samples=%d, bspline_smoothing=%.2f, turn_max_cost=%d, angle_step=%.2f, turn_dist=%.2f",
+        planning_cost_factor_, snap_distance_, bspline_samples_per_segment_,
+        bspline_smoothing_strength_, turn_max_cost_, angle_step_, turn_distance_
+    );
+}
+
+rcl_interfaces::msg::SetParametersResult PathPlannerNode::onSetParameters(
+    const std::vector<rclcpp::Parameter>& parameters
+)
+{
+    rcl_interfaces::msg::SetParametersResult result;
+    result.successful = true;
+
+    for (const auto& param : parameters) {
+        const auto& name = param.get_name();
+
+        if (name == "a_star.planning_cost") {
+            double val = param.as_double();
+            if (std::isfinite(val) && val >= 0.0) {
+                planning_cost_factor_ = val;
+                RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            } else {
+                result.successful = false;
+                result.reason = "planning_cost must be non-negative";
+                return result;
+            }
+        } else if (name == "a_star.snap_distance") {
+            double val = param.as_double();
+            if (std::isfinite(val) && val > 0.0) {
+                snap_distance_ = val;
+                RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            } else {
+                result.successful = false;
+                result.reason = "snap_distance must be positive";
+                return result;
+            }
+        } else if (name == "bspline.samples_per_segment") {
+            int val = static_cast<int>(param.as_int());
+            if (val >= 1) {
+                bspline_samples_per_segment_ = val;
+                RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            } else {
+                result.successful = false;
+                result.reason = "bspline.samples_per_segment must be >= 1";
+                return result;
+            }
+        } else if (name == "bspline.smoothing_strength") {
+            double val = param.as_double();
+            if (std::isfinite(val) && val >= 0.0 && val <= 1.0) {
+                bspline_smoothing_strength_ = val;
+                RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            } else {
+                result.successful = false;
+                result.reason = "bspline.smoothing_strength must be in [0.0, 1.0]";
+                return result;
+            }
+        } else if (name == "rotation_planning.turn_max_cost") {
+            int val = static_cast<int>(param.as_int());
+            if (val >= 0 && val <= 100) {
+                turn_max_cost_ = val;
+                RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            } else {
+                result.successful = false;
+                result.reason = "turn_max_cost must be in [0, 100]";
+                return result;
+            }
+        } else if (name == "rotation_planning.angle_step") {
+            double val = param.as_double();
+            if (std::isfinite(val) && val > 0.0) {
+                angle_step_ = val;
+                RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            } else {
+                result.successful = false;
+                result.reason = "angle_step must be positive";
+                return result;
+            }
+        } else if (name == "rotation_planning.turn_distance") {
+            double val = param.as_double();
+            if (std::isfinite(val) && val > 0.0) {
+                turn_distance_ = val;
+                RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            } else {
+                result.successful = false;
+                result.reason = "turn_distance must be positive";
+                return result;
+            }
+        } else if (name == "footprint.polygon") {
+            const auto polygon_flat = param.as_double_array();
+            std::vector<std::pair<double, double>> new_poly;
+            for (std::size_t i = 0; i + 1 < polygon_flat.size(); i += 2) {
+                new_poly.emplace_back(polygon_flat[i], polygon_flat[i + 1]);
+            }
+            if (polygon_flat.size() % 2 == 0 && new_poly.size() >= 3 &&
+                std::all_of(polygon_flat.begin(), polygon_flat.end(),
+                            [](double value) { return std::isfinite(value); })) {
+                footprint_polygon_ = new_poly;
+                RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated with %zu vertices", name.c_str(), footprint_polygon_.size());
+            } else {
+                result.successful = false;
+                result.reason = "footprint.polygon must contain at least 3 finite x/y pairs";
+                return result;
+            }
+        }
+    }
+    return result;
 }
 
 void PathPlannerNode::onCostmap(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg)
@@ -788,7 +907,7 @@ void PathPlannerNode::onGoalPose(const geometry_msgs::msg::PoseStamped::ConstSha
 
     // 2. スタートとゴールの通行可能性チェック＆スナップ
     const int snap_radius_cells =
-        static_cast<int>(std::ceil(0.4 / latest_costmap_.info.resolution));
+        static_cast<int>(std::ceil(snap_distance_ / latest_costmap_.info.resolution));
 
     auto snapped_start = findNearestPassable(start_gx, start_gy, snap_radius_cells);
     if (!snapped_start.has_value()) {

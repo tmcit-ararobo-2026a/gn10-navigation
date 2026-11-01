@@ -1,0 +1,86 @@
+@startuml costmap_generator_flow
+skinparam backgroundColor #FEFEFE
+skinparam activityFontSize 12
+skinparam noteFontSize 11
+
+title costmap_generator_node 処理フローとパラメータ作用図
+
+start
+
+:JSONマップファイル読み込み\n(nhk2026_map.json);
+
+partition "マップ領域・グリッド定義" {
+    :グリッドサイズ・原点計算;
+    note right
+      <b>パラメータ作用:</b>
+      * <b>resolution</b> (例: 0.05 m/cell)
+        セルサイズを決定。小さいと高精度だがBFS計算負荷増大。
+      * <b>map_bounds.min_x, max_x, min_y, max_y</b>
+        マップ全体の物理境界。グリッドの幅・高さを決定。
+    end note
+}
+
+partition "オブジェクト走査・判定" {
+    while (各FieldObjectについてループ) is (未処理あり)
+        if (obj.z_max < robot_clearance.z_min ||\nobj.z_min > robot_clearance.z_max) then (高さ範囲外)
+            :オブジェクト除外 (スキップ);
+            note right
+              <b>パラメータ作用:</b>
+              * <b>robot_clearance.z_min</b> (0.00 m)
+              * <b>robot_clearance.z_max</b> (1.40 m)
+              機体の高さ外の障害物（空中配管や超低段差など）を無視
+            end note
+        else (干渉対象)
+            :オブジェクトの基本コスト判定\n(JSON明示値またはcomment判定);
+            if (obj.passable == true) then (通過可能ペナルティ)
+                :penalty_costs グリッドに描画\n(旗の前など避けたい領域);
+            else (侵入禁止障害物)
+                :obstacle_costs グリッドに描画\n(外壁・机・椅子・バケツなど);
+            end if
+        end if
+    endwhile (全オブジェクト完了)
+}
+
+partition "Multi-Source BFS インフレーション" {
+    :不可侵障害物セル(obstacle_costs > 0)を\nBFS探索キューの初期シードに登録;
+    
+    while (BFSキューが空でない) is (探索中)
+        :8近傍セルへのコスト波及計算;
+        note right
+          <b>パラメータ作用:</b>
+          * <b>inflation.robot_radius</b> (例: 0.45 m)
+            中心点からの距離 <= robot_radius:
+            コスト 254 (絶対侵入禁止: 接触確実)
+          * <b>inflation.margin</b> (例: 0.50 m)
+            robot_radius < 距離 <= robot_radius + margin:
+            距離に応じて線形減衰コストを付与
+            (マージンが大きいほどロボットが障害物から離れる)
+        end note
+    endwhile (波及完了)
+}
+
+partition "ペナルティ合成 & スケーリング" {
+    :通過可能ペナルティ領域(penalty_costs)の重ね合わせ;
+    
+    :nav_msgs/OccupancyGridへの正規化スケーリング;
+    note right
+      * 254 -> 100 (OccupancyGridの不可侵)
+      * 0 -> 0 (自由空間)
+      * 1〜253 -> 1〜99 にスケーリング
+    end note
+}
+
+:キャッシュに保存 (cached_costmap_msg_);
+
+partition "定期パブリッシュ" {
+    :タイマーにより定期配信 (/costmap);
+    note right
+      <b>パラメータ作用:</b>
+      * <b>publish_rate</b> (例: 1.0 Hz)
+        コストマップの定期送信周波数
+    end note
+}
+
+stop
+
+@enduml

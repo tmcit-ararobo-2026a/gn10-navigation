@@ -54,6 +54,7 @@ private:
     );
 
     void publishCachedCostmap();
+    void resetTimer(double rate);
 
     rcl_interfaces::msg::SetParametersResult onSetParameters(
         const std::vector<rclcpp::Parameter>& parameters
@@ -67,6 +68,9 @@ private:
 
     std::string map_source_type_;
     std::string map_file_path_;
+
+    // 配信周期
+    double publish_rate_{1.0};
 
     // グリッドマップパラメータ
     double resolution_;

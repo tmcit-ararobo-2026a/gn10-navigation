@@ -8,6 +8,7 @@
 #include "gn10_navigation/srv/get_points.hpp"
 #include "gn10_navigation/srv/update_point.hpp"
 #include "gn10_navigation/target_repository.hpp"
+#include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/u_int8.hpp"
@@ -44,6 +45,10 @@ private:
         std::shared_ptr<gn10_navigation::srv::GetPoints::Response> response
     );
 
+    rcl_interfaces::msg::SetParametersResult onSetParameters(
+        const std::vector<rclcpp::Parameter>& parameters
+    );
+
     rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr target_id_sub_;
     rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr nav_cmd_sub_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr goal_pose_pub_;
@@ -53,8 +58,11 @@ private:
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr save_points_srv_;
     rclcpp::Service<gn10_navigation::srv::GetPoints>::SharedPtr get_points_srv_;
 
+    rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
+
     std::string yaml_file_path_;
     std::string map_frame_;
+    double goal_publish_throttle_sec_{0.2};
 
     uint8_t current_target_id_{0};
     NavigationCommand nav_cmd_{NavigationCommand::Stanby};
