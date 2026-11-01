@@ -35,6 +35,7 @@ public:
 
     bool load();
     bool save() const;
+    std::string toYamlString() const;
 
     bool has(uint8_t id) const;
     std::optional<TargetPoint> get(uint8_t id) const;
