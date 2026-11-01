@@ -87,13 +87,25 @@ private:
     std::vector<std::pair<int, int>> aStarSearch(int start_x, int start_y, int goal_x, int goal_y);
 
     /**
-     * @brief A* の格子経路を 3 次 clamped B-spline で平滑化する。
+     * @brief A* の格子経路を動的適応型 B-spline (障害物に干渉しない最大平滑化度合い) で平滑化する。
      *
      * @param grid_path A* が生成した格子経路
-     * @return 平滑化後のワールド座標列。安全性を満たさない場合は空配列
+     * @return 平滑化後のワールド座標列
      */
     std::vector<std::pair<double, double>> smoothPath(
         const std::vector<std::pair<int, int>>& grid_path
+    ) const;
+
+    /**
+     * @brief 与えられた制御点列と平滑化強度から 3 次 clamped B-spline 経路を生成する
+     *
+     * @param control_points 制御点列 (ワールド座標)
+     * @param smoothing_strength 内部制御点の平滑化強度
+     * @return std::vector<std::pair<double, double>> 生成された B-spline 補間点列
+     */
+    std::vector<std::pair<double, double>> evaluateBspline(
+        const std::vector<std::pair<double, double>>& control_points,
+        double smoothing_strength
     ) const;
 
     /**
