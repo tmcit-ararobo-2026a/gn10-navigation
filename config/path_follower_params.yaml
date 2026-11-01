@@ -18,22 +18,22 @@ path_follower_node:
     max_angular_velocity: 2.0
     # 最大角加速度 [rad/s^2]
     max_angular_acceleration: 4.0
-    # 最小先読み距離 [m]
-    min_lookahead: 0.15
+    # 最小先読み距離 [m] (全幅1.1mの機体スケールに合わせオーバーシュート・蛇行を防止)
+    min_lookahead: 0.30
     # 最大先読み距離 [m]
-    max_lookahead: 0.40
+    max_lookahead: 0.65
     # 速度に対する先読み距離の比例ゲイン [s]
-    lookahead_gain: 0.20
+    lookahead_gain: 0.25
     # ゴール到達とみなす位置誤差の許容値 [m]
     goal_tolerance: 0.06
-    # ゴール付近で使用する接近速度の上限 [m/s]
-    goal_approach_speed: 0.60
+    # ゴール付近で使用する接近速度の上限 [m/s] (低速アプローチで突入・行き過ぎ防止)
+    goal_approach_speed: 0.18
     # ゴール位置誤差に対する補正速度ゲイン [1/s]
-    goal_position_gain: 1.0
+    goal_position_gain: 2.0
     # ゴール角度調整を開始する残距離 [m]
     goal_angle_adjust_distance: 0.50
-    # ゴール到達とみなす角度誤差の許容値 [rad]
-    goal_yaw_tolerance: 0.01
+    # ゴール到達とみなす角度誤差の許容値 [rad] (約2.0度。過小による前後ハンチングを防止)
+    goal_yaw_tolerance: 0.035
     # 経路追従中に許容する経路からの最大距離 [m]
     max_path_error: 0.30
     # 経路追従開始時だけ許容する経路からの最大距離 [m]
@@ -45,7 +45,7 @@ path_follower_node:
     # 方位PID制御パラメータ
     heading_kp: 1.2
     heading_ki: 0.01
-    heading_kd: 0.0
+    heading_kd: 0.15
     heading_integral_max: 0.5
     # 旋回時角速度利用率 (PIDフィードバック余裕を残すため最大角速度に対する割合) [0.1~1.0]
     turn_yaw_rate_ratio: 0.75
