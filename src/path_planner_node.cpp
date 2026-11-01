@@ -212,13 +212,24 @@ std::vector<std::pair<int, int>> PathPlannerNode::aStarSearch(
 
     auto getIndex = [width](int x, int y) { return y * width + x; };
 
-    auto heuristic = [](int x1, int y1, int x2, int y2) -> double {
+    // スタートとゴールを結ぶベクトル (Tie-breaking 用)
+    const double line_dx = static_cast<double>(goal_x - start_x);
+    const double line_dy = static_cast<double>(goal_y - start_y);
+
+    auto heuristic = [start_x, start_y, line_dx, line_dy](int x1, int y1, int x2, int y2) -> double {
         int dx = std::abs(x1 - x2);
         int dy = std::abs(y1 - y2);
         // Octile distance
         int min_d = std::min(dx, dy);
         int max_d = std::max(dx, dy);
-        return (max_d - min_d) + 1.41421356237 * min_d;
+        double base_h = (max_d - min_d) + 1.41421356237 * min_d;
+
+        // Tie-breaking: スタート-ゴール直線からの外積距離による微小バイアス
+        // これにより同コスト時に最短幾何直線に近いセルを優先し、無駄な蛇行やジグザグ探索を抑える
+        double cur_dx = static_cast<double>(x1 - start_x);
+        double cur_dy = static_cast<double>(y1 - start_y);
+        double cross = std::abs(cur_dx * line_dy - cur_dy * line_dx);
+        return base_h + cross * 0.001;
     };
 
     int start_idx      = getIndex(start_x, start_y);
@@ -299,35 +310,68 @@ std::vector<std::pair<int, int>> PathPlannerNode::aStarSearch(
     return path;
 }
 
-std::vector<std::pair<double, double>> PathPlannerNode::smoothPath(
-    const std::vector<std::pair<int, int>>& grid_path
+std::vector<std::pair<double, double>> PathPlannerNode::evaluateBspline(
+    const std::vector<std::pair<double, double>>& input_control_points,
+    double smoothing_strength
 ) const
 {
     using Point = std::pair<double, double>;
-    std::vector<Point> control_points;
-    control_points.reserve(grid_path.size());
-
-    for (const auto& cell : grid_path) {
-        control_points.push_back(gridToWorld(cell.first, cell.second));
+    if (input_control_points.empty()) {
+        return {};
     }
-    if (control_points.size() < 4) {
-        return control_points;
+    if (input_control_points.size() <= 2) {
+        // 2点以下の場合は密に線形補間
+        const auto& p0 = input_control_points.front();
+        const auto& p1 = input_control_points.back();
+        const double dist = std::hypot(p1.first - p0.first, p1.second - p0.second);
+        const double step = (latest_costmap_.info.resolution > 0)
+            ? latest_costmap_.info.resolution * 0.5
+            : 0.025;
+        const int steps = std::max(1, static_cast<int>(std::ceil(dist / step)));
+        std::vector<Point> line_pts;
+        line_pts.reserve(steps + 1);
+        for (int s = 0; s <= steps; ++s) {
+            double t = static_cast<double>(s) / steps;
+            line_pts.emplace_back(
+                p0.first + t * (p1.first - p0.first),
+                p0.second + t * (p1.second - p0.second)
+            );
+        }
+        return line_pts;
     }
 
-    const double smoothing_strength = bspline_smoothing_strength_;
-    if (smoothing_strength > 0.0) {
+    // 制御点数が 4 未満なら中点を補間して 4 点以上にする
+    std::vector<Point> control_points = input_control_points;
+    while (control_points.size() < 4) {
+        std::vector<Point> expanded;
+        expanded.reserve(control_points.size() * 2);
+        for (std::size_t i = 0; i + 1 < control_points.size(); ++i) {
+            expanded.push_back(control_points[i]);
+            expanded.push_back({
+                0.5 * (control_points[i].first + control_points[i + 1].first),
+                0.5 * (control_points[i].second + control_points[i + 1].second)
+            });
+        }
+        expanded.push_back(control_points.back());
+        control_points = std::move(expanded);
+    }
+
+    // 内部制御点の平滑化 (ラプラシアン平滑化)
+    double clamped_strength = std::clamp(smoothing_strength, 0.0, 1.0);
+    if (clamped_strength > 0.0) {
         const auto original_control_points = control_points;
         for (std::size_t index = 1; index + 1 < control_points.size(); ++index) {
             const auto& previous = original_control_points[index - 1];
-            const auto& current = original_control_points[index];
-            const auto& next = original_control_points[index + 1];
+            const auto& current  = original_control_points[index];
+            const auto& next     = original_control_points[index + 1];
             const Point midpoint{
                 0.5 * (previous.first + next.first),
-                0.5 * (previous.second + next.second)};
+                0.5 * (previous.second + next.second)
+            };
             control_points[index].first =
-                current.first + smoothing_strength * (midpoint.first - current.first);
+                current.first + clamped_strength * (midpoint.first - current.first);
             control_points[index].second =
-                current.second + smoothing_strength * (midpoint.second - current.second);
+                current.second + clamped_strength * (midpoint.second - current.second);
         }
     }
 
@@ -383,7 +427,7 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPath(
         return values[degree];
     };
 
-    const int sample_count = last_span * bspline_samples_per_segment_;
+    const int sample_count = std::max(last_span * bspline_samples_per_segment_, 10);
     std::vector<Point> smoothed_path;
     smoothed_path.reserve(sample_count + 1);
     for (int sample = 0; sample <= sample_count; ++sample) {
@@ -392,6 +436,109 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPath(
         smoothed_path.push_back(evaluate(parameter));
     }
     return smoothed_path;
+}
+
+std::vector<std::pair<double, double>> PathPlannerNode::smoothPath(
+    const std::vector<std::pair<int, int>>& grid_path
+) const
+{
+    using Point = std::pair<double, double>;
+    if (grid_path.empty()) {
+        return {};
+    }
+
+    // 全グリッド点のワールド座標
+    std::vector<Point> raw_world_points;
+    raw_world_points.reserve(grid_path.size());
+    for (const auto& cell : grid_path) {
+        raw_world_points.push_back(gridToWorld(cell.first, cell.second));
+    }
+
+    if (raw_world_points.size() <= 2) {
+        return evaluateBspline(raw_world_points, 0.0);
+    }
+
+    // 最大平滑化強度 (パラメータ設定値)
+    const double max_strength = std::clamp(bspline_smoothing_strength_, 0.0, 1.0);
+
+    // 平滑化度合いを動的に変更するための候補リスト
+    // (stride: 制御点の間引きステップ、strength: 内部制御点の平滑化強度)
+    // ショートカットは行わず、格子パスの幾何形状を忠実に近似しながら最大限平滑化する。
+    struct SmoothingLevel {
+        int stride;
+        double strength;
+    };
+
+    std::vector<SmoothingLevel> levels;
+    // 優先度高 (最も平滑) -> 優先度低 (形状厳密維持)
+    const std::vector<int> strides = {4, 3, 2, 1};
+    const std::vector<double> ratios = {1.0, 0.7, 0.4, 0.2, 0.0};
+
+    const int max_allowed_stride = std::max(1, static_cast<int>(raw_world_points.size() - 1) / 3);
+    for (int s : strides) {
+        if (s > max_allowed_stride && s > 1) {
+            continue;
+        }
+        for (double r : ratios) {
+            levels.push_back({s, max_strength * r});
+        }
+    }
+
+    for (const auto& level : levels) {
+        // 制御点を抽出 (始点と終点は必ず含める)
+        std::vector<Point> control_points;
+        control_points.reserve(raw_world_points.size() / level.stride + 2);
+        for (std::size_t i = 0; i < raw_world_points.size(); i += level.stride) {
+            control_points.push_back(raw_world_points[i]);
+        }
+        if (control_points.back() != raw_world_points.back()) {
+            control_points.push_back(raw_world_points.back());
+        }
+
+        auto candidate_path = evaluateBspline(control_points, level.strength);
+        if (!candidate_path.empty() && isSmoothPathValid(candidate_path)) {
+            // 障害物に干渉しない最大の平滑化度合いを採用
+            return candidate_path;
+        }
+    }
+
+    // すべてのレベルで干渉が検出された場合の適応的救済 (直線フォールバックは絶対に行わない):
+    // stride=1, strength=0.0 (生グリッド全点を制御点とするB-spline) をベースにし、
+    // 万が一障害物セルと干渉した点のみ、元の安全なA*グリッド点へクランプして連続曲線を保証する
+    auto base_curve = evaluateBspline(raw_world_points, 0.0);
+    for (auto& pt : base_curve) {
+        auto [gx, gy] = worldToGrid(pt.first, pt.second);
+        if (!isPassable(gx, gy)) {
+            // 最寄りの元の格子パスの点を探して置き換え
+            double min_d = std::numeric_limits<double>::max();
+            Point best_pt = pt;
+            for (const auto& orig : raw_world_points) {
+                double d = std::hypot(pt.first - orig.first, pt.second - orig.second);
+                if (d < min_d) {
+                    min_d = d;
+                    best_pt = orig;
+                }
+            }
+            pt = best_pt;
+        }
+    }
+
+    // クランプによる局所的な段差を和らげるため、軽微な3点移動平均フィルタを適用
+    if (base_curve.size() >= 3) {
+        const auto temp = base_curve;
+        for (std::size_t i = 1; i + 1 < base_curve.size(); ++i) {
+            Point avg{
+                0.25 * temp[i - 1].first + 0.5 * temp[i].first + 0.25 * temp[i + 1].first,
+                0.25 * temp[i - 1].second + 0.5 * temp[i].second + 0.25 * temp[i + 1].second
+            };
+            auto [agx, agy] = worldToGrid(avg.first, avg.second);
+            if (isPassable(agx, agy)) {
+                base_curve[i] = avg;
+            }
+        }
+    }
+
+    return base_curve;
 }
 
 bool PathPlannerNode::isSmoothPathValid(const std::vector<std::pair<double, double>>& path) const
@@ -700,19 +847,13 @@ void PathPlannerNode::onGoalPose(const geometry_msgs::msg::PoseStamped::ConstSha
         return;
     }
 
-    // 4. B-spline で平滑化し、障害物へ侵入した場合は A* 経路へ戻す。
-    const auto original_path = [&]() {
-        std::vector<std::pair<double, double>> points;
-        points.reserve(grid_path.size());
-        for (const auto& cell : grid_path) {
-            points.push_back(gridToWorld(cell.first, cell.second));
-        }
-        return points;
-    }();
+    // 4. 動的適応型 B-spline による平滑化（直線フォールバックを排除し追従性を確保）
     auto smoothed_path = smoothPath(grid_path);
-    if (smoothed_path.size() >= 4 && !isSmoothPathValid(smoothed_path)) {
-        RCLCPP_WARN(this->get_logger(), "B-spline path enters an obstacle. Using A* path.");
-        smoothed_path = original_path;
+    if (smoothed_path.empty()) {
+        RCLCPP_WARN(this->get_logger(), "Smooth path generated empty. Using grid points.");
+        for (const auto& cell : grid_path) {
+            smoothed_path.push_back(gridToWorld(cell.first, cell.second));
+        }
     }
 
     const double start_yaw = getYawFromQuaternion(tf_stamped.transform.rotation);
