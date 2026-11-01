@@ -35,23 +35,40 @@ std::string TargetRepository::resolveFilePath(const std::string& path) const
         return fs::absolute(env_path).string();
     }
 
-    // 2. data/shooting-points リポジトリ内の候補を列挙
     std::string home_dir = "";
     const char* env_home = std::getenv("HOME");
     if (env_home != nullptr) {
         home_dir = env_home;
     }
 
-    std::vector<fs::path> candidate_data_paths;
-    if (!home_dir.empty()) {
-        candidate_data_paths.push_back(fs::path(home_dir) / "ros2_ws/data/shooting-points/shooting_points.yaml");
-        candidate_data_paths.push_back(fs::path(home_dir) / "ros2_ws/data/shooting-points/shooting_point.yaml");
-        candidate_data_paths.push_back(fs::path(home_dir) / "ros2_ws/data/shooting-point-config/shooting_points.yaml");
-        candidate_data_paths.push_back(fs::path(home_dir) / "ros2_ws/data/shooting-point-config/shooting_point.yaml");
+    fs::path target_path(path);
+    std::string target_filename = target_path.filename().string();
+    bool is_red = (path.find("red") != std::string::npos || target_filename.find("red") != std::string::npos);
+
+    // 候補ファイル名の決定
+    std::vector<std::string> search_filenames;
+    if (!target_filename.empty() && target_filename != "." && target_filename != "shooting_points.yaml") {
+        search_filenames.push_back(target_filename);
+    } else if (is_red) {
+        search_filenames.push_back("shooting_points_red.yaml");
+        search_filenames.push_back("shooting_point_red.yaml");
+    } else {
+        search_filenames.push_back("shooting_points_blue.yaml");
+        search_filenames.push_back("shooting_point_blue.yaml");
+        search_filenames.push_back("shooting_points.yaml");
+        search_filenames.push_back("shooting_point.yaml");
     }
-    candidate_data_paths.push_back(fs::path("data/shooting-points/shooting_points.yaml"));
-    candidate_data_paths.push_back(fs::path("data/shooting-points/shooting_point.yaml"));
-    candidate_data_paths.push_back(fs::path("../data/shooting-points/shooting_points.yaml"));
+
+    // 2. data/shooting-points リポジトリ内の候補を列挙
+    std::vector<fs::path> candidate_data_paths;
+    for (const auto& fn : search_filenames) {
+        if (!home_dir.empty()) {
+            candidate_data_paths.push_back(fs::path(home_dir) / "ros2_ws/data/shooting-points" / fn);
+            candidate_data_paths.push_back(fs::path(home_dir) / "ros2_ws/data/shooting-point-config" / fn);
+        }
+        candidate_data_paths.push_back(fs::path("data/shooting-points") / fn);
+        candidate_data_paths.push_back(fs::path("../data/shooting-points") / fn);
+    }
 
     // 3. 指定された path が明示的かつ直接存在し、かつ install/share や旧 src/config ではない場合はそれを尊重
     bool is_share_or_install_path =
@@ -74,9 +91,11 @@ std::string TargetRepository::resolveFilePath(const std::string& path) const
     std::string source_dir = GN10_NAVIGATION_SOURCE_DIR;
     if (!source_dir.empty() && fs::exists(source_dir)) {
         // ソースディレクトリ基準で data/shooting-points を探索
-        fs::path sibling_data = fs::path(source_dir).parent_path().parent_path() / "data" / "shooting-points" / "shooting_points.yaml";
-        if (fs::exists(sibling_data)) {
-            return fs::absolute(sibling_data).string();
+        for (const auto& fn : search_filenames) {
+            fs::path sibling_data = fs::path(source_dir).parent_path().parent_path() / "data" / "shooting-points" / fn;
+            if (fs::exists(sibling_data)) {
+                return fs::absolute(sibling_data).string();
+            }
         }
 
         fs::path p_in_source = fs::path(source_dir) / path;
@@ -84,15 +103,21 @@ std::string TargetRepository::resolveFilePath(const std::string& path) const
             return fs::absolute(p_in_source).string();
         }
 
-        // ファイル名だけで config/ 配下を探索
-        fs::path filename = fs::path(path).filename();
-        fs::path p_config = fs::path(source_dir) / "config" / filename;
-        if (fs::exists(p_config)) {
-            return fs::absolute(p_config).string();
+        // ファイル名で config/ 配下を探索
+        for (const auto& fn : search_filenames) {
+            fs::path p_config = fs::path(source_dir) / "config" / fn;
+            if (fs::exists(p_config)) {
+                return fs::absolute(p_config).string();
+            }
         }
     }
 
-    // 6. 保存先として data/shooting-points をデフォルトターゲットにする
+    // 6. 指定された path そのものが存在すればそれを使用 (install/share 含む)
+    if (!path.empty() && fs::exists(path)) {
+        return fs::absolute(path).string();
+    }
+
+    // 7. 保存先として data/shooting-points をデフォルトターゲットにする
     if (!candidate_data_paths.empty()) {
         return fs::absolute(candidate_data_paths.front()).string();
     }
