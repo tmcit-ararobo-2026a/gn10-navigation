@@ -4,7 +4,7 @@ path_planner_node:
       map_frame: "map"
       base_frame: "base_link"
     a_star:
-      planning_cost: 3.0
+      planning_cost: 1.5
     bspline:
       # B-spline の隣接制御点間を分割して生成するサンプル数
       samples_per_segment: 10

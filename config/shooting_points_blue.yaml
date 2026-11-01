@@ -1,8 +1,8 @@
 shooting_points:
 - target_id: 0
   name: StartZone
-  x: -4.6507
-  y: 2.0439
+  x: -4.7
+  y: 1.9
   yaw: -1.5708
   target_velocity: 0.0
   memo: Start zone default position
