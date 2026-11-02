@@ -7,9 +7,9 @@ path_follower_node:
     # 最大並進加速度 [m/s^2]
     max_acceleration: 3.0
     # 最大並進減速度 [m/s^2]
-    max_deceleration: 3.0
+    max_deceleration: 1.8
     # 最大躍度（加速度の変化率）[m/s^3]
-    max_jerk: 40.0
+    max_jerk: 60.0
     # 最大横加速度 [m/s^2]
     max_lateral_acceleration: 1.6
     # 曲率を計算する距離の窓幅 [m]
