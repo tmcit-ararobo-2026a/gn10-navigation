@@ -22,7 +22,7 @@ partition "経路受信・前処理 (onPlannedPath)" {
       <b>パラメータ作用:</b>
       * <b>curvature_window</b> (例: 0.10 m)
         曲率計算に用いる前後の距離窓幅
-      * <b>max_lateral_acceleration</b> (例: 1.6 m/s^2)
+      * <b>max_lateral_acceleration</b> (例: 2.20 m/s^2)
         最大横加速度限界: v <= sqrt(a_lat / curvature)
       * <b>turn_yaw_rate_ratio</b> (例: 0.75)
         旋回区間での角速度余裕比率 (PID補正しろを確保)
@@ -30,9 +30,13 @@ partition "経路受信・前処理 (onPlannedPath)" {
         旋回時の最低進行速度下限
     end note
 
-    :S字速度プロファイル (makeSCurve) 生成;
+    :S字プロファイル減速前倒し & 速度プロファイル生成 (makeSCurve);
     note right
       <b>パラメータ作用:</b>
+      * <b>decel_lead_in_distance</b> (例: 0.15 m)
+        ジャーク立ち上がり遅れを見越した減速開始の前倒し距離
+      * <b>decel_effective_ratio</b> (例: 0.85)
+        ジャーク制限を考慮した実効減速度係数 (a_eff = a_dec * ratio)
       * <b>max_speed</b> (例: 2.0 m/s)
       * <b>max_acceleration</b> (例: 3.0 m/s^2)
       * <b>max_deceleration</b> (例: 3.0 m/s^2)
@@ -97,9 +101,15 @@ partition "周期制御ループ (controlLoop)" {
             lookahead = clamp(min + gain * speed, min, max)
         end note
 
-        :目標並進速度・加速度計算;
+        :目標並進速度・加速度計算 (Pure Pursuit FB + 遠心力補償FF);
         note right
           <b>パラメータ作用:</b>
+          * <b>centripetal_ff_gain</b> (例: 1.0)
+            向心加速度FFゲイン: a_ff = k * v^2 * kappa
+            カーブで発生する慣性遠心力を先回りして相殺し、
+            Pure Pursuitの横偏差発生を待たずに内側へ車輪を駆動
+          * <b>max_lateral_acceleration</b> (例: 2.20 m/s^2)
+            向心加速度FFの上限クリップ
           * <b>goal_approach_speed</b> (例: 0.60 m/s)
           * <b>goal_position_gain</b> (例: 10.0 1/s)
             ゴール手前での接近速度制限

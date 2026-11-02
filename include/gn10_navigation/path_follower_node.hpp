@@ -109,6 +109,9 @@ private:
         double distance;
         double speed;
         double time;
+        double curvature{0.0};   // 外積符号付き曲率 [1/m] (+: 左旋回, -: 右旋回)
+        double tangent_x{1.0};   // 進行方向単位接線ベクトル X
+        double tangent_y{0.0};   // 進行方向単位接線ベクトル Y
     };
 
     struct Projection {
@@ -180,6 +183,9 @@ private:
     double heading_d_filter_alpha_{0.4};
     double turn_yaw_rate_ratio_{0.75};
     double min_turn_speed_{0.3};
+    double centripetal_ff_gain_{1.0};
+    double decel_lead_in_distance_{0.15};
+    double decel_effective_ratio_{0.85};
     double control_comm_delay_{0.025};
     double max_delay_compensation_{0.20};
 
