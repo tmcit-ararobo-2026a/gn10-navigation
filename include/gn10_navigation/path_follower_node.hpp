@@ -54,7 +54,7 @@ public:
         d_filtered_derivative_ = 0.0;
     }
 
-    double update(double error, double dt)
+    double update(double error, double dt, bool enable_integral = true)
     {
         if (dt <= 1e-4) {
             return 0.0;
@@ -62,9 +62,13 @@ public:
 
         const double p_term = kp_ * error;
 
-        integral_ += error * dt;
-        if (i_limit_ > 0.0) {
-            integral_ = std::clamp(integral_, -i_limit_, i_limit_);
+        if (enable_integral) {
+            integral_ += error * dt;
+            if (i_limit_ > 0.0) {
+                integral_ = std::clamp(integral_, -i_limit_, i_limit_);
+            }
+        } else {
+            integral_ = 0.0;
         }
         const double i_term = ki_ * integral_;
 
@@ -156,38 +160,39 @@ private:
     rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_callback_handle_;
 
     // パラメータ
-    double control_rate_;
-    double max_speed_;
-    double max_acceleration_;
-    double max_deceleration_;
-    double max_jerk_;
-    double max_lateral_acceleration_;
-    double curvature_window_;
-    double max_angular_velocity_;
-    double max_angular_acceleration_;
-    double min_lookahead_;
-    double max_lookahead_;
-    double lookahead_gain_;
-    double goal_tolerance_;
-    double goal_approach_speed_;
-    double goal_position_gain_;
-    double goal_yaw_tolerance_;
-    double max_path_error_;
-    double max_initial_path_error_;
-    double max_pose_age_;
-    double path_interpolation_step_{0.05};
-    double heading_kp_{2.2};
-    double heading_ki_{0.05};
-    double heading_kd_{0.35};
-    double heading_integral_max_{0.5};
-    double heading_d_filter_alpha_{0.4};
-    double turn_yaw_rate_ratio_{0.75};
-    double min_turn_speed_{0.3};
-    double centripetal_ff_gain_{1.0};
-    double decel_lead_in_distance_{0.15};
+    double control_rate_{50.0};
+    double max_speed_{2.0};
+    double max_acceleration_{3.0};
+    double max_deceleration_{3.0};
+    double max_jerk_{50.0};
+    double max_lateral_acceleration_{2.0};
+    double curvature_window_{0.10};
+    double max_angular_velocity_{2.5};
+    double max_angular_acceleration_{5.0};
+    double path_interpolation_step_{0.02};
     double decel_effective_ratio_{0.85};
+
+    double position_kp_{4.0};
+    double position_ki_{0.5};
+    double max_fb_speed_{0.60};
+    double min_docking_speed_{0.02};
+    double settle_zone_distance_{0.10};
+
+    double heading_kp_{3.0};
+    double heading_ki_{0.2};
+    double heading_kd_{0.1};
+    double heading_integral_max_{0.3};
+    double heading_d_filter_alpha_{0.4};
+    double min_docking_yaw_rate_{0.03};
+
+    double goal_tolerance_{0.005};
+    double goal_yaw_tolerance_{0.0175};
+    int goal_settle_count_{5};
+    double max_path_error_{0.30};
+    double max_initial_path_error_{0.45};
+    double max_pose_age_{0.2};
     double control_comm_delay_{0.025};
-    double max_delay_compensation_{0.20};
+    double max_delay_compensation_{0.15};
 
     AnglePidController heading_pid_;
     AnglePidController tracking_pid_;
@@ -195,7 +200,7 @@ private:
     std::string map_frame_;
     std::string base_frame_;
     std::string bucket_frame_;
-    double max_bucket_age_;
+    double max_bucket_age_{0.5};
 
     // 内部状態
     NavigationStatus status_{NavigationStatus::Stanby};
@@ -208,14 +213,15 @@ private:
     bool has_path_{false};
     bool goal_latched_{false};
     double progress_{0.0};
+    int settle_count_{0};
 
-    // 前回速度 (加速度制限用)
+    // 位置制御積分器・前回指令速度 (1次加速度制限用)
+    double pos_integral_x_{0.0};
+    double pos_integral_y_{0.0};
     double command_vx_world_{0.0};
     double command_vy_world_{0.0};
-    double command_ax_world_{0.0};
-    double command_ay_world_{0.0};
     double command_yaw_rate_{0.0};
-    std::chrono::steady_clock::time_point last_control_;
+    std::chrono::steady_clock::time_point last_control_{std::chrono::steady_clock::now()};
 };
 
 }  // namespace gn10_navigation

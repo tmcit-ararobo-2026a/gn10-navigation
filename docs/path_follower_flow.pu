@@ -3,143 +3,77 @@ skinparam backgroundColor #FEFEFE
 skinparam activityFontSize 12
 skinparam noteFontSize 11
 
-title path_follower_node 経路追従・制御ループ処理フローとパラメータ作用図
+title path_follower_node 経路追従・制御ループ処理フロー
 
 start
 
 partition "経路受信・前処理 (onPlannedPath)" {
     :計画経路受信 (/planned_path);
-    :経路補間サンプリング (等間隔リサンプリング);
+    :等間隔リサンプリング & 単位接線ベクトル・曲率計算;
     note right
-      <b>パラメータ作用:</b>
-      * <b>path_interpolation_step</b> (例: 0.05 m)
-        追従計算用の経路点補間ピッチ。
-        小さくすると追従精度向上、大きくするとCPU負荷軽減。
-    end note
-    
-    :経路曲率に応じた通過速度制限計算;
-    note right
-      <b>パラメータ作用:</b>
-      * <b>curvature_window</b> (例: 0.10 m)
-        曲率計算に用いる前後の距離窓幅
-      * <b>max_lateral_acceleration</b> (例: 2.20 m/s^2)
-        最大横加速度限界: v <= sqrt(a_lat / curvature)
-      * <b>turn_yaw_rate_ratio</b> (例: 0.75)
-        旋回区間での角速度余裕比率 (PID補正しろを確保)
-      * <b>min_turn_speed</b> (例: 0.3 m/s)
-        旋回時の最低進行速度下限
+      * <b>path_interpolation_step</b> (0.02 m)
+      * <b>curvature_window</b> (0.10 m)
+      * <b>max_lateral_acceleration</b> (2.0 m/s^2)
     end note
 
-    :S字プロファイル減速前倒し & 速度プロファイル生成 (makeSCurve);
+    :S字速度プロファイル生成 & 前後方加減速走査;
     note right
-      <b>パラメータ作用:</b>
-      * <b>decel_lead_in_distance</b> (例: 0.15 m)
-        ジャーク立ち上がり遅れを見越した減速開始の前倒し距離
-      * <b>decel_effective_ratio</b> (例: 0.85)
-        ジャーク制限を考慮した実効減速度係数 (a_eff = a_dec * ratio)
-      * <b>max_speed</b> (例: 2.0 m/s)
-      * <b>max_acceleration</b> (例: 3.0 m/s^2)
-      * <b>max_deceleration</b> (例: 3.0 m/s^2)
-      * <b>max_jerk</b> (例: 40.0 m/s^3) 加速度変化率
+      * <b>max_speed</b> (2.0 m/s)
+      * <b>max_acceleration / max_deceleration</b> (3.0 m/s^2)
+      * <b>max_jerk</b> (50.0 m/s^3)
+      * <b>decel_effective_ratio</b> (0.85)
     end note
 }
 
-partition "周期制御ループ (controlLoop)" {
-    :タイマー周期起動;
-    note right
-      <b>パラメータ作用:</b>
-      * <b>control_rate</b> (例: 60.0 Hz)
-    end note
-
-    :ロボット現在位置・姿勢をTFより取得 (map -> base_link);
-    if (TF経過時間 > max_pose_age?) then (タイムアウト)
+partition "周期制御ループ (controlLoop: 50Hz)" {
+    :TF取得 (map -> base_link) & 鮮度監視 (max_pose_age);
+    if (TF異常またはタイムアウト?) then (異常)
         :非常停止 & FAIL遷移;
-        note right
-          <b>パラメータ作用:</b>
-          * <b>max_pose_age</b> (例: 0.5 s)
-        end note
         stop
-    end if
+    endif
 
-    if (モード == MovingBucket 追従 (Tracking)?) then (Tracking)
-        :バケットTF取得 (map -> bucket_frame);
-        note right
-          <b>パラメータ作用:</b>
-          * <b>bucket_frame</b> ("bucket_bottom")
-          * <b>max_bucket_age</b> (例: 0.5 s)
-        end note
-        :バケット方向へのYaw角PID制御 (/cmd_vel パブリッシュ);
+    if (MovingBucket 追従モード?) then (Tracking)
+        :bucket_frame 方向へYaw角PID制御;
         stop
     else (Moving 経路追従)
-        :経路への現在位置の直交射影 (project);
-        if (横偏差 > 許容誤差?) then (経路逸脱)
+        :現在位置の直交射影 (proj_pt) と経路逸脱監視;
+        if (横偏差 > max_path_error?) then (逸脱)
             :非常停止 & FAIL遷移;
-            note right
-              <b>パラメータ作用:</b>
-              * <b>max_path_error</b> (通常許容値: 例 0.30 m)
-              * <b>max_initial_path_error</b> (発進時許容値: 例 0.45 m)
-            end note
             stop
-        end if
+        endif
 
-        if (位置誤差 <= goal_tolerance &&\n角度誤差 <= goal_yaw_tolerance?) then (ゴール到達)
-            :GOAL遷移 & 停止 (/cmd_vel = 0);
-            note right
-              <b>パラメータ作用:</b>
-              * <b>goal_tolerance</b> (例: 0.01 m)
-              * <b>goal_yaw_tolerance</b> (例: 0.01 rad)
-            end note
+        if (位置誤差 <= goal_tolerance &&\n角度誤差 <= goal_yaw_tolerance を\ngoal_settle_count 周期維持?) then (ゴール完了)
+            :完全停止 & GOAL遷移;
             stop
-        end if
+        endif
 
-        :先読み距離 (Lookahead) 計算;
+        :遅延補償付き参照点 (ref_pt) の取得;
         note right
-          <b>パラメータ作用:</b>
-          * <b>min_lookahead</b> (例: 0.15 m)
-          * <b>max_lookahead</b> (例: 0.40 m)
-          * <b>lookahead_gain</b> (例: 0.20 s)
-            lookahead = clamp(min + gain * speed, min, max)
+          * <b>control_comm_delay</b> (0.025 s)
+          * <b>max_delay_compensation</b> (0.15 s)
         end note
 
-        :目標並進速度・加速度計算 (Pure Pursuit FB + 遠心力補償FF);
+        :接線FF速度 + 位置FB速度の合成 & 静止摩擦補償;
         note right
-          <b>パラメータ作用:</b>
-          * <b>centripetal_ff_gain</b> (例: 1.0)
-            向心加速度FFゲイン: a_ff = k * v^2 * kappa
-            カーブで発生する慣性遠心力を先回りして相殺し、
-            Pure Pursuitの横偏差発生を待たずに内側へ車輪を駆動
-          * <b>max_lateral_acceleration</b> (例: 2.20 m/s^2)
-            向心加速度FFの上限クリップ
-          * <b>goal_approach_speed</b> (例: 0.60 m/s)
-          * <b>goal_position_gain</b> (例: 10.0 1/s)
-            ゴール手前での接近速度制限
-          * <b>max_acceleration / max_deceleration / max_jerk</b>
+          * 巡航中: v_ff = ref_pt.speed * tangent
+                    v_fb = position_kp * (proj_pt - robot_pos)
+          * ゴール近傍 (<b>settle_zone_distance</b> = 0.10 m 以内):
+            ゴール座標へのPI制御 (<b>position_kp / ki</b>) +
+            最小起動速度リフト (<b>min_docking_speed</b> = 0.02 m/s)
         end note
 
-        :目標方位(Yaw)誤差に対するPID計算;
+        :1次の最大加速度リミッタ (|dv| <= accel_limit * dt);
+
+        :姿勢(Yaw) PID制御 + 最小角速度リフト + 1次角加速度リミッタ;
         note right
-          <b>パラメータ作用:</b>
-          * <b>heading_kp</b> (例: 1.2)
-          * <b>heading_ki</b> (例: 0.1)
-          * <b>heading_kd</b> (例: 0.0)
-          * <b>heading_integral_max</b> (例: 0.5)
-          * <b>heading_d_filter_alpha</b> (例: 0.4) 微分ノイズLPF係数
-          * <b>max_angular_velocity</b> (例: 2.0 rad/s)
-          * <b>max_angular_acceleration</b> (例: 4.0 rad/s^2)
+          * <b>heading_kp / ki / kd</b> (3.0 / 0.2 / 0.1)
+          * <b>min_docking_yaw_rate</b> (0.03 rad/s)
+          * <b>max_angular_velocity / acceleration</b>
         end note
 
-        :通信・制御遅延による旋回ドリフトの予測補正;
-        note right
-          <b>パラメータ作用:</b>
-          * <b>control_comm_delay</b> (例: 0.025 s)
-          * <b>max_delay_compensation</b> (例: 0.20 s)
-            delay = clamp(pose_age + control_comm_delay, 0, max_comp)
-            pred_yaw = robot_yaw + command_yaw_rate * delay
-            予測された接地瞬間の姿勢角に基づいて車体座標系へ変換
-        end note
-
+        :旋回ドリフト遅延補償 & ローカル座標変換;
         :速度指令配信 (/robot/operation/cmd_vel);
-    end if
+    endif
 }
 
 stop

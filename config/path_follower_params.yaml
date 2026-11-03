@@ -1,71 +1,45 @@
 path_follower_node:
   ros__parameters:
-    # 制御周期 [Hz]
-    control_rate: 60.0
-    # 最大並進速度 [m/s]
-    max_speed: 2.5
-    # 最大並進加速度 [m/s^2]
-    max_acceleration: 5.0
-    # 最大並進減速度 [m/s^2]
-    max_deceleration: 5.0
-    # 最大躍度（加速度の変化率）[m/s^3]
-    max_jerk: 250.0
-    # 最大横加速度 [m/s^2]
-    max_lateral_acceleration: 2.4
-    # 向心加速度(遠心力相殺)フィードフォワードゲイン [0.0~2.0]
-    centripetal_ff_gain: 1.0
-    # カーブ進入前の減速前倒し先行距離 [m]
-    decel_lead_in_distance: 0.5
-    # ジャーク立ち上がりマージンを考慮した減速後方走査の実効減速度比率 (0.5~1.0)
-    decel_effective_ratio: 0.85
-    # 曲率を計算する距離の窓幅 [m]
-    curvature_window: 0.20
-    # 最大角速度 [rad/s]
-    max_angular_velocity: 4.0
-    # 最大角加速度 [rad/s^2]
-    max_angular_acceleration: 8.0
-    # 最小先読み距離 [m]
-    min_lookahead: 0.20
-    # 最大先読み距離 [m]
-    max_lookahead: 0.40
-    # 速度に対する先読み距離の比例ゲイン [s]
-    lookahead_gain: 0.20
-    # ゴール到達とみなす位置誤差の許容値 [m]
-    goal_tolerance: 0.005
-    # ゴール付近で使用する接近速度の上限 [m/s]
-    goal_approach_speed: 0.80
-    # ゴール位置誤差に対する補正速度ゲイン [1/s]
-    goal_position_gain: 24.0
-    # ゴール到達とみなす角度誤差の許容値 [rad]
-    goal_yaw_tolerance: 0.01
-    # 経路追従中に許容する経路からの最大距離 [m]
-    max_path_error: 0.30
-    # 経路追従開始時だけ許容する経路からの最大距離 [m]
-    max_initial_path_error: 0.45
-    # 自己位置の最大許容経過時間 [s]
-    max_pose_age: 0.5
-    # 経路補間ステップ間隔 [m]
-    path_interpolation_step: 0.05
-    # 方位PID制御パラメータ
-    heading_kp: 1.8
-    heading_ki: 0.5
-    heading_kd: 0.0
-    heading_integral_max: 0.5
-    # 方位PID微分の1次ローパスフィルタ係数 (0.0~1.0)
-    heading_d_filter_alpha: 0.4
-    # 旋回時角速度利用率 (PIDフィードバック余裕を残すため最大角速度に対する割合) [0.1~1.0]
-    turn_yaw_rate_ratio: 0.75
-    # 旋回時の最低並進速度下限値 [m/s]
-    min_turn_speed: 0.3
-    # 制御指令送信・マイコン通信およびアクチュエータ応答の推定遅延時間 [s]
-    control_comm_delay: 0.025
-    # 遅延補償で許容する最大予測外挿時間幅 [s]
-    max_delay_compensation: 0.20
-    # 地図座標系の TF フレーム名
+    # 周期・フレーム設定 (50Hz LiDARに同期推奨)
+    control_rate: 50.0
     map_frame: "map"
-    # ロボット本体の TF フレーム名
     base_frame: "base_link"
-    # バケットの TF フレーム名
     bucket_frame: "bucket_bottom"
-    # バケット位置の TF の最大許容経過時間 [s]
+    max_pose_age: 0.2
     max_bucket_age: 0.5
+    control_comm_delay: 0.025
+    max_delay_compensation: 0.15
+
+    # 機体物理制限 (前処理プロファイルおよび1次加速度リミッタで使用)
+    max_speed: 2.0
+    max_acceleration: 3.0
+    max_deceleration: 3.0
+    max_jerk: 50.0
+    max_lateral_acceleration: 2.0
+    max_angular_velocity: 2.5
+    max_angular_acceleration: 5.0
+    path_interpolation_step: 0.02
+    curvature_window: 0.10
+    decel_effective_ratio: 0.85
+
+    # 軌道追従・位置フィードバック制御
+    position_kp: 4.0
+    position_ki: 0.5
+    max_fb_speed: 0.60
+    min_docking_speed: 0.02
+    settle_zone_distance: 0.10
+
+    # 姿勢 (Yaw) 制御
+    heading_kp: 3.0
+    heading_ki: 0.2
+    heading_kd: 0.1
+    heading_integral_max: 0.3
+    heading_d_filter_alpha: 0.4
+    min_docking_yaw_rate: 0.03
+
+    # ゴール判定・安全停止閾値
+    goal_tolerance: 0.005        # 5 mm
+    goal_yaw_tolerance: 0.0175   # 1.0 deg (rad)
+    goal_settle_count: 5         # 連続5周期維持で完了
+    max_path_error: 0.30
+    max_initial_path_error: 0.45

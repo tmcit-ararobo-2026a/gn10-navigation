@@ -3,104 +3,68 @@ skinparam backgroundColor #FEFEFE
 skinparam activityFontSize 12
 skinparam noteFontSize 11
 
-title path_planner_node 経路計画処理フローとパラメータ作用図
+title path_planner_node 経路計画処理フロー
 
 start
 
 :目標ポーズ受信 (/goal_pose);
 :最新コストマップ確認 (/costmap);
 
-partition "TF自己位置取得 & グリッド変換" {
-    :TFより現在ロボット位置を取得\n(map -> base_link);
-    note right
-      <b>パラメータ作用:</b>
-      * <b>map_configs.map_frame</b> ("map")
-      * <b>map_configs.base_frame</b> ("base_link")
-    end note
-    :スタート位置・ゴール位置をグリッド座標 (gx, gy) に変換;
-}
-
-partition "通行可能セルへの最近傍スナップ" {
-    if (スタートまたはゴールが障害物内 (cost >= 100)?) then (障害物内)
-        :findNearestPassable() による同心円探索;
+partition "TF自己位置取得 & 始点・終点決定" {
+    :TFより現在ロボット位置を取得 (map -> base_link);
+    :スタート・ゴールをグリッド座標に変換;
+    if (障害物内 (cost >= 100)?) then (はい)
+        :findNearestPassable() で最寄り通行可能セルへスナップ;
         note right
-          <b>パラメータ作用:</b>
-          * <b>a_star.snap_distance</b> (例: 0.40 m)
-            壁際やインフレーションマージン内に目標が
-            ある場合、指定半径内で最も近い通行可能セル
-            (cost < 100) にスナップする。
-            値が小さいと壁際への計画が失敗し、
-            大きすぎると離れた場所にスナップされる。
+          * <b>a_star.snap_distance</b> (0.40 m)
         end note
-        if (通行可能セルを発見できた?) then (成功)
-            :スナップ先セルを計画始点/終点に採用;
-        else (失敗)
-            :エラーログ出力 & 空Pathパブリッシュ;
+        if (発見?) then (失敗)
+            :空Path配信 & 終了;
             stop
-        end if
-    else (通行可能)
-        :そのまま始点/終点セルを採用;
-    end if
+        endif
+    else (いいえ)
+        :量子化誤差を防ぐため連続ワールド座標 (exact_start, exact_goal) を保持;
+    endif
 }
 
 partition "8方向 A* グリッド探索" {
     :A* アルゴリズム実行;
     note right
-      <b>パラメータ作用:</b>
-      * <b>a_star.planning_cost</b> (例: 1.5)
-        移動ステップコスト計算:
+      * <b>a_star.planning_cost</b> (1.5)
         cost = step_dist + costmap_val * planning_cost
-        * 値を大きくする:
-          障害物周辺の高コストセルを遠回りして回避する
-        * 値を小さくする:
-          最短距離を優先して障害物のすぐ脇を通る
     end note
-    if (ゴールまでの格子経路を発見?) then (成功)
-        :格子点パス (grid_path) をワールド座標に変換;
-    else (経路なし)
-        :警告ログ & 空Pathパブリッシュ;
+    if (経路発見?) then (失敗)
+        :空Path配信 & 終了;
         stop
-    end if
+    endif
 }
 
 partition "動的適応型 B-spline 平滑化" {
-    :生グリッドパスから平滑化候補を生成;
+    :始点・終点を exact_start / exact_goal に置換;
+    :stride (max_stride..1) と反復ラプラシアン平滑化を段階的に試行;
     note right
-      <b>パラメータ作用:</b>
-      * <b>bspline.smoothing_strength</b> (0.0〜1.0, 例: 1.0)
-        内部制御点を隣接点中点へ寄せる強度。
-        1.0 で最大平滑化（滑らかな曲線）。
-      * <b>bspline.samples_per_segment</b> (例: 10)
-        制御点間の補間点サンプル密度。
+      * <b>bspline.max_stride</b> (4)
+      * <b>bspline.smoothing_strength</b> (1.0)
+      * <b>bspline.smoothing_iterations</b> (5)
+      * <b>bspline.smooth_max_cost</b> (80)
+      * <b>bspline.samples_per_segment</b> (10)
     end note
-    :段階的にstride (4, 3, 2, 1) と strength比率を下げながら\nコストマップと干渉しない最大の平滑化度合いを採用;
-    if (すべての候補が障害物に干渉?) then (干渉あり)
-        :元グリッド全点をベースにし、\n干渉点のみ最寄りの安全点へクランプして連続曲線を保証;
-    end if
+    :許容コスト以下で障害物に干渉しない最も滑らかな経路を採用;
 }
 
-partition "姿勢(Yaw角)および旋回計画" {
-    :経路上の各位置においてロボット外形(Footprint)の安全性をチェック;
+partition "安全領域での旋回・姿勢計画" {
+    :各点での全回転角度の最大フットプリントコストを算出;
+    :長さ turn_distance の区間ウィンドウを走査し、\n区間全域が最も安全な旋回領域を選定;
     note right
-      <b>パラメータ作用:</b>
       * <b>footprint.polygon</b>
-        機体の実外形多角形頂点座標 (m)
-      * <b>rotation_planning.turn_max_cost</b> (例: 20)
-        全回転角度でフットプリントが許容する最大コスト
-      * <b>rotation_planning.angle_step</b> (例: 0.1 rad)
-        干渉判定の角度刻み幅
+      * <b>rotation_planning.turn_max_cost</b> (20)
+      * <b>rotation_planning.angle_step</b> (0.1 rad)
+      * <b>rotation_planning.turn_distance</b> (0.6 m)
     end note
-    :最も安全な旋回中心インデックスを選定;
-    :Smoothstep (S字補間) により旋回区間の目標Yawを滑らかに割り当て;
-    note right
-      <b>パラメータ作用:</b>
-      * <b>rotation_planning.turn_distance</b> (例: 0.6 m)
-        旋回を開始してから完了するまでの移動区間長。
-        短すぎると急旋回になり、長すぎると広範囲で旋回。
-    end note
+    :Smoothstep (S字補間) で目標Yaw角を割り当て;
 }
 
-:生成された nav_msgs/Path を配信 (/planned_path);
+:nav_msgs/Path を配信 (/planned_path);
 
 stop
 
