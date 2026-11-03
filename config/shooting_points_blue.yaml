@@ -1,57 +1,57 @@
 shooting_points:
-- target_id: 0
-  name: StartZone
-  x: -4.7
-  y: 1.9
-  yaw: -1.5708
-  target_velocity: 0.0
-  memo: Start zone default position
-- target_id: 1
-  name: FixedBucket1
-  x: 0.551
-  y: 1.3211
-  yaw: -1.5708
-  target_velocity: 3.0
-  memo: Fixed bucket 1 shooting spot
-- target_id: 2
-  name: FixedBucket2
-  x: -1.3163
-  y: 0.7816
-  yaw: -1.5708
-  target_velocity: 3.25
-  memo: Fixed bucket 2 shooting spot
-- target_id: 3
-  name: FixedBucket3
-  x: 2.3046
-  y: 0.6576
-  yaw: -1.5708
-  target_velocity: 3.25
-  memo: Fixed bucket 3 shooting spot
-- target_id: 4
-  name: Desk1
-  x: -2.3283
-  y: 0.9657
-  yaw: -1.5708
-  target_velocity: 0.0
-  memo: Desk 1 shooting spot
-- target_id: 5
-  name: Desk2
-  x: 3.3593
-  y: 0.8359
-  yaw: -1.5708
-  target_velocity: 0.0
-  memo: Desk 2 shooting spot
-- target_id: 6
-  name: Flag
-  x: 0.6
-  y: 1.5014
-  yaw: -1.5708
-  target_velocity: 7.25
-  memo: Flag shooting spot
-- target_id: 7
-  name: MovingBucket
-  x: -3.8449
-  y: 4.4018
-  yaw: 0.0
-  target_velocity: 0.0
-  memo: Moving bucket target (tracking mode)
+  - target_id: 0
+    name: StartZone
+    x: -4.9362000000000004
+    y: 1.9539
+    yaw: -1.5708
+    target_velocity: 0
+    memo: Start zone default position
+  - target_id: 1
+    name: FixedBucket1
+    x: 0.53480000000000005
+    y: 1.8715999999999999
+    yaw: -1.5708
+    target_velocity: 3
+    memo: Fixed bucket 1 shooting spot
+  - target_id: 2
+    name: FixedBucket2
+    x: -1.2957000000000001
+    y: 0.67869999999999997
+    yaw: -1.5708
+    target_velocity: 3.25
+    memo: Fixed bucket 2 shooting spot
+  - target_id: 3
+    name: FixedBucket3
+    x: 2.3046000000000002
+    y: 0.65759999999999996
+    yaw: -1.5708
+    target_velocity: 3.25
+    memo: Fixed bucket 3 shooting spot
+  - target_id: 4
+    name: Desk1
+    x: -2.1244999999999998
+    y: 0.59930000000000005
+    yaw: -1.5708
+    target_velocity: 0
+    memo: Desk 1 shooting spot
+  - target_id: 5
+    name: Desk2
+    x: 3.5992999999999999
+    y: 0.78159999999999996
+    yaw: -1.5708
+    target_velocity: 0
+    memo: Desk 2 shooting spot
+  - target_id: 6
+    name: Flag
+    x: 0.59650000000000003
+    y: 1.9744999999999999
+    yaw: -1.5708
+    target_velocity: 7.25
+    memo: Flag shooting spot
+  - target_id: 7
+    name: MovingBucket
+    x: -3.8449
+    y: 4.4017999999999997
+    yaw: 0
+    target_velocity: 0
+    memo: Moving bucket target (tracking mode)
