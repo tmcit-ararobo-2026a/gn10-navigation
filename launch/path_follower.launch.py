@@ -15,7 +15,7 @@ def generate_launch_description():
         'path_follower_params.yaml',
     )
     return LaunchDescription([
-        DeclareLaunchArgument('params_file', default_value=params),
+        DeclareLaunchArgument('follower_params_file', default_value=params),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
         Node(
             package='gn10_navigation',
@@ -23,7 +23,7 @@ def generate_launch_description():
             name='path_follower_node',
             output='screen',
             parameters=[
-                LaunchConfiguration('params_file'),
+                LaunchConfiguration('follower_params_file'),
                 {'use_sim_time': ParameterValue(
                     LaunchConfiguration('use_sim_time'), value_type=bool)},
             ],

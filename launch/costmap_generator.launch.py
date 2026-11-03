@@ -14,7 +14,7 @@ def generate_launch_description():
 
     # Launch 引数の定義
     params_file_arg = DeclareLaunchArgument(
-        'params_file',
+        'costmap_params_file',
         default_value=default_params_file,
         description='Full path to the ROS2 parameters YAML file to use'
     )
@@ -26,7 +26,7 @@ def generate_launch_description():
         name='costmap_generator_node',
         output='screen',
         parameters=[
-            LaunchConfiguration('params_file')
+            LaunchConfiguration('costmap_params_file')
         ]
     )
 
