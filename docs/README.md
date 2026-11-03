@@ -141,3 +141,18 @@ ros2 param set /path_follower_node lookahead_gain 0.18
 # [path_follower_node]: Parameter 'max_speed' updated to: 1.5
 # [path_follower_node]: Parameter 'lookahead_gain' updated to: 0.18
 ```
+
+---
+
+## 6. 追従状況および速度比較デバッグツール
+
+ロボットの速度指令値、ホイール順運動学速度、TF実効速度の3種類を比較し、追従状況を可視化するGUIツールを提供しています。
+
+詳細な仕様および使用方法は [tracking_debugger.md](file:///home/gn10/ros2_ws/src/gn10-navigation/docs/tracking_debugger.md) を参照してください。
+
+```bash
+# 起動コマンド
+ros2 run gn10_navigation tracking_debugger_gui.py
+# または
+ros2 launch gn10_navigation tracking_debugger.launch.py
+```
