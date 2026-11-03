@@ -1,52 +1,48 @@
-# gn10_navigation 処理フローおよびパラメータ調整ガイド
+# gn10_navigation 処理フローおよびパラメータガイド
 
-本ドキュメントでは、`gn10_navigation` パッケージの内部処理フローと、各パラメータがロボットの動作や計画に及ぼす影響、および調整手順を解説します。
-
-各処理フロー図は PlantUML (`.pu`) ファイルとして本ディレクトリ内に配置されています。
+`gn10_navigation` パッケージの各ノードの処理フローとパラメータを説明します。
+各フロー図は同ディレクトリ内の PlantUML (`.pu`) ファイルに定義されています。
 
 ---
 
 ## 1. 全体アーキテクチャ (`navigation_system_architecture.pu`)
 
-システムは以下の4ノードで構成されています：
-
 ```
 [ Upper Commands ]
-       │
-       ▼ (/robot/target_id, /robot/navigation_command)
-[ target_manager_node ] ─── (/goal_pose) ───► [ path_planner_node ] ─── (/planned_path) ───► [ path_follower_node ] ─── (/cmd_vel) ───► [ Base Actuators ]
-                                                     ▲                                               ▲
-                                                     │ (/costmap)                                    │ (TF: map -> base_link)
-                                          [ costmap_generator_node ]                               [ TF Listener ]
+       │ (/robot/target_id, /robot/navigation_command)
+       ▼
+[ target_manager_node ] ── (/goal_pose) ──► [ path_planner_node ] ── (/planned_path) ──► [ path_follower_node ] ── (/cmd_vel) ──► [ Base Actuators ]
+                                                   ▲                                            ▲
+                                                   │ (/costmap)                                 │ (TF: map -> base_link)
+                                        [ costmap_generator_node ]                        [ TF Listener ]
 ```
 
-- **`target_manager_node`**: Target IDに応じた投擲ポイント（位置・姿勢・射出速度）を管理・発行
-- **`costmap_generator_node`**: JSONフィールドマップから障害物インフレーションコストマップを生成
-- **`path_planner_node`**: A*探索、動的適応型B-spline平滑化、機体外形(Footprint)干渉判定付きYaw角計画
-- **`path_follower_node`**: S字加減速プロファイル、Pure Pursuit軌道追従、方位PID制御、通信遅延補正
+- **`target_manager_node`**: Target IDに応じた目標座標（`/goal_pose`）と射出速度を発行します。
+- **`costmap_generator_node`**: JSONマップから障害物インフレーション付きのコストマップを生成します。
+- **`path_planner_node`**: 8方向A*探索、反復ラプラシアン付き動的B-spline平滑化、旋回区間全域のフットプリント安全判定により、始点・終点の量子化誤差がない経路を生成します。
+- **`path_follower_node`**: 接線フィードフォワード速度と直交位置フィードバック速度の統合制御、および1次加速度リミッタにより、経路追従とゴール精密停止（±5mm, ±1.0度）を行います。
 
 ---
 
 ## 2. コストマップ生成 (`costmap_generator_flow.pu`)
 
 ### 処理の流れ
-1. **JSONマップ読み込み**: `nhk2026_map.json` 等からフィールドオブジェクト（BOX, CYLINDER等）を取得。
-2. **高さクリアランス判定**: `robot_clearance.z_min` 〜 `robot_clearance.z_max` の範囲外のオブジェクトは除外。
-3. **不可侵障害物とペナルティ領域の分離**: 通過可能なペナルティ領域（旗の前など）と絶対不可侵障害物（壁・机・バケツなど）を分離。
-4. **Multi-Source BFS インフレーション**:
-   - 不可侵障害物から中心点距離が `inflation.robot_radius` 以下: コスト 254 (絶対侵入不可)
-   - `inflation.robot_radius` から `robot_radius + inflation.margin` まで: 距離に応じて線形減衰コストを付与
-5. **スケーリング & 配信**: OccupancyGrid (0〜100) にスケーリングし、`publish_rate` [Hz] で定期パブリッシュ。
+1. **JSONマップ読み込み**: `nhk2026_map.json` からフィールドオブジェクトを取得。
+2. **高さフィルタ**: `robot_clearance.z_min` 〜 `z_max` 範囲外のオブジェクトを除外。
+3. **インフレーション (Multi-Source BFS)**:
+   - 障害物から `inflation.robot_radius` 以内: コスト 100 (侵入不可)
+   - `robot_radius + inflation.margin` まで: 距離に応じて減衰するコスト (1〜99) を付与
+4. **定期配信**: `publish_rate` [Hz] で `/costmap` をパブリッシュ。
 
-### パラメータ調整項目 (`config/costmap_params.yaml`)
-| パラメータ名 | 既定値 | 役割と調整方法 |
+### パラメータ (`config/costmap_params.yaml`)
+| パラメータ名 | 既定値 | 役割 |
 |---|---|---|
-| `publish_rate` | 1.0 Hz | コストマップの配信周波数。 |
-| `resolution` | 0.05 m | グリッドの解像度。小さくすると分解能向上、大きくすると計算負荷軽減。 |
-| `map_bounds.*` | -6.0〜6.0, -6.5〜6.5 | フィールド全体の物理範囲。 |
-| `robot_clearance.z_min / z_max` | 0.00 / 1.40 m | 機体の接触する高さ範囲。これ以外の高さの障害物は無視されます。 |
-| `inflation.robot_radius` | 0.45 m | 機体中心から不可侵とする半径。壁際へ限界まで寄せたい場合は縮小（接触に注意）。 |
-| `inflation.margin` | 0.50 m | コストが波及するマージン幅。大きくすると壁から大きく離れた経路を選びます。 |
+| `publish_rate` | 1.0 Hz | コストマップ配信周期 |
+| `resolution` | 0.05 m | グリッド解像度 |
+| `map_bounds.*` | -6.0〜6.0, -6.5〜6.5 | マップ範囲 [m] |
+| `robot_clearance.z_min / z_max` | 0.0 / 1.4 m | 衝突判定を行う高さ範囲 |
+| `inflation.robot_radius` | 0.45 m | 機体中心の不可侵半径 |
+| `inflation.margin` | 0.50 m | 回避コストを波及させるマージン幅 |
 
 ---
 
@@ -54,105 +50,77 @@
 
 ### 処理の流れ
 1. **自己位置取得 & スナップ**:
-   - ロボット位置および目標位置がインフレーション領域等で障害物セル (cost >= 100) にある場合、`a_star.snap_distance` の同心円探索を行い、最寄りの通行可能セルに自動スナップ。
-2. **8方向 A* グリッド探索**:
-   - ステップ移動コストに `costmap_val * a_star.planning_cost` を加算して最短経路を探索。
+   - 始点またはゴールが障害物セル (`cost >= 100`) にある場合のみ、`a_star.snap_distance` 内の最寄り通行可能セルへスナップ。通常時はTFおよび `/goal_pose` の連続ワールド座標をそのまま保持し、グリッド量子化誤差を排除。
+2. **8方向 A* 探索**:
+   - 移動距離＋`costmap_val * a_star.planning_cost` を最小化する格子経路を探索。
 3. **動的適応型 B-spline 平滑化**:
-   - グリッドの折れ線経路を、障害物に接触しない最大の平滑化度合い（内部制御点寄せ率 `bspline.smoothing_strength`、サンプル数 `bspline.samples_per_segment`）で滑らかな連続曲線へ補間。
-4. **姿勢(Yaw角)および旋回計画**:
-   - 実機外形多角形 `footprint.polygon` を回転させながら、全角度で `rotation_planning.turn_max_cost` 以下となる最も安全な旋回地点を選定。
-   - `rotation_planning.turn_distance` の区間でSmoothstep (S字) 補間により目標Yawへ滑らかに遷移。
+   - 制御点の間引きステップ（最大 `bspline.max_stride`）と反復ラプラシアン平滑化（`bspline.smoothing_iterations` 回）を段階的に試行し、`bspline.smooth_max_cost` 以下で障害物に干渉しない最も滑らかな曲線を採用。
+4. **安全領域での旋回計画**:
+   - 長さ `rotation_planning.turn_distance` の旋回区間ウィンドウを走査し、区間全域で全回転角度のフットプリントコストが `rotation_planning.turn_max_cost` 以下かつ最小となる最も安全な領域を選定して Smoothstep で目標Yaw角を補間。
 
-### パラメータ調整項目 (`config/path_planner_params.yaml`)
-| パラメータ名 | 既定値 | 役割と調整方法 |
+### パラメータ (`config/path_planner_params.yaml`)
+| パラメータ名 | 既定値 | 役割 |
 |---|---|---|
-| `a_star.planning_cost` | 1.5 | コストマップ値に対する重み。大きくすると高コストセル（障害物近傍）を大きく回避。小さくすると最短幾何直線に近い経路。 |
-| `a_star.snap_distance` | 0.40 m | 壁際など障害物内セルから通行可能セルへスナップする最大探索半径。壁際での計画失敗時はこの値を広げます。 |
-| `bspline.smoothing_strength` | 1.0 | 平滑化強度 (0.0=格子そのまま, 1.0=最大平滑化)。角を丸くして高速走行したい場合は大きく設定。 |
-| `bspline.samples_per_segment` | 10 | B-spline 補間のサンプル密度。 |
-| `footprint.polygon` | 機体外形座標列 | ロボットの実寸8頂点外形多角形。 |
-| `rotation_planning.turn_max_cost` | 20 | 旋回を許可する最大コスト。狭い場所で旋回させたい場合は引き上げ、広い安全地帯で旋回させたい場合は引き下げます。 |
-| `rotation_planning.angle_step` | 0.1 rad | 旋回干渉チェックの角度刻み幅。 |
-| `rotation_planning.turn_distance` | 0.6 m | 旋回に要する移動距離。短くすると急激な旋回、長くすると緩やかな旋回。 |
+| `a_star.planning_cost` | 1.5 | コストマップ値の重み（大きいほど障害物を遠回り） |
+| `a_star.snap_distance` | 0.40 m | 障害物内セルからの最大スナップ探索半径 |
+| `bspline.samples_per_segment` | 10 | B-spline の制御点間サンプル数 |
+| `bspline.smoothing_strength` | 1.0 | 1反復あたりの内部制御点の中点ブレンド率 (0.0〜1.0) |
+| `bspline.smoothing_iterations` | 5 | 内部制御点の反復ラプラシアン平滑化回数 (0〜50) |
+| `bspline.max_stride` | 4 | 制御点間引きステップの最大値 (1〜10) |
+| `bspline.smooth_max_cost` | 80 | 平滑化経路が許容する最大セルコスト (0〜99) |
+| `footprint.polygon` | 8頂点座標列 | 機体の外形ポリゴン頂点 [m] |
+| `rotation_planning.turn_max_cost` | 20 | 旋回区間全域で許容する最大フットプリントコスト |
+| `rotation_planning.angle_step` | 0.1 rad | 旋回干渉チェックの角度ステップ |
+| `rotation_planning.turn_distance` | 0.6 m | 旋回を行う移動区間長 |
 
 ---
 
 ## 4. 経路追従 (`path_follower_flow.pu`)
 
 ### 処理の流れ
-1. **経路前処理 (onPlannedPath)**:
-   - 受信したパスを `path_interpolation_step` 間隔で高密度に補間し、各点の符号付き曲率 $\kappa$ および接線ベクトルを算出。
-   - `curvature_window` を用いて局所曲率を計算し、`max_lateral_acceleration` から許容通過速度を算出。
-   - 旋回角速度要求 `|dθ/ds|` に応じて並進速度を `turn_yaw_rate_ratio` および `min_turn_speed` で制限。
-   - ジャーク制限による減速立ち上がり遅れを打ち消すため、カーブ進入手前 `decel_lead_in_distance` から滑らかに減速を開始（減速前倒し）。
-   - `decel_effective_ratio` による実効減速度を用いたバックワード走査とフォワード加速走査（`makeSCurve`）によりS字速度プロファイルを生成。
-2. **周期制御ループ (controlLoop)**:
-   - `control_rate` [Hz] で実行。自己位置の遅延 (`max_pose_age`) を判定。
-   - 経路への直交射影により横偏差を計算。`max_path_error` 超過時は非常停止。
-   - 先読み距離 `lookahead = clamp(min_lookahead + lookahead_gain * speed, min, max)` を計算し目標点を取得。
-   - **向心加速度フィードフォワード (Centripetal FF)**:
-     - 推定遅延時間先のパス点の曲率 $\kappa$ と接線ベクトルから、慣性遠心力に対抗する向心加速度 $\mathbf{a}_{ff} = k_{ff} \cdot v^2 \cdot \kappa \cdot \mathbf{n}_{left}$ を算出。
-     - Pure Pursuitのフィードバック加速度と合算し、Jerk制限（躍度制限）を適用して車輪駆動指令へ統合。
-   - 目標位置および姿勢に対するゴール判定 (`goal_tolerance`, `goal_yaw_tolerance`)。
-   - 目標Yaw角に対するPID制御（LPF係数 `heading_d_filter_alpha` による微分ノイズ低減）。
-   - 推定通信・アクチュエータ遅延 `control_comm_delay` と姿勢角から接地瞬間の予測姿勢を計算し、旋回中のドリフトをキャンセルした局所速度指令を出力。
+1. **経路前処理 (`onPlannedPath`)**:
+   - `path_interpolation_step` 間隔で経路を細分化し、単位接線ベクトルと曲率 $\kappa$ を計算。
+   - 横加速度制限 $v \le \sqrt{a_{\text{lat,max}} / |\kappa|}$、S字速度プロファイル、ゴール近傍の位置P制御速度上限（$K_p \cdot d_{\text{rem}}$）、および前後方加減速走査から計画速度プロファイルを生成。
+2. **周期制御ループ (`controlLoop`)**:
+   - 現在位置を経路へ直交射影し、`max_path_error` 超過時は非常停止（`Fail`）。
+   - **FF + FB 統合速度計算**:
+     - 巡航中は遅延補償点 `ref_pt` の接線速度 $\boldsymbol{v}_{\text{ff}} = v_{\text{ref}} \boldsymbol{t}$ と、現在位置の直交射影点 `proj_pt` への横ズレ補正 $\boldsymbol{v}_{\text{fb}} = K_p (\boldsymbol{p}_{\text{proj}} - \boldsymbol{p}_{\text{robot}})$ を合成。
+     - ゴール近傍（`settle_zone_distance` 以内）ではゴール座標へのPI制御と最小起動速度リフト（`min_docking_speed`）により静止摩擦を突破して収束。
+   - **1次最大加速度リミッタ**: 1周期あたりの速度変化量を `accel_limit * dt` 以内に制限。
+   - **姿勢PID制御**: 目標Yaw角へのPID制御＋ゴール近傍の最小角速度リフト（`min_docking_yaw_rate`）＋1次角加速度リミッタ。
+   - **ゴール判定 (Settle Counter)**: 位置誤差 `goal_tolerance` 以下かつ角度誤差 `goal_yaw_tolerance` 以下を `goal_settle_count` 周期連続で維持したら `Goal` へ遷移して完全停止。
 
-### パラメータ調整項目 (`config/path_follower_params.yaml`)
-| パラメータ名 | 既定値 | 役割と調整方法 |
+### パラメータ (`config/path_follower_params.yaml`)
+| パラメータ名 | 既定値 | 役割 |
 |---|---|---|
-| `control_rate` | 60.0 Hz | 制御周期。 |
-| `max_speed` | 2.0 m/s | 最大並進速度。 |
-| `max_acceleration` | 3.0 m/s^2 | 最大並進加速度。 |
-| `max_deceleration` | 3.0 m/s^2 | 最大並進減速度。 |
-| `max_jerk` | 40.0 m/s^3 | 最大躍度（加速度の変化率）。走行の滑らかさ、車輪スリップ防止に影響。 |
-| `max_lateral_acceleration` | 2.20 m/s^2 | カーブ通過時の遠心力制限および向心加速度FFの上限値。 |
-| `curvature_window` | 0.10 m | カーブ曲率計算の前後窓幅。 |
-| `centripetal_ff_gain` | 1.0 | 向心加速度フィードフォワードゲイン。カーブ進入時の外膨らみ（アンダーステア）を抑える場合は 1.0 前後、内側に巻き込みすぎる場合は 0.7〜0.8 に調整。 |
-| `decel_lead_in_distance` | 0.15 m | カーブ手前での減速開始前倒し距離マージン。急カーブ手前で減速が間に合わず突っ込む場合は大きくします。 |
-| `decel_effective_ratio` | 0.85 | ジャーク制限下での実効減速度比率。S字減速時の平均減速度の低下を見越して手前から減速させます。 |
-| `min_lookahead / max_lookahead` | 0.15 / 0.40 m | Pure Pursuitの最小・最大先読み距離。小さすぎると蛇行、大きすぎると内回り・角落ち。 |
-| `lookahead_gain` | 0.20 s | 速度に応じた先読み距離の比例ゲイン。 |
-| `goal_tolerance` | 0.01 m | ゴール到達とみなす位置許容誤差。 |
-| `goal_yaw_tolerance` | 0.01 rad | ゴール到達とみなす角度許容誤差。 |
-| `goal_approach_speed` | 0.60 m/s | ゴール直前の進入速度上限。 |
-| `goal_position_gain` | 10.0 1/s | ゴール位置誤差に対する比例引き込みゲイン。 |
-| `path_interpolation_step` | 0.05 m | 追従用経路のリサンプリング間隔。 |
-| `heading_kp / ki / kd` | 1.2 / 0.1 / 0.0 | 方位(Yaw)制御のPIDゲイン。 |
-| `heading_integral_max` | 0.5 rad | PID積分項のアンチワインドアップ上限。 |
-| `heading_d_filter_alpha` | 0.4 | 方位PID微分の1次ローパスフィルタ係数 (0.0〜1.0)。ノイズ振動を抑える場合は小さくします。 |
-| `turn_yaw_rate_ratio` | 0.75 | 旋回時の許容角速度上限比率。PIDフィードバック余裕を残すため1.0未満に設定。 |
-| `min_turn_speed` | 0.3 m/s | 旋回区間での並進速度の下限値。 |
-| `control_comm_delay` | 0.025 s | マイコン通信やアクチュエータ応答の推定遅延時間。旋回中の直進方向のドリフトを補正。 |
-| `max_delay_compensation` | 0.20 s | 遅延補償の上限時間。 |
+| `control_rate` | 50.0 Hz | 制御ループ周期 |
+| `max_speed` | 2.0 m/s | 最大並進速度 |
+| `max_acceleration / max_deceleration` | 3.0 m/s^2 | 最大並進加減速度（前処理および1次リミッタ） |
+| `max_jerk` | 50.0 m/s^3 | 前処理S字プロファイルの最大躍度 |
+| `max_lateral_acceleration` | 2.0 m/s^2 | カーブ通過時の最大横加速度 |
+| `max_angular_velocity / acceleration` | 2.5 rad/s, 5.0 rad/s^2 | 最大角速度・最大角加速度 |
+| `path_interpolation_step` | 0.02 m | 経路補間ステップ間隔 |
+| `curvature_window` | 0.10 m | 曲率計算の前後距離窓幅 |
+| `decel_effective_ratio` | 0.85 | 後方減速走査の実効減速度比率 |
+| `position_kp / position_ki` | 4.0 / 0.5 | 位置フィードバックのP・Iゲイン |
+| `max_fb_speed` | 0.60 m/s | 位置フィードバック速度の上限 |
+| `min_docking_speed` | 0.02 m/s | ゴール近傍の最小起動並進速度 |
+| `settle_zone_distance` | 0.10 m | ゴール近傍の精密収束・積分有効化距離 |
+| `heading_kp / ki / kd` | 3.0 / 0.2 / 0.1 | 姿勢(Yaw)制御のPIDゲイン |
+| `heading_integral_max` | 0.3 | 姿勢I項の上限値 |
+| `heading_d_filter_alpha` | 0.4 | 姿勢D項の1次LPF係数 |
+| `min_docking_yaw_rate` | 0.03 rad/s | ゴール近傍の最小起動角速度 |
+| `goal_tolerance / goal_yaw_tolerance` | 0.005 m / 0.0175 rad | ゴール到達許容誤差（±5mm / ±1.0度） |
+| `goal_settle_count` | 5 | ゴール完了判定の連続維持周期数 |
+| `max_path_error / max_initial_path_error` | 0.30 m / 0.45 m | 非常停止する経路逸脱距離上限 |
+| `max_pose_age / control_comm_delay` | 0.2 s / 0.025 s | TF許容遅延と通信遅延補正時間 |
 
 ---
 
-## 5. 動的パラメータ変更とログ出力
+## 5. デバッグツール
 
-すべてのノードは `rclcpp` の動的パラメータ変更コールバック (`onSetParameters`) を備えています。
-CLI または rqt_reconfigure 等からパラメータを変更すると、即座に検証・反映され、変更結果がログに出力されます。
-
-```bash
-# 例: 走行速度と先読みゲインの変更
-ros2 param set /path_follower_node max_speed 1.5
-ros2 param set /path_follower_node lookahead_gain 0.18
-
-# ログ出力例:
-# [path_follower_node]: Parameter 'max_speed' updated to: 1.5
-# [path_follower_node]: Parameter 'lookahead_gain' updated to: 0.18
-```
-
----
-
-## 6. 追従状況および速度比較デバッグツール
-
-ロボットの速度指令値、ホイール順運動学速度、TF実効速度の3種類を比較し、追従状況を可視化するGUIツールを提供しています。
-
-詳細な仕様および使用方法は [tracking_debugger.md](file:///home/gn10/ros2_ws/src/gn10-navigation/docs/tracking_debugger.md) を参照してください。
+速度指令値・ホイール順運動学速度・TF実効速度の比較および軌道追従の可視化には [tracking_debugger.md](tracking_debugger.md) を参照してください。
 
 ```bash
-# 起動コマンド
-ros2 run gn10_navigation tracking_debugger_gui.py
-# または
 ros2 launch gn10_navigation tracking_debugger.launch.py
 ```

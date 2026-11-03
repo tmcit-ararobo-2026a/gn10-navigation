@@ -50,28 +50,27 @@ Follower --> UpperCmd : /robot/operation/navigation_status (uint8)
 
 note right of CostmapGen
   <b>主要パラメータ:</b>
-  - publish_rate (配信周期 [Hz])
-  - resolution, map_bounds.* (グリッド範囲・解像度)
-  - robot_clearance.* (ロボット高さ範囲)
-  - inflation.robot_radius, inflation.margin (膨張半径・マージン)
+  - publish_rate, resolution, map_bounds.*
+  - robot_clearance.z_min / z_max
+  - inflation.robot_radius, inflation.margin
 end note
 
 note right of Planner
   <b>主要パラメータ:</b>
-  - a_star.planning_cost (コストマップ重み)
-  - a_star.snap_distance (障害物スナップ距離)
-  - bspline.smoothing_strength (平滑化強度)
-  - rotation_planning.* (旋回計画コスト・距離)
-  - footprint.polygon (機体外形)
+  - a_star.planning_cost, snap_distance
+  - bspline.smoothing_strength, smoothing_iterations
+  - bspline.max_stride, smooth_max_cost
+  - rotation_planning.turn_max_cost, turn_distance
+  - footprint.polygon
 end note
 
 note right of Follower
   <b>主要パラメータ:</b>
-  - max_speed, max_accel, max_decel, max_jerk (S字速度プロファイル)
-  - lookahead_gain, min/max_lookahead (Pure Pursuit先読み)
-  - heading_kp, ki, kd, d_filter_alpha (方位PID制御)
-  - control_comm_delay, max_delay_compensation (遅延補償)
-  - goal_tolerance, goal_yaw_tolerance (ゴール判定)
+  - max_speed, max_acceleration, max_deceleration
+  - position_kp, position_ki, max_fb_speed
+  - settle_zone_distance, min_docking_speed
+  - heading_kp, ki, kd, min_docking_yaw_rate
+  - goal_tolerance, goal_yaw_tolerance, goal_settle_count
 end note
 
 @enduml

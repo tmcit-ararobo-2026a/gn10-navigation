@@ -65,6 +65,11 @@ private:
     bool isPassable(int gx, int gy) const;
 
     /**
+     * @brief 指定されたワールド座標のセルコストを取得 (範囲外・未知領域は100)
+     */
+    int getCellCostWorld(double wx, double wy) const;
+
+    /**
      * @brief 指定されたセル障害物内にある場合に、その周辺から最も近い通行可能なセルを探す
      *
      * @param gx グリッドのインデックスgx
@@ -89,34 +94,58 @@ private:
 
     /**
      * @brief A* の格子経路を動的適応型 B-spline (障害物に干渉しない最大平滑化度合い) で平滑化する。
+     *        始点と終点にはグリッド量子化前の正確なワールド座標を保持する。
      *
      * @param grid_path A* が生成した格子経路
+     * @param exact_start 正確な始点ワールド座標
+     * @param exact_goal 正確な終点ワールド座標
      * @return 平滑化後のワールド座標列
      */
     std::vector<std::pair<double, double>> smoothPath(
-        const std::vector<std::pair<int, int>>& grid_path
+        const std::vector<std::pair<int, int>>& grid_path,
+        const std::pair<double, double>& exact_start,
+        const std::pair<double, double>& exact_goal
     ) const;
 
     /**
-     * @brief 与えられた制御点列と平滑化強度から 3 次 clamped B-spline 経路を生成する
+     * @brief 与えられた制御点列と平滑化設定から 3 次 clamped B-spline 経路を生成する
      *
      * @param control_points 制御点列 (ワールド座標)
-     * @param smoothing_strength 内部制御点の平滑化強度
+     * @param smoothing_strength 1反復あたりの内部制御点の平滑化強度 (0.0〜1.0)
+     * @param smoothing_iterations 反復ラプラシアン平滑化の回数
+     * @param allowed_max_cost 制御点移動時に許容する最大セルコスト
      * @return std::vector<std::pair<double, double>> 生成された B-spline 補間点列
      */
     std::vector<std::pair<double, double>> evaluateBspline(
         const std::vector<std::pair<double, double>>& control_points,
-        double smoothing_strength
+        double smoothing_strength,
+        int smoothing_iterations,
+        int allowed_max_cost
     ) const;
 
     /**
-     * @brief ワールド座標列がすべて通行可能なセル上にあるか確認する。
+     * @brief ワールド座標列がすべて許容コスト以下の通行可能セル上にあるか確認する。
      *
      * @param path ワールド座標列
-     * @return true すべて通行可能
-     * @return false 障害物と干渉している
+     * @param max_allowed_cost 許容する最大コスト (1〜99)
+     * @return true すべて許容コスト以下で通行可能
+     * @return false 障害物またはコスト超過セルと干渉している
      */
-    bool isSmoothPathValid(const std::vector<std::pair<double, double>>& path) const;
+    bool isSmoothPathValid(
+        const std::vector<std::pair<double, double>>& path,
+        int max_allowed_cost = 99
+    ) const;
+
+    /**
+     * @brief 指定した位置 (wx, wy) および姿勢 (yaw) におけるロボットフットプリントの最大コストを算出する。
+     *
+     * @param wx ワールドX座標
+     * @param wy ワールドY座標
+     * @param yaw ロボットのヨー角
+     * @param cutoff_cost このコストを超えた時点で早期打ち切りする閾値
+     * @return int フットプリント内の最大コスト値 (0〜100)
+     */
+    int getFootprintMaxCost(double wx, double wy, double yaw, int cutoff_cost = 100) const;
 
     /**
      * @brief 指定した位置 (wx, wy) および姿勢 (yaw) において、ロボットのフットプリントが安全か判定する。
@@ -131,7 +160,7 @@ private:
     bool isFootprintSafe(double wx, double wy, double yaw, int max_cost) const;
 
     /**
-     * @brief パス上のコストが低い安全区間を探索し、各ポーズのYaw角を計画する。
+     * @brief パス上の旋回区間全域にわたりフットプリントが最も安全な領域を探索し、各ポーズのYaw角を計画する。
      *
      * @param smoothed_path 平滑化された座標列 (x, y)
      * @param start_yaw スタート時のロボットのYaw角
@@ -159,10 +188,13 @@ private:
     // パラメータ
     std::string map_frame_;
     std::string base_frame_;
-    double planning_cost_factor_;  // a_star.planning_cost (1.5)
-    double snap_distance_{0.4};     // a_star.snap_distance [m]
-    int bspline_samples_per_segment_;
-    double bspline_smoothing_strength_;
+    double planning_cost_factor_{1.5};  // a_star.planning_cost
+    double snap_distance_{0.4};         // a_star.snap_distance [m]
+    int bspline_samples_per_segment_{10};
+    double bspline_smoothing_strength_{1.0};
+    int bspline_smoothing_iterations_{5};
+    int bspline_max_stride_{4};
+    int bspline_smooth_max_cost_{80};
 
     // フットプリントおよび旋回計画パラメータ
     std::vector<std::pair<double, double>> footprint_polygon_;
