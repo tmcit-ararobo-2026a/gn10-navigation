@@ -216,6 +216,9 @@ void PathFollowerNode::declareAndGetParameters()
     this->declare_parameter("heading_d_filter_alpha", 0.4);
     this->declare_parameter("turn_yaw_rate_ratio", 0.75);
     this->declare_parameter("min_turn_speed", 0.3);
+    this->declare_parameter("centripetal_ff_gain", 1.0);
+    this->declare_parameter("decel_lead_in_distance", 0.15);
+    this->declare_parameter("decel_effective_ratio", 0.85);
     this->declare_parameter("control_comm_delay", 0.025);
     this->declare_parameter("max_delay_compensation", 0.20);
 
@@ -251,6 +254,9 @@ void PathFollowerNode::declareAndGetParameters()
     heading_d_filter_alpha_   = this->get_parameter("heading_d_filter_alpha").as_double();
     turn_yaw_rate_ratio_      = this->get_parameter("turn_yaw_rate_ratio").as_double();
     min_turn_speed_           = this->get_parameter("min_turn_speed").as_double();
+    centripetal_ff_gain_      = this->get_parameter("centripetal_ff_gain").as_double();
+    decel_lead_in_distance_   = this->get_parameter("decel_lead_in_distance").as_double();
+    decel_effective_ratio_    = this->get_parameter("decel_effective_ratio").as_double();
     control_comm_delay_       = this->get_parameter("control_comm_delay").as_double();
     max_delay_compensation_   = this->get_parameter("max_delay_compensation").as_double();
 
@@ -280,6 +286,10 @@ void PathFollowerNode::declareAndGetParameters()
         !std::isfinite(goal_position_gain_) || goal_position_gain_ <= 0.0 ||
         !std::isfinite(turn_yaw_rate_ratio_) || turn_yaw_rate_ratio_ <= 0.0 ||
         turn_yaw_rate_ratio_ > 1.0 || !std::isfinite(min_turn_speed_) || min_turn_speed_ <= 0.0 ||
+        !std::isfinite(centripetal_ff_gain_) || centripetal_ff_gain_ < 0.0 ||
+        !std::isfinite(decel_lead_in_distance_) || decel_lead_in_distance_ < 0.0 ||
+        !std::isfinite(decel_effective_ratio_) || decel_effective_ratio_ <= 0.0 ||
+        decel_effective_ratio_ > 1.0 ||
         !std::isfinite(control_comm_delay_) || control_comm_delay_ < 0.0 ||
         !std::isfinite(max_delay_compensation_) || max_delay_compensation_ < 0.0 ||
         !std::isfinite(heading_d_filter_alpha_) || heading_d_filter_alpha_ < 0.0 ||
@@ -292,10 +302,12 @@ void PathFollowerNode::declareAndGetParameters()
         this->get_logger(),
         "Parameters loaded: max_speed=%.2f, max_accel=%.2f, max_decel=%.2f, max_jerk=%.1f, "
         "lookahead=[%.2f, %.2f, gain=%.2f], goal_tol=%.3f, goal_yaw_tol=%.3f, "
-        "path_step=%.3f, heading_pid=[%.2f, %.2f, %.2f], d_filter_alpha=%.2f",
+        "path_step=%.3f, heading_pid=[%.2f, %.2f, %.2f], d_filter_alpha=%.2f, "
+        "centripetal_ff_gain=%.2f, decel_lead_in=%.2f m, decel_effective_ratio=%.2f",
         max_speed_, max_acceleration_, max_deceleration_, max_jerk_,
         min_lookahead_, max_lookahead_, lookahead_gain_, goal_tolerance_, goal_yaw_tolerance_,
-        path_interpolation_step_, heading_kp_, heading_ki_, heading_kd_, heading_d_filter_alpha_
+        path_interpolation_step_, heading_kp_, heading_ki_, heading_kd_, heading_d_filter_alpha_,
+        centripetal_ff_gain_, decel_lead_in_distance_, decel_effective_ratio_
     );
 }
 
@@ -410,6 +422,36 @@ rcl_interfaces::msg::SetParametersResult PathFollowerNode::onSetParameters(
         } else if (name == "min_turn_speed") {
             min_turn_speed_ = std::max(0.01, param.as_double());
             RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+        } else if (name == "centripetal_ff_gain") {
+            double val = param.as_double();
+            if (std::isfinite(val) && val >= 0.0) {
+                centripetal_ff_gain_ = val;
+                RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            } else {
+                result.successful = false;
+                result.reason = "centripetal_ff_gain must be non-negative";
+                return result;
+            }
+        } else if (name == "decel_lead_in_distance") {
+            double val = param.as_double();
+            if (std::isfinite(val) && val >= 0.0) {
+                decel_lead_in_distance_ = val;
+                RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            } else {
+                result.successful = false;
+                result.reason = "decel_lead_in_distance must be non-negative";
+                return result;
+            }
+        } else if (name == "decel_effective_ratio") {
+            double val = param.as_double();
+            if (std::isfinite(val) && val > 0.0 && val <= 1.0) {
+                decel_effective_ratio_ = val;
+                RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            } else {
+                result.successful = false;
+                result.reason = "decel_effective_ratio must be in (0.0, 1.0]";
+                return result;
+            }
         } else if (name == "control_comm_delay") {
             control_comm_delay_ = std::max(0.0, param.as_double());
             RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
@@ -545,7 +587,7 @@ void PathFollowerNode::onPlannedPath(const nav_msgs::msg::Path::ConstSharedPtr m
         }
         const double pose_yaw = getYawFromQuaternion(pose.pose.orientation);
         if (path_.empty()) {
-            path_.push_back({pose.pose.position.x, pose.pose.position.y, pose_yaw, 0.0, max_speed_, 0.0});
+            path_.push_back({pose.pose.position.x, pose.pose.position.y, pose_yaw, 0.0, max_speed_, 0.0, 0.0, 1.0, 0.0});
             continue;
         }
         const auto start = path_.back();
@@ -565,6 +607,9 @@ void PathFollowerNode::onPlannedPath(const nav_msgs::msg::Path::ConstSharedPtr m
                 normalizeAngle(start.yaw + fraction * delta_yaw),
                 start.distance + fraction * step_distance,
                 max_speed_,
+                0.0,
+                0.0,
+                1.0,
                 0.0});
         }
     }
@@ -588,9 +633,24 @@ void PathFollowerNode::onPlannedPath(const nav_msgs::msg::Path::ConstSharedPtr m
                              (current.y - previous.y) * (next.x - current.x);
         const double denominator = ab * bc * ac;
         if (denominator > kEpsilon) {
-            const double curvature = 2.0 * std::abs(cross) / denominator;
+            const double signed_curvature = 2.0 * cross / denominator;
+            path_[index].curvature = signed_curvature;
+            const double curvature_mag = std::abs(signed_curvature);
             path_[index].speed = std::min(
-                max_speed_, std::sqrt(max_lateral_acceleration_ / std::max(curvature, kEpsilon)));
+                max_speed_, std::sqrt(max_lateral_acceleration_ / std::max(curvature_mag, kEpsilon)));
+        } else {
+            path_[index].curvature = 0.0;
+        }
+
+        double tx = next.x - previous.x;
+        double ty = next.y - previous.y;
+        double t_norm = std::hypot(tx, ty);
+        if (t_norm > kEpsilon) {
+            path_[index].tangent_x = tx / t_norm;
+            path_[index].tangent_y = ty / t_norm;
+        } else {
+            path_[index].tangent_x = std::cos(current.yaw);
+            path_[index].tangent_y = std::sin(current.yaw);
         }
 
         // 旋回角速度要求（|dθ/ds|）に応じた並進速度制限:
@@ -608,6 +668,43 @@ void PathFollowerNode::onPlannedPath(const nav_msgs::msg::Path::ConstSharedPtr m
         }
     }
 
+    if (path_.size() >= 2) {
+        path_.front().tangent_x = path_[1].tangent_x;
+        path_.front().tangent_y = path_[1].tangent_y;
+        path_.front().curvature = path_[1].curvature;
+        path_.back().tangent_x  = path_[path_.size() - 2].tangent_x;
+        path_.back().tangent_y  = path_[path_.size() - 2].tangent_y;
+        path_.back().curvature  = path_[path_.size() - 2].curvature;
+    }
+
+    // 減速前倒し (Deceleration Lead-in):
+    // ジャーク立ち上がり遅れ (v * a_dec / (2 * jerk)) を考慮し、
+    // カーブ手前から先行して速度制限を前倒し適用する
+    if (decel_lead_in_distance_ > 0.0) {
+        const double jerk_ramp_dist =
+            (max_speed_ * max_deceleration_) / std::max(1.0, 2.0 * max_jerk_);
+        const double lead_in_dist = decel_lead_in_distance_ + jerk_ramp_dist;
+        std::vector<double> lead_in_speeds(path_.size());
+        for (std::size_t i = 0; i < path_.size(); ++i) {
+            lead_in_speeds[i] = path_[i].speed;
+            const double max_d = path_[i].distance + lead_in_dist;
+            for (std::size_t j = i + 1; j < path_.size() && path_[j].distance <= max_d; ++j) {
+                if (path_[j].speed < lead_in_speeds[i]) {
+                    const double dist_ahead = path_[j].distance - path_[i].distance;
+                    const double fraction = dist_ahead / std::max(kEpsilon, lead_in_dist);
+                    // Smoothstep (S字補間) で手前から自然に減速させる
+                    const double smooth_f = fraction * fraction * (3.0 - 2.0 * fraction);
+                    const double target_s =
+                        path_[j].speed + smooth_f * (path_[i].speed - path_[j].speed);
+                    lead_in_speeds[i] = std::min(lead_in_speeds[i], target_s);
+                }
+            }
+        }
+        for (std::size_t i = 0; i < path_.size(); ++i) {
+            path_[i].speed = lead_in_speeds[i];
+        }
+    }
+
     path_.front().speed = 0.0;
     path_.back().speed = 0.0;
     const auto speed_profile = makeSCurve(
@@ -622,12 +719,15 @@ void PathFollowerNode::onPlannedPath(const nav_msgs::msg::Path::ConstSharedPtr m
             std::sqrt(path_[index - 1].speed * path_[index - 1].speed +
                       2.0 * max_acceleration_ * distance));
     }
+
+    // ジャーク立ち上がりマージンを考慮した実効減速度による後方走査
+    const double effective_deceleration = max_deceleration_ * decel_effective_ratio_;
     for (std::size_t index = path_.size() - 1; index > 0; --index) {
         const double distance = path_[index].distance - path_[index - 1].distance;
         path_[index - 1].speed = std::min(
             path_[index - 1].speed,
             std::sqrt(path_[index].speed * path_[index].speed +
-                      2.0 * max_deceleration_ * distance));
+                      2.0 * effective_deceleration * distance));
     }
 
     goal_pose_ = msg->poses.back();
@@ -695,13 +795,25 @@ PathFollowerNode::SpeedPoint PathFollowerNode::sample(double distance) const
     const double fraction =
         (distance - previous.distance) / std::max(iterator->distance - previous.distance, kEpsilon);
     const double delta_yaw = normalizeAngle(iterator->yaw - previous.yaw);
+    const double cur_curvature =
+        previous.curvature + fraction * (iterator->curvature - previous.curvature);
+    double cur_tx = previous.tangent_x + fraction * (iterator->tangent_x - previous.tangent_x);
+    double cur_ty = previous.tangent_y + fraction * (iterator->tangent_y - previous.tangent_y);
+    const double t_norm = std::hypot(cur_tx, cur_ty);
+    if (t_norm > kEpsilon) {
+        cur_tx /= t_norm;
+        cur_ty /= t_norm;
+    }
     return {
         previous.x + fraction * (iterator->x - previous.x),
         previous.y + fraction * (iterator->y - previous.y),
         normalizeAngle(previous.yaw + fraction * delta_yaw),
         distance,
         previous.speed + fraction * (iterator->speed - previous.speed),
-        previous.time + fraction * (iterator->time - previous.time)};
+        previous.time + fraction * (iterator->time - previous.time),
+        cur_curvature,
+        cur_tx,
+        cur_ty};
 }
 
 void PathFollowerNode::controlLoop()
@@ -865,13 +977,39 @@ void PathFollowerNode::controlLoop()
                 desired_speed * (target.y - robot_y) / target_distance : 0.0;
             double desired_ax = (desired_vx - command_vx_world_) / delta_time;
             double desired_ay = (desired_vy - command_vy_world_) / delta_time;
+
+            // 自己位置計測遅延 (pose_age) と通信・制御実行遅延 (control_comm_delay_)
+            const double total_delay = std::clamp(
+                pose_age + control_comm_delay_, 0.0, max_delay_compensation_
+            );
+
+            // 遠心力補償 (向心加速度フィードフォワード) の計算
+            // 旋回曲率 κ に応じた理論上の向心加速度 a_n = v^2 * κ を進行方向左法線ベクトルに作用させ、
+            // Pure Pursuit (FB) の遅れを待たずに車輪を曲率内側へ先行駆動する
+            double a_ff_x = 0.0;
+            double a_ff_y = 0.0;
+            if (centripetal_ff_gain_ > 0.0 && !position_reached && command_speed > 0.05) {
+                // 機体の遅延 τ 先のパス位置における曲率および法線ベクトルを評価
+                const double eval_dist = std::clamp(
+                    progress_ + command_speed * total_delay, 0.0, path_.back().distance);
+                const auto eval_pt = sample(eval_dist);
+                const double v_sq = command_speed * command_speed;
+                // 向心加速度 a_n = v^2 * kappa (正の曲率なら左向き法線 (-tangent_y, tangent_x))
+                a_ff_x = centripetal_ff_gain_ * v_sq * eval_pt.curvature * (-eval_pt.tangent_y);
+                a_ff_y = centripetal_ff_gain_ * v_sq * eval_pt.curvature * (eval_pt.tangent_x);
+                limitVector(a_ff_x, a_ff_y, max_lateral_acceleration_);
+            }
+
+            double total_ax = desired_ax + a_ff_x;
+            double total_ay = desired_ay + a_ff_y;
+
             double acceleration_limit = max_acceleration_;
             if (desired_speed < command_speed) {
                 acceleration_limit = max_deceleration_;
             }
-            limitVector(desired_ax, desired_ay, acceleration_limit);
-            double delta_ax = desired_ax - command_ax_world_;
-            double delta_ay = desired_ay - command_ay_world_;
+            limitVector(total_ax, total_ay, acceleration_limit);
+            double delta_ax = total_ax - command_ax_world_;
+            double delta_ay = total_ay - command_ay_world_;
             limitVector(delta_ax, delta_ay, max_jerk_ * delta_time);
             command_ax_world_ += delta_ax;
             command_ay_world_ += delta_ay;
@@ -896,9 +1034,6 @@ void PathFollowerNode::controlLoop()
             // 自己位置計測遅延 (pose_age) と通信・制御実行遅延 (control_comm_delay_) による旋回中ドリフトの予測補正
             // 合計遅延時間 τ の間に機体はさらに command_yaw_rate_ * τ だけ回転するため、
             // 実際に地面に車輪駆動力が作用する瞬間の姿勢角 predicted_robot_yaw に基づいてローカル速度へ変換する。
-            const double total_delay = std::clamp(
-                pose_age + control_comm_delay_, 0.0, max_delay_compensation_
-            );
             const double predicted_robot_yaw =
                 normalizeAngle(robot_yaw + command_yaw_rate_ * total_delay);
             const double cosine = std::cos(predicted_robot_yaw);

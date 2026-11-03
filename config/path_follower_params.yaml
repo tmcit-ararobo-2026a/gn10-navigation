@@ -11,7 +11,13 @@ path_follower_node:
     # 最大躍度（加速度の変化率）[m/s^3]
     max_jerk: 80.0
     # 最大横加速度 [m/s^2]
-    max_lateral_acceleration: 1.60
+    max_lateral_acceleration: 2.20
+    # 向心加速度(遠心力相殺)フィードフォワードゲイン [0.0~2.0]
+    centripetal_ff_gain: 1.0
+    # カーブ進入前の減速前倒し先行距離 [m]
+    decel_lead_in_distance: 0.15
+    # ジャーク立ち上がりマージンを考慮した減速後方走査の実効減速度比率 (0.5~1.0)
+    decel_effective_ratio: 0.85
     # 曲率を計算する距離の窓幅 [m]
     curvature_window: 0.20
     # 最大角速度 [rad/s]

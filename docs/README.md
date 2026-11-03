@@ -81,14 +81,18 @@
 
 ### 処理の流れ
 1. **経路前処理 (onPlannedPath)**:
-   - 受信したパスを `path_interpolation_step` 間隔で高密度に補間。
+   - 受信したパスを `path_interpolation_step` 間隔で高密度に補間し、各点の符号付き曲率 $\kappa$ および接線ベクトルを算出。
    - `curvature_window` を用いて局所曲率を計算し、`max_lateral_acceleration` から許容通過速度を算出。
    - 旋回角速度要求 `|dθ/ds|` に応じて並進速度を `turn_yaw_rate_ratio` および `min_turn_speed` で制限。
-   - `makeSCurve` により最大加速度・最大躍度 (Jerk) を満たすS字速度プロファイルを生成。
+   - ジャーク制限による減速立ち上がり遅れを打ち消すため、カーブ進入手前 `decel_lead_in_distance` から滑らかに減速を開始（減速前倒し）。
+   - `decel_effective_ratio` による実効減速度を用いたバックワード走査とフォワード加速走査（`makeSCurve`）によりS字速度プロファイルを生成。
 2. **周期制御ループ (controlLoop)**:
    - `control_rate` [Hz] で実行。自己位置の遅延 (`max_pose_age`) を判定。
    - 経路への直交射影により横偏差を計算。`max_path_error` 超過時は非常停止。
    - 先読み距離 `lookahead = clamp(min_lookahead + lookahead_gain * speed, min, max)` を計算し目標点を取得。
+   - **向心加速度フィードフォワード (Centripetal FF)**:
+     - 推定遅延時間先のパス点の曲率 $\kappa$ と接線ベクトルから、慣性遠心力に対抗する向心加速度 $\mathbf{a}_{ff} = k_{ff} \cdot v^2 \cdot \kappa \cdot \mathbf{n}_{left}$ を算出。
+     - Pure Pursuitのフィードバック加速度と合算し、Jerk制限（躍度制限）を適用して車輪駆動指令へ統合。
    - 目標位置および姿勢に対するゴール判定 (`goal_tolerance`, `goal_yaw_tolerance`)。
    - 目標Yaw角に対するPID制御（LPF係数 `heading_d_filter_alpha` による微分ノイズ低減）。
    - 推定通信・アクチュエータ遅延 `control_comm_delay` と姿勢角から接地瞬間の予測姿勢を計算し、旋回中のドリフトをキャンセルした局所速度指令を出力。
@@ -101,8 +105,11 @@
 | `max_acceleration` | 3.0 m/s^2 | 最大並進加速度。 |
 | `max_deceleration` | 3.0 m/s^2 | 最大並進減速度。 |
 | `max_jerk` | 40.0 m/s^3 | 最大躍度（加速度の変化率）。走行の滑らかさ、車輪スリップ防止に影響。 |
-| `max_lateral_acceleration` | 1.6 m/s^2 | カーブ通過時の遠心力制限。 |
+| `max_lateral_acceleration` | 2.20 m/s^2 | カーブ通過時の遠心力制限および向心加速度FFの上限値。 |
 | `curvature_window` | 0.10 m | カーブ曲率計算の前後窓幅。 |
+| `centripetal_ff_gain` | 1.0 | 向心加速度フィードフォワードゲイン。カーブ進入時の外膨らみ（アンダーステア）を抑える場合は 1.0 前後、内側に巻き込みすぎる場合は 0.7〜0.8 に調整。 |
+| `decel_lead_in_distance` | 0.15 m | カーブ手前での減速開始前倒し距離マージン。急カーブ手前で減速が間に合わず突っ込む場合は大きくします。 |
+| `decel_effective_ratio` | 0.85 | ジャーク制限下での実効減速度比率。S字減速時の平均減速度の低下を見越して手前から減速させます。 |
 | `min_lookahead / max_lookahead` | 0.15 / 0.40 m | Pure Pursuitの最小・最大先読み距離。小さすぎると蛇行、大きすぎると内回り・角落ち。 |
 | `lookahead_gain` | 0.20 s | 速度に応じた先読み距離の比例ゲイン。 |
 | `goal_tolerance` | 0.01 m | ゴール到達とみなす位置許容誤差。 |
