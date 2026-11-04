@@ -117,7 +117,40 @@
 
 ---
 
-## 5. デバッグツール
+## 5. 移動バケツ追従射出速度計算 (`moving_bucket_launcher_flow.pu`)
+
+相手ロボット上の可動バケツ（Target ID 0: `MovingBucket`）に対し、LiDAR Perception System の推定底面位置から直動ベルトの射出速度をリアルタイムに逆算します。
+
+### 処理の流れ
+1. **排他制御チェック**:
+   - `target_id == MovingBucket (0)` の時のみ計算およびパブリッシュを実行。固定ターゲット時は `target_manager_node` とのトピック競合を防止するため完全停止。
+2. **有効性・鮮度検証**:
+   - `BucketBottom.valid == true` かつ `(now - last_observation_stamp) <= max_tracking_age_sec` の場合のみ処理を継続。
+3. **TF相対座標変換**:
+   - 計測座標を `base_link` へ変換し、ランチャー射出位置オフセット（`launcher_offset_x`, `launcher_offset_z`）を差し引いて相対距離 $L$ と高低差 $\Delta z$ を算出。
+4. **3次元弾道方程式による初速逆算**:
+   - 仰角 $\theta$（既定 $45^\circ$）による放物弾道式：
+     $$v_0 = \sqrt{\frac{g L^2}{2 \cos^2\theta (L \tan\theta - \Delta z)}}$$
+   - スリップ・抵抗補正: $v_{\text{target}} = v_0 \cdot \text{scale} + \text{offset}$
+5. **バッテリー電圧低下補正 & クランプ**:
+   - バッテリー電圧（`/robot/feedback/drive_battery_voltage`）が $15\text{V}$ 以上の正常値の場合、基準電圧（$20\text{V}$）との偏差に応じて速度を微調整。
+   - 機構許容範囲（`min_velocity` 〜 `max_velocity`）へクランプして `/robot/operation/belt_launcher_speed` へ発行。
+
+### パラメータ
+| パラメータ名 | 既定値 | 役割 |
+|---|---|---|
+| `base_frame` | `base_link` | 基準ロボットフレーム |
+| `launcher_offset_x / z` | 0.20 m / 0.35 m | 機体中心からの射出点オフセット |
+| `launch_angle_deg` | 45.0 deg | ランチャー射出仰角 |
+| `min_velocity / max_velocity` | 3.0 / 7.75 m/s | 機構速度上下限リミット |
+| `velocity_scale / offset` | 1.05 / 0.10 m/s | 弾道スケール・切片補正係数 |
+| `voltage_ref` | 20.0 V | 基準電源電圧 |
+| `voltage_comp_gain` | 0.02 /V | 電圧低下1Vあたりの速度補正比率 |
+| `max_tracking_age_sec` | 0.60 s | バケツ追従計測値の許容最大遅延 |
+
+---
+
+## 6. デバッグツール
 
 速度指令値・ホイール順運動学速度・TF実効速度の比較および軌道追従の可視化には [tracking_debugger.md](tracking_debugger.md) を参照してください。
 
