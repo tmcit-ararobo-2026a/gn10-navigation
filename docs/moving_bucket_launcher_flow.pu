@@ -1,0 +1,74 @@
+@startuml moving_bucket_launcher_flow
+skinparam backgroundColor #FEFEFE
+skinparam activity {
+    StartColor #2E7D32
+    EndColor #C62828
+    BackgroundColor #ECEFF1
+    BorderColor #37474F
+    FontName "Noto Sans JP", sans-serif
+}
+
+title moving_bucket_launcher_node 処理フロー図
+
+start
+
+:バケツ底認識コールバック (onBucketBottom)\n/bucket_opening_tracker/bottom 受信;
+
+if (current_target_id == MovingBucket (0) ?) then (Yes)
+else (No: 固定ターゲット選択中)
+    :トピック干渉回避のため処理スキップ\n(target_manager_node の配信を優先);
+    stop
+endif
+
+if (msg->valid == true ?) then (Yes)
+else (No)
+    :認識結果が無効のためスキップ;
+    stop
+endif
+
+if ((now - last_observation_stamp) <= max_tracking_age_sec ?) then (Yes)
+else (No: 鮮度タイムアウト)
+    :古い計測値のためスキップ;
+    stop
+endif
+
+:TF変換 (tf_buffer_->transform)\nframe_id -> base_link (point_robot);
+
+if (TF取得成功 ?) then (Yes)
+else (No: TF例外)
+    :エラーログ出力しスキップ;
+    stop
+endif
+
+:ランチャー射出位置オフセット補正\nrel_x = point_robot.x - launcher_offset_x\nrel_z = point_robot.z - launcher_offset_z;
+:水平相対距離算出\nL = hypot(rel_x, rel_y);
+
+if (L >= 0.5m ?) then (Yes)
+else (No: 近すぎる)
+    :安全のためスキップ;
+    stop
+endif
+
+:3次元弾道方程式による必要初速逆算\nv0 = sqrt( (g * L^2) / (2 * cos^2(θ) * (L * tan(θ) - Δz)) );
+
+if (目標到達可能 (分母 > 0) ?) then (Yes)
+else (No: 物理的到達不可)
+    :到達不能警告出力しスキップ;
+    stop
+endif
+
+:空気抵抗・スリップ補正\nv_target = v0 * velocity_scale + velocity_offset;
+
+if (バッテリー電圧正常 (>= 15V かつ 2s以内) ?) then (Yes)
+    :電圧降下補正\nv_target *= (1.0 + voltage_comp_gain * (voltage_ref - current_volt));
+else (No)
+    :電圧基準値 (voltage_ref) を適用;
+endif
+
+:機構許容範囲クランプ\nv_clamped = clamp(v_target, min_velocity, max_velocity);
+
+:射出速度配信 (belt_launcher_speed_pub_)\n/robot/operation/belt_launcher_speed = v_clamped;
+
+stop
+
+@enduml

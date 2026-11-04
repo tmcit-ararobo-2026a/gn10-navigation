@@ -92,6 +92,9 @@ def start_navigation(context):
         Node(package='gn10_navigation', executable='path_follower_node',
              name='path_follower_node', output='screen',
              parameters=follower_parameters),
+        Node(package='gn10_navigation', executable='moving_bucket_launcher_node',
+             name='moving_bucket_launcher_node', output='screen',
+             parameters=[clock], condition=IfCondition(LaunchConfiguration('enable_moving_bucket_launcher'))),
         Node(package='rviz2', executable='rviz2', name='navigation_rviz',
              output='screen', arguments=['-d', rviz_config] if rviz_config else [],
              parameters=[clock], condition=IfCondition(LaunchConfiguration('use_rviz'))),
@@ -125,5 +128,7 @@ def generate_launch_description():
         DeclareLaunchArgument('rviz_config',
                               default_value=str(rviz_config) if rviz_config.is_file() else '',
                               description='RViz設定ファイル。空欄なら標準表示で起動'),
+        DeclareLaunchArgument('enable_moving_bucket_launcher', default_value='true',
+                              description='移動バケツ追従投擲速度計算ノードを起動する'),
     ]
     return LaunchDescription(arguments + [OpaqueFunction(function=start_navigation)])
