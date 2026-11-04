@@ -85,6 +85,8 @@ void PathPlannerNode::declareAndGetParameters()
     this->declare_parameter("bspline.smoothing_iterations", 5);
     this->declare_parameter("bspline.max_stride", 4);
     this->declare_parameter("bspline.smooth_max_cost", 80);
+    this->declare_parameter("line_approximation.max_cost", 20);
+    this->declare_parameter("line_approximation.min_distance", 0.5);
 
     this->declare_parameter("footprint.polygon", kDefaultFootprint);
     this->declare_parameter("rotation_planning.turn_max_cost", 20);
@@ -108,6 +110,11 @@ void PathPlannerNode::declareAndGetParameters()
     bspline_smooth_max_cost_ = std::clamp(
         static_cast<int>(this->get_parameter("bspline.smooth_max_cost").as_int()), 0, 99
     );
+    line_approx_max_cost_ = std::clamp(
+        static_cast<int>(this->get_parameter("line_approximation.max_cost").as_int()), -1, 99
+    );
+    line_approx_min_distance_ =
+        this->get_parameter("line_approximation.min_distance").as_double();
 
     if (!std::isfinite(bspline_smoothing_strength_) || bspline_smoothing_strength_ < 0.0 ||
         bspline_smoothing_strength_ > 1.0) {
@@ -115,6 +122,9 @@ void PathPlannerNode::declareAndGetParameters()
     }
     if (!std::isfinite(snap_distance_) || snap_distance_ <= 0.0) {
         throw std::invalid_argument("a_star.snap_distance must be finite and positive");
+    }
+    if (!std::isfinite(line_approx_min_distance_) || line_approx_min_distance_ <= 0.0) {
+        throw std::invalid_argument("line_approximation.min_distance must be finite and positive");
     }
 
     const auto polygon_flat = this->get_parameter("footprint.polygon").as_double_array();
@@ -138,6 +148,7 @@ void PathPlannerNode::declareAndGetParameters()
         this->get_logger(),
         "Parameters loaded: planning_cost=%.2f, snap_distance=%.3f, "
         "bspline=[samples=%d, strength=%.2f, iters=%d, max_stride=%d, max_cost=%d], "
+        "line_approx=[max_cost=%d, min_dist=%.2f], "
         "rotation=[turn_max_cost=%d, angle_step=%.2f, turn_dist=%.2f]",
         planning_cost_factor_,
         snap_distance_,
@@ -146,6 +157,8 @@ void PathPlannerNode::declareAndGetParameters()
         bspline_smoothing_iterations_,
         bspline_max_stride_,
         bspline_smooth_max_cost_,
+        line_approx_max_cost_,
+        line_approx_min_distance_,
         turn_max_cost_,
         angle_step_,
         turn_distance_
@@ -223,6 +236,24 @@ rcl_interfaces::msg::SetParametersResult PathPlannerNode::onSetParameters(
             } else {
                 result.successful = false;
                 result.reason     = "bspline.smooth_max_cost must be in [0, 99]";
+                return result;
+            }
+        } else if (name == "line_approximation.max_cost") {
+            int val = static_cast<int>(param.as_int());
+            if (val >= -1 && val <= 99) {
+                line_approx_max_cost_ = val;
+            } else {
+                result.successful = false;
+                result.reason     = "line_approximation.max_cost must be in [-1, 99]";
+                return result;
+            }
+        } else if (name == "line_approximation.min_distance") {
+            double val = param.as_double();
+            if (std::isfinite(val) && val > 0.0) {
+                line_approx_min_distance_ = val;
+            } else {
+                result.successful = false;
+                result.reason     = "line_approximation.min_distance must be positive";
                 return result;
             }
         } else if (name == "rotation_planning.turn_max_cost") {
@@ -809,6 +840,120 @@ bool PathPlannerNode::isSmoothPathValid(
     return true;
 }
 
+std::vector<std::pair<double, double>> PathPlannerNode::approximateStraightLines(
+    const std::vector<std::pair<double, double>>& path
+) const
+{
+    using Point = std::pair<double, double>;
+    if (path.size() < 3 || line_approx_max_cost_ < 0 || line_approx_min_distance_ <= 0.0) {
+        return path;
+    }
+
+    const double res =
+        (latest_costmap_.info.resolution > 0.0) ? latest_costmap_.info.resolution : 0.05;
+    const double check_step = std::max(0.01, res * 0.5);
+    const double point_step = std::clamp(res * 0.5, 0.01, 0.05);
+
+    const auto isSegmentLowCost = [&](const Point& p0, const Point& p1) -> bool {
+        if (getCellCostWorld(p0.first, p0.second) > line_approx_max_cost_ ||
+            getCellCostWorld(p1.first, p1.second) > line_approx_max_cost_) {
+            return false;
+        }
+        const double dist      = std::hypot(p1.first - p0.first, p1.second - p0.second);
+        const int num_samples  = std::max(1, static_cast<int>(std::ceil(dist / check_step)));
+        for (int s = 0; s <= num_samples; ++s) {
+            const double t  = static_cast<double>(s) / num_samples;
+            const double wx = p0.first + t * (p1.first - p0.first);
+            const double wy = p0.second + t * (p1.second - p0.second);
+            const int cost  = getCellCostWorld(wx, wy);
+            if (cost < 0 || cost > line_approx_max_cost_ || cost >= 100) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    std::vector<Point> result;
+    result.reserve(path.size());
+    result.push_back(path.front());
+    std::vector<std::size_t> junction_indices;
+
+    std::size_t i = 0;
+    while (i + 1 < path.size()) {
+        std::size_t best_j = i;
+        if (getCellCostWorld(path[i].first, path[i].second) <= line_approx_max_cost_) {
+            for (std::size_t j = path.size() - 1; j > i + 1; --j) {
+                const double chord_dist =
+                    std::hypot(path[j].first - path[i].first, path[j].second - path[i].second);
+                if (chord_dist < line_approx_min_distance_) {
+                    continue;
+                }
+                if (isSegmentLowCost(path[i], path[j])) {
+                    best_j = j;
+                    break;
+                }
+            }
+        }
+
+        if (best_j > i + 1) {
+            if (i > 0) {
+                junction_indices.push_back(result.size() - 1);
+            }
+            const Point& p0        = path[i];
+            const Point& p1        = path[best_j];
+            const double chord_len = std::hypot(p1.first - p0.first, p1.second - p0.second);
+            const int steps        = std::max(1, static_cast<int>(std::ceil(chord_len / point_step)));
+            for (int s = 1; s <= steps; ++s) {
+                const double t = static_cast<double>(s) / steps;
+                result.emplace_back(
+                    p0.first + t * (p1.first - p0.first),
+                    p0.second + t * (p1.second - p0.second)
+                );
+            }
+            if (best_j + 1 < path.size()) {
+                junction_indices.push_back(result.size() - 1);
+            }
+            i = best_j;
+        } else {
+            result.push_back(path[i + 1]);
+            ++i;
+        }
+    }
+
+    // 直線区間と曲線区間の接続点 (junction) のみ局所的な微小コーナーラウンディングを行い、
+    // 直線区間の直線性を維持しつつ接続点の局所曲率スパイクを防止する
+    if (!junction_indices.empty() && result.size() >= 5) {
+        std::vector<bool> smooth_mask(result.size(), false);
+        for (std::size_t j_idx : junction_indices) {
+            const std::size_t start_k = (j_idx > 3) ? (j_idx - 3) : 1;
+            const std::size_t end_k   = std::min(result.size() - 2, j_idx + 3);
+            for (std::size_t k = start_k; k <= end_k; ++k) {
+                smooth_mask[k] = true;
+            }
+        }
+        for (int iter = 0; iter < 3; ++iter) {
+            const auto prev = result;
+            for (std::size_t k = 1; k + 1 < result.size(); ++k) {
+                if (!smooth_mask[k]) {
+                    continue;
+                }
+                const Point candidate{
+                    0.25 * prev[k - 1].first + 0.5 * prev[k].first + 0.25 * prev[k + 1].first,
+                    0.25 * prev[k - 1].second + 0.5 * prev[k].second + 0.25 * prev[k + 1].second
+                };
+                if (getCellCostWorld(candidate.first, candidate.second) <=
+                    std::max(line_approx_max_cost_, bspline_smooth_max_cost_)) {
+                    result[k] = candidate;
+                }
+            }
+        }
+    }
+
+    result.front() = path.front();
+    result.back()  = path.back();
+    return result;
+}
+
 int PathPlannerNode::getFootprintMaxCost(
     double wx, double wy, double yaw, int cutoff_cost
 ) const
@@ -1182,6 +1327,9 @@ void PathPlannerNode::onGoalPose(const geometry_msgs::msg::PoseStamped::ConstSha
             smoothed_path.back()  = approach_goal;
         }
     }
+
+    // 4.5. 低コスト領域かつ最小距離以上の区間を直線近似
+    smoothed_path = approximateStraightLines(smoothed_path);
 
     // 5. ゴールが障害物内にめり込んでいる場合、アプローチ点から本来の目標地点への直線進入区間を付加
     if (goal_was_snapped) {

@@ -12,9 +12,9 @@ path_follower_node:
 
     # 機体物理制限 (前処理プロファイルおよび1次加速度リミッタで使用)
     max_speed: 3.0
-    max_acceleration: 6.0
+    max_acceleration: 8.0
     max_deceleration: 6.0
-    max_jerk: 100.0
+    max_jerk: 150.0
     max_lateral_acceleration: 3.0
     max_angular_velocity: 3.0
     max_angular_acceleration: 5.0
@@ -27,7 +27,10 @@ path_follower_node:
     # 軌道追従・位置フィードバック制御
     position_kp: 20.0
     position_ki: 0.0
-    max_fb_speed: 0.60
+    position_kd: 2.5
+    position_d_filter_alpha: 0.4
+    max_fb_speed: 0.60           # ゴール近傍 (in_settle_zone / ドッキング時) のFB速度上限 [m/s]
+    max_cruise_fb_speed: 1.50    # 巡航中 (!in_settle_zone) のFB速度上限 [m/s]
     min_docking_speed: 0.02
     settle_zone_distance: 0.50
 

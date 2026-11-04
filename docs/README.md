@@ -54,8 +54,9 @@
    - ゴールが障害物内（教壇等への突き当て接触位置など）にある場合、最寄り通行可能セルを「安全アプローチ点」として設定しつつ、本来の目標座標も破棄せず保持。
 2. **8方向 A* 探索**:
    - 移動距離＋`costmap_val * a_star.planning_cost` を最小化する格子経路を探索。
-3. **動的適応型 B-spline 平滑化 & ドッキングアプローチ区間結合**:
+3. **動的適応型 B-spline 平滑化・直線近似・ドッキングアプローチ区間結合**:
    - 制御点の間引きステップ（最大 `bspline.max_stride`）と反復ラプラシアン平滑化（`bspline.smoothing_iterations` 回）を段階的に試行し、`bspline.smooth_max_cost` 以下で障害物に干渉しない最も滑らかな曲線を採用。
+   - 経路のうち、セルコストが `line_approximation.max_cost` 以下の領域を通過し、かつ長さが `line_approximation.min_distance` 以上ある区間を直線近似（接続点は微小ラウンディングで曲率スパイクを防止）。
    - ゴールが障害物内にめり込んでいる場合は、安全アプローチ点から本来の目標地点への直線進入区間を平滑化経路の終端に付加（障害物直前まで安全移動した後に障害物へ直進アプローチ）。
 4. **安全領域での旋回計画**:
    - 長さ `rotation_planning.turn_distance` の旋回区間ウィンドウを走査し、区間全域で全回転角度のフットプリントコストが `rotation_planning.turn_max_cost` 以下かつ最小となる最も安全な領域を選定して Smoothstep で目標Yaw角を補間。
@@ -70,6 +71,8 @@
 | `bspline.smoothing_iterations` | 5 | 内部制御点の反復ラプラシアン平滑化回数 (0〜50) |
 | `bspline.max_stride` | 4 | 制御点間引きステップの最大値 (1〜10) |
 | `bspline.smooth_max_cost` | 80 | 平滑化経路が許容する最大セルコスト (0〜99) |
+| `line_approximation.max_cost` | 20 | 直線近似を許容する最大セルコスト (-1: 無効, 0〜99) |
+| `line_approximation.min_distance` | 0.50 m | 直線化する最小セグメント距離 |
 | `footprint.polygon` | 8頂点座標列 | 機体の外形ポリゴン頂点 [m] |
 | `rotation_planning.turn_max_cost` | 20 | 旋回区間全域で許容する最大フットプリントコスト |
 | `rotation_planning.angle_step` | 0.1 rad | 旋回干渉チェックの角度ステップ |
@@ -82,13 +85,13 @@
 ### 処理の流れ
 1. **経路前処理 (`onPlannedPath`)**:
    - `path_interpolation_step` 間隔で経路を細分化し、単位接線ベクトルと曲率 $\kappa$ を計算。
-   - 横加速度制限 $v \le \sqrt{a_{\text{lat,max}} / |\kappa|}$、旋回角速度要求 $|d\theta/ds|$ による並進速度制限（`turn_yaw_rate_ratio`, `min_turn_speed`）、S字速度プロファイル、ゴール近傍の位置P制御速度上限（$K_p \cdot d_{\text{rem}}$）、および前後方加減速走査から計画速度プロファイルを生成。
+   - 横加速度制限 $v \le \sqrt{a_{\text{lat,max}} / |\kappa|}$、旋回角速度要求 $|d\theta/ds|$ による並進速度制限（`turn_yaw_rate_ratio`, `min_turn_speed`）、ロケットスタート初速ランプ＋S字速度プロファイル、ゴール近傍の位置P制御速度上限（$K_p \cdot d_{\text{rem}}$）、および前後方加減速走査から計画速度プロファイルを生成。
 2. **周期制御ループ (`controlLoop`)**:
    - 現在位置を経路へ直交射影し、`max_path_error` 超過時は非常停止（`Fail`）。
    - **FF + FB 統合速度計算**:
-     - 巡航中は遅延補償点 `ref_pt` の接線速度 $\boldsymbol{v}_{\text{ff}} = v_{\text{ref}} \boldsymbol{t}$ と、現在位置の直交射影点 `proj_pt` への横ズレ補正 $\boldsymbol{v}_{\text{fb}} = K_p (\boldsymbol{p}_{\text{proj}} - \boldsymbol{p}_{\text{robot}})$ を合成。
-     - ゴール近傍（`settle_zone_distance` 以内）ではゴール座標へのPI制御と最小起動速度リフト（`min_docking_speed`）により静止摩擦を突破して収束。
-   - **1次最大加速度リミッタ**: 1周期あたりの速度変化量を `accel_limit * dt` 以内に制限。
+     - 巡航中は遅延補償点 `ref_pt` の接線速度 $\boldsymbol{v}_{\text{ff}} = v_{\text{ref}} \boldsymbol{t}$ と、現在位置の直交射影点 `proj_pt` への横ズレPD補正 $\boldsymbol{v}_{\text{fb}} = K_p \boldsymbol{e} + K_d \dot{\boldsymbol{e}}$（`max_cruise_fb_speed` でクランプ）を合成。
+     - ゴール近傍（`settle_zone_distance` 以内）ではゴール座標へのPID制御（`position_kp / ki / kd`、`max_fb_speed` でクランプ）と最小起動速度リフト（`min_docking_speed`）により振動を抑えつつ静止摩擦を突破して収束。
+   - **1次最大加速度リミッタ**: 1周期あたりの速度変化量を `accel_limit * dt` 以内に制限（巡航発進時はロケットスタート初期ステップを付与）。
    - **姿勢PID制御**: 目標Yaw角へのPID制御＋ゴール近傍の最小角速度リフト（`min_docking_yaw_rate`）＋1次角加速度リミッタ。
    - **ゴール判定 (Settle Counter)**: 位置誤差 `goal_tolerance` 以下かつ角度誤差 `goal_yaw_tolerance` 以下を `goal_settle_count` 周期連続で維持したら `Goal` へ遷移して完全停止。
 
@@ -96,20 +99,22 @@
 | パラメータ名 | 既定値 | 役割 |
 |---|---|---|
 | `control_rate` | 50.0 Hz | 制御ループ周期 |
-| `max_speed` | 2.0 m/s | 最大並進速度 |
-| `max_acceleration / max_deceleration` | 3.0 m/s^2 | 最大並進加減速度（前処理および1次リミッタ） |
-| `max_jerk` | 50.0 m/s^3 | 前処理S字プロファイルの最大躍度 |
-| `max_lateral_acceleration` | 2.0 m/s^2 | カーブ通過時の最大横加速度 |
-| `max_angular_velocity / acceleration` | 2.5 rad/s, 5.0 rad/s^2 | 最大角速度・最大角加速度 |
+| `max_speed` | 3.0 m/s | 最大並進速度 |
+| `max_acceleration / max_deceleration` | 8.0 / 6.0 m/s^2 | 最大並進加減速度（前処理および1次リミッタ） |
+| `max_jerk` | 150.0 m/s^3 | 前処理S字プロファイルの最大躍度 |
+| `max_lateral_acceleration` | 3.0 m/s^2 | カーブ通過時の最大横加速度 |
+| `max_angular_velocity / acceleration` | 3.0 rad/s, 5.0 rad/s^2 | 最大角速度・最大角加速度 |
 | `turn_yaw_rate_ratio` | 0.75 | 旋回角速度要求（\|dθ/ds\|）に対する並進速度制限時の許容角速度比率 |
 | `min_turn_speed` | 0.3 m/s | 旋回制限時の最低並進速度下限値 |
 | `path_interpolation_step` | 0.02 m | 経路補間ステップ間隔 |
-| `curvature_window` | 0.10 m | 曲率計算の前後距離窓幅 |
-| `decel_effective_ratio` | 0.85 | 後方減速走査の実効減速度比率 |
-| `position_kp / position_ki` | 4.0 / 0.5 | 位置フィードバックのP・Iゲイン |
-| `max_fb_speed` | 0.60 m/s | 位置フィードバック速度の上限 |
+| `curvature_window` | 0.50 m | 曲率計算の前後距離窓幅 |
+| `decel_effective_ratio` | 0.70 | 後方減速走査の実効減速度比率 |
+| `position_kp / ki / kd` | 20.0 / 0.0 / 2.5 | 位置フィードバックのPIDゲイン |
+| `position_d_filter_alpha` | 0.4 | 位置D項の1次LPF係数 |
+| `max_fb_speed` | 0.60 m/s | ゴール近傍（`in_settle_zone` / ドッキング時）の位置FB速度上限 |
+| `max_cruise_fb_speed` | 1.50 m/s | 巡航中（`!in_settle_zone`）の位置FB速度上限 |
 | `min_docking_speed` | 0.02 m/s | ゴール近傍の最小起動並進速度 |
-| `settle_zone_distance` | 0.10 m | ゴール近傍の精密収束・積分有効化距離 |
+| `settle_zone_distance` | 0.50 m | ゴール近傍の精密収束・積分有効化距離 |
 | `heading_kp / ki / kd` | 3.0 / 0.2 / 0.1 | 姿勢(Yaw)制御のPIDゲイン |
 | `heading_integral_max` | 0.3 | 姿勢I項の上限値 |
 | `heading_d_filter_alpha` | 0.4 | 姿勢D項の1次LPF係数 |

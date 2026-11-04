@@ -58,13 +58,13 @@ partition "周期制御ループ (controlLoop: 50Hz)" {
         :接線FF速度 + 位置FB速度の合成 & 静止摩擦補償;
         note right
           * 巡航中: v_ff = ref_pt.speed * tangent
-                    v_fb = position_kp * (proj_pt - robot_pos)
-          * ゴール近傍 (<b>settle_zone_distance</b> = 0.10 m 以内):
-            ゴール座標へのPI制御 (<b>position_kp / ki</b>) +
+                    v_fb = PD(proj_pt - robot_pos) <= <b>max_cruise_fb_speed</b> (1.50 m/s)
+          * ゴール近傍 (<b>settle_zone_distance</b> = 0.50 m 以内):
+            ゴール座標へのPID制御 (<b>position_kp / ki / kd</b>) <= <b>max_fb_speed</b> (0.60 m/s) +
             最小起動速度リフト (<b>min_docking_speed</b> = 0.02 m/s)
         end note
 
-        :1次の最大加速度リミッタ (|dv| <= accel_limit * dt);
+        :1次の最大加速度リミッタ + 巡航発進時ロケットスタート;
 
         :姿勢(Yaw) PID制御 + 最小角速度リフト + 1次角加速度リミッタ;
         note right
