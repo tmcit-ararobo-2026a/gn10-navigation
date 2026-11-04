@@ -32,9 +32,9 @@ path_follower_node:
     settle_zone_distance: 0.50
 
     # 姿勢 (Yaw) 制御
-    heading_kp: 3.0
-    heading_ki: 0.2
-    heading_kd: 0.1
+    heading_kp: 7.0
+    heading_ki: 0.0
+    heading_kd: 2.5
     heading_integral_max: 0.3
     heading_d_filter_alpha: 0.4
     min_docking_yaw_rate: 0.03
