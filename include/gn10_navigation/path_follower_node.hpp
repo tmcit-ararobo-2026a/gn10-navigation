@@ -176,7 +176,10 @@ private:
 
     double position_kp_{4.0};
     double position_ki_{0.5};
+    double position_kd_{0.0};
+    double position_d_filter_alpha_{0.4};
     double max_fb_speed_{0.60};
+    double max_cruise_fb_speed_{1.50};
     double min_docking_speed_{0.02};
     double settle_zone_distance_{0.10};
 
@@ -217,9 +220,15 @@ private:
     double progress_{0.0};
     int settle_count_{0};
 
-    // 位置制御積分器・前回指令速度 (1次加速度制限用)
+    // 位置制御積分器・微分器・前回指令速度 (1次加速度制限用)
     double pos_integral_x_{0.0};
     double pos_integral_y_{0.0};
+    double prev_pos_error_x_{0.0};
+    double prev_pos_error_y_{0.0};
+    double pos_d_filtered_x_{0.0};
+    double pos_d_filtered_y_{0.0};
+    bool has_prev_pos_error_{false};
+    bool was_in_settle_zone_{false};
     double command_vx_world_{0.0};
     double command_vy_world_{0.0};
     double command_yaw_rate_{0.0};

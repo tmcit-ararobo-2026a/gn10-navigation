@@ -18,6 +18,11 @@ path_planner_node:
       max_stride: 4
       # 平滑化経路が通過を許容する最大セルコスト (0〜99: 低コスト安全領域内で平滑化を維持)
       smooth_max_cost: 80
+    line_approximation:
+      # 直線近似を許容する最大セルコスト (-1: 無効, 0〜99: このコスト以下の領域のみ直線化)
+      max_cost: 20
+      # 直線化する最小セグメント距離 [m]
+      min_distance: 0.5
     footprint:
       # config/robot_shape_dimensioned.svg の青い8頂点外形。単位 m、反時計回り。
       # 原点: 元形状の幾何中心 (SVG: 819.90, 850.332381 mm)。+x 前方、+y 左。

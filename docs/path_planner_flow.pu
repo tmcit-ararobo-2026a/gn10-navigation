@@ -50,6 +50,11 @@ partition "動的適応型 B-spline 平滑化" {
       * <b>bspline.samples_per_segment</b> (10)
     end note
     :許容コスト以下で障害物に干渉しない最も滑らかな経路を採用;
+    :低コスト領域かつ最小距離以上の区間を直線近似;
+    note right
+      * <b>line_approximation.max_cost</b> (20)
+      * <b>line_approximation.min_distance</b> (0.5 m)
+    end note
     if (ゴールが障害物内にめり込んでいる?) then (スナップあり)
         :アプローチ中継点から本来の目標地点への\n直線進入アプローチ区間を末尾に付加;
     endif

@@ -137,6 +137,16 @@ private:
     ) const;
 
     /**
+     * @brief 許容コスト以下の領域を通過し、かつ最小距離以上の区間を直線近似する。
+     *
+     * @param path 平滑化後のワールド座標列
+     * @return std::vector<std::pair<double, double>> 直線近似適用後のワールド座標列
+     */
+    std::vector<std::pair<double, double>> approximateStraightLines(
+        const std::vector<std::pair<double, double>>& path
+    ) const;
+
+    /**
      * @brief 指定した位置 (wx, wy) および姿勢 (yaw) におけるロボットフットプリントの最大コストを算出する。
      *
      * @param wx ワールドX座標
@@ -195,6 +205,10 @@ private:
     int bspline_smoothing_iterations_{5};
     int bspline_max_stride_{4};
     int bspline_smooth_max_cost_{80};
+
+    // パス直線近似パラメータ
+    int line_approx_max_cost_{20};
+    double line_approx_min_distance_{0.5};
 
     // フットプリントおよび旋回計画パラメータ
     std::vector<std::pair<double, double>> footprint_polygon_;

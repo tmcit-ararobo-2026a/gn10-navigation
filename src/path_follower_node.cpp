@@ -219,7 +219,10 @@ void PathFollowerNode::declareAndGetParameters()
 
     this->declare_parameter("position_kp", 4.0);
     this->declare_parameter("position_ki", 0.5);
+    this->declare_parameter("position_kd", 0.0);
+    this->declare_parameter("position_d_filter_alpha", 0.4);
     this->declare_parameter("max_fb_speed", 0.60);
+    this->declare_parameter("max_cruise_fb_speed", 1.50);
     this->declare_parameter("min_docking_speed", 0.02);
     this->declare_parameter("settle_zone_distance", 0.10);
 
@@ -258,11 +261,14 @@ void PathFollowerNode::declareAndGetParameters()
     path_interpolation_step_  = this->get_parameter("path_interpolation_step").as_double();
     decel_effective_ratio_    = this->get_parameter("decel_effective_ratio").as_double();
 
-    position_kp_          = this->get_parameter("position_kp").as_double();
-    position_ki_          = this->get_parameter("position_ki").as_double();
-    max_fb_speed_         = this->get_parameter("max_fb_speed").as_double();
-    min_docking_speed_    = this->get_parameter("min_docking_speed").as_double();
-    settle_zone_distance_ = this->get_parameter("settle_zone_distance").as_double();
+    position_kp_             = this->get_parameter("position_kp").as_double();
+    position_ki_             = this->get_parameter("position_ki").as_double();
+    position_kd_             = this->get_parameter("position_kd").as_double();
+    position_d_filter_alpha_ = this->get_parameter("position_d_filter_alpha").as_double();
+    max_fb_speed_            = this->get_parameter("max_fb_speed").as_double();
+    max_cruise_fb_speed_     = this->get_parameter("max_cruise_fb_speed").as_double();
+    min_docking_speed_       = this->get_parameter("min_docking_speed").as_double();
+    settle_zone_distance_    = this->get_parameter("settle_zone_distance").as_double();
 
     heading_kp_             = this->get_parameter("heading_kp").as_double();
     heading_ki_             = this->get_parameter("heading_ki").as_double();
@@ -303,7 +309,11 @@ void PathFollowerNode::declareAndGetParameters()
         !std::isfinite(path_interpolation_step_) || path_interpolation_step_ <= 0.0 ||
         !std::isfinite(position_kp_) || position_kp_ < 0.0 ||
         !std::isfinite(position_ki_) || position_ki_ < 0.0 ||
+        !std::isfinite(position_kd_) || position_kd_ < 0.0 ||
+        !std::isfinite(position_d_filter_alpha_) || position_d_filter_alpha_ < 0.0 ||
+        position_d_filter_alpha_ > 1.0 ||
         !std::isfinite(max_fb_speed_) || max_fb_speed_ <= 0.0 ||
+        !std::isfinite(max_cruise_fb_speed_) || max_cruise_fb_speed_ <= 0.0 ||
         !std::isfinite(min_docking_speed_) || min_docking_speed_ < 0.0 ||
         !std::isfinite(settle_zone_distance_) || settle_zone_distance_ < 0.0 ||
         !std::isfinite(goal_tolerance_) || goal_tolerance_ <= 0.0 ||
@@ -322,14 +332,16 @@ void PathFollowerNode::declareAndGetParameters()
     RCLCPP_INFO(
         this->get_logger(),
         "Parameters loaded: max_speed=%.2f, max_accel=%.2f, max_decel=%.2f, "
-        "pos_kp=%.2f, pos_ki=%.2f, max_fb=%.2f, goal_tol=%.4f, goal_yaw_tol=%.4f, "
+        "pos_pid=[%.2f, %.2f, %.2f], max_fb=[settle=%.2f, cruise=%.2f], goal_tol=%.4f, goal_yaw_tol=%.4f, "
         "settle_zone=%.2f, settle_count=%d, heading_pid=[%.2f, %.2f, %.2f]",
         max_speed_,
         max_acceleration_,
         max_deceleration_,
         position_kp_,
         position_ki_,
+        position_kd_,
         max_fb_speed_,
+        max_cruise_fb_speed_,
         goal_tolerance_,
         goal_yaw_tolerance_,
         settle_zone_distance_,
@@ -375,8 +387,14 @@ rcl_interfaces::msg::SetParametersResult PathFollowerNode::onSetParameters(
             position_kp_ = std::max(0.0, param.as_double());
         } else if (name == "position_ki") {
             position_ki_ = std::max(0.0, param.as_double());
+        } else if (name == "position_kd") {
+            position_kd_ = std::max(0.0, param.as_double());
+        } else if (name == "position_d_filter_alpha") {
+            position_d_filter_alpha_ = std::clamp(param.as_double(), 0.0, 1.0);
         } else if (name == "max_fb_speed") {
             max_fb_speed_ = std::max(0.01, param.as_double());
+        } else if (name == "max_cruise_fb_speed") {
+            max_cruise_fb_speed_ = std::max(0.01, param.as_double());
         } else if (name == "min_docking_speed") {
             min_docking_speed_ = std::max(0.0, param.as_double());
         } else if (name == "settle_zone_distance") {
@@ -531,8 +549,14 @@ void PathFollowerNode::onPlannedPath(const nav_msgs::msg::Path::ConstSharedPtr m
     if (status_ != NavigationStatus::Moving) {
         stop();
     } else {
-        pos_integral_x_ = 0.0;
-        pos_integral_y_ = 0.0;
+        pos_integral_x_     = 0.0;
+        pos_integral_y_     = 0.0;
+        prev_pos_error_x_   = 0.0;
+        prev_pos_error_y_   = 0.0;
+        pos_d_filtered_x_   = 0.0;
+        pos_d_filtered_y_   = 0.0;
+        has_prev_pos_error_ = false;
+        was_in_settle_zone_ = false;
         heading_pid_.reset();
     }
     path_.clear();
@@ -675,13 +699,17 @@ void PathFollowerNode::onPlannedPath(const nav_msgs::msg::Path::ConstSharedPtr m
         path_.back().tangent_y  = path_[path_.size() - 2].tangent_y;
     }
 
-    // 発進時（distance == 0.0）の特異点デッドロック防止:
+    // 発進時（distance == 0.0）の特異点デッドロック防止およびロケットスタート:
     // 停止からの加速は制御ループの1次加速度リミッタ（max_acceleration_ * dt）が保証するため、
-    // 空間速度プロファイルの始点には1ステップ分の最低発進速度（または現在速度）を与える。
+    // 空間速度プロファイルの始点には十分な初速（launch_speed）を与え、発進ダッシュのもたつきを防ぐ。
+    // 短距離移動や直後の急カーブでは後段の曲率制限・旋回制限・後方減速走査により自動的に安全速度へクランプされる。
     const double current_speed = std::hypot(command_vx_world_, command_vy_world_);
     const double launch_speed  = std::min(
         max_speed_,
-        std::max(current_speed, std::sqrt(2.0 * max_acceleration_ * path_interpolation_step_))
+        std::max(
+            current_speed,
+            std::max(min_turn_speed_, std::sqrt(2.0 * max_acceleration_ * 0.20))
+        )
     );
 
     const double total_distance = path_.back().distance;
@@ -691,7 +719,11 @@ void PathFollowerNode::onPlannedPath(const nav_msgs::msg::Path::ConstSharedPtr m
     for (auto& point : path_) {
         double s_speed = sCurveSpeed(speed_profile, point.distance);
         if (point.distance < 0.5 * total_distance) {
-            s_speed = std::max(s_speed, launch_speed);
+            const double ramp_speed = std::min(
+                max_speed_,
+                std::sqrt(launch_speed * launch_speed + 2.0 * max_acceleration_ * point.distance)
+            );
+            s_speed = std::max(s_speed, ramp_speed);
         }
         // ゴール近傍 (settle_zone_distance_ 以内) では位置P制御 (position_kp_ * remaining) と
         // 連続的に接続するよう目標速度上限を抑え、後方走査で手前から滑らかに減速させる
@@ -742,11 +774,17 @@ void PathFollowerNode::onPlannedPath(const nav_msgs::msg::Path::ConstSharedPtr m
 
 void PathFollowerNode::stop()
 {
-    command_vx_world_ = 0.0;
-    command_vy_world_ = 0.0;
-    command_yaw_rate_ = 0.0;
-    pos_integral_x_   = 0.0;
-    pos_integral_y_   = 0.0;
+    command_vx_world_   = 0.0;
+    command_vy_world_   = 0.0;
+    command_yaw_rate_   = 0.0;
+    pos_integral_x_     = 0.0;
+    pos_integral_y_     = 0.0;
+    prev_pos_error_x_   = 0.0;
+    prev_pos_error_y_   = 0.0;
+    pos_d_filtered_x_   = 0.0;
+    pos_d_filtered_y_   = 0.0;
+    has_prev_pos_error_ = false;
+    was_in_settle_zone_ = false;
     heading_pid_.reset();
     tracking_pid_.reset();
     publishCmdVel(0.0, 0.0, 0.0);
@@ -987,10 +1025,16 @@ void PathFollowerNode::controlLoop()
             // 4. 接線フィードフォワード速度 + 位置フィードバック速度の合成
             // 巡航中 (remaining_path > settle_zone_distance_) は:
             //   v_ff = ref_pt.speed * tangent (遅延補償付き接線速度)
-            //   v_fb = position_kp_ * (proj_pt - robot_pos) (純粋な直交横ズレ補正、先読み二重加算なし)
+            //   v_fb = position_kp_ * e + position_kd_ * de/dt (直交横ズレPD補正、max_cruise_fb_speed_ でクランプ)
             // ゴール近傍 (in_settle_zone) では:
-            //   前処理により境界 remaining == settle_zone_distance_ で ref_pt.speed == position_kp_ * remaining
-            //   となるよう連続接続されているため、ゴール座標 (goal_pose_) への直接PI制御へ滑らかに一致する。
+            //   ゴール座標 (goal_pose_) への直接PID制御を行い、max_fb_speed_ でクランプして微振動を抑える。
+            if (in_settle_zone != was_in_settle_zone_) {
+                has_prev_pos_error_ = false;
+                pos_d_filtered_x_   = 0.0;
+                pos_d_filtered_y_   = 0.0;
+                was_in_settle_zone_ = in_settle_zone;
+            }
+
             double vx_desired = 0.0;
             double vy_desired = 0.0;
 
@@ -999,27 +1043,49 @@ void PathFollowerNode::controlLoop()
                     pos_integral_x_ = std::clamp(pos_integral_x_ + dx_goal * delta_time, -0.05, 0.05);
                     pos_integral_y_ = std::clamp(pos_integral_y_ + dy_goal * delta_time, -0.05, 0.05);
 
-                    double vx_fb = position_kp_ * dx_goal + position_ki_ * pos_integral_x_;
-                    double vy_fb = position_kp_ * dy_goal + position_ki_ * pos_integral_y_;
+                    double d_term_x = 0.0;
+                    double d_term_y = 0.0;
+                    if (has_prev_pos_error_ && delta_time > 1e-4) {
+                        const double raw_dx = (dx_goal - prev_pos_error_x_) / delta_time;
+                        const double raw_dy = (dy_goal - prev_pos_error_y_) / delta_time;
+                        pos_d_filtered_x_ =
+                            (1.0 - position_d_filter_alpha_) * pos_d_filtered_x_ +
+                            position_d_filter_alpha_ * raw_dx;
+                        pos_d_filtered_y_ =
+                            (1.0 - position_d_filter_alpha_) * pos_d_filtered_y_ +
+                            position_d_filter_alpha_ * raw_dy;
+                        d_term_x = position_kd_ * pos_d_filtered_x_;
+                        d_term_y = position_kd_ * pos_d_filtered_y_;
+                    }
+                    prev_pos_error_x_   = dx_goal;
+                    prev_pos_error_y_   = dy_goal;
+                    has_prev_pos_error_ = true;
+
+                    double vx_fb = position_kp_ * dx_goal + position_ki_ * pos_integral_x_ + d_term_x;
+                    double vy_fb = position_kp_ * dy_goal + position_ki_ * pos_integral_y_ + d_term_y;
                     limitVector(vx_fb, vy_fb, max_fb_speed_);
                     vx_desired = vx_fb;
                     vy_desired = vy_fb;
 
-                    // ゴール近傍での静止摩擦補償（最小起動速度リフト）
+                    // ゴール近傍での静止摩擦補償（最小起動速度リフト）:
+                    // D制御による減速ブレーキ中（フィードバック速度がゴール方向を向いていない、または機体が動いている時）は
+                    // リフトを行わず、停止付近からゴールへ向かう微調整時のみ最小速度を保証する
                     const double speed_desired = std::hypot(vx_desired, vy_desired);
-                    if (speed_desired < min_docking_speed_) {
-                        if (speed_desired > kEpsilon) {
-                            vx_desired *= min_docking_speed_ / speed_desired;
-                            vy_desired *= min_docking_speed_ / speed_desired;
-                        } else {
-                            vx_desired = min_docking_speed_ * (dx_goal / dist_goal);
-                            vy_desired = min_docking_speed_ * (dy_goal / dist_goal);
-                        }
+                    const double toward_goal   = vx_desired * dx_goal + vy_desired * dy_goal;
+                    if (speed_desired < min_docking_speed_ && current_speed < min_docking_speed_ &&
+                        toward_goal >= 0.0) {
+                        vx_desired = min_docking_speed_ * (dx_goal / dist_goal);
+                        vy_desired = min_docking_speed_ * (dy_goal / dist_goal);
                     }
                 } else {
-                    // ゴール許容誤差 (±5mm) 到達時は位置積分器をリセットし、ワインドアップによる微振動 (ハンチング) を防止
-                    pos_integral_x_ = 0.0;
-                    pos_integral_y_ = 0.0;
+                    // ゴール許容誤差 (±5mm) 到達時は位置積分器・微分器をリセットし、ワインドアップによる微振動 (ハンチング) を防止
+                    pos_integral_x_     = 0.0;
+                    pos_integral_y_     = 0.0;
+                    prev_pos_error_x_   = dx_goal;
+                    prev_pos_error_y_   = dy_goal;
+                    pos_d_filtered_x_   = 0.0;
+                    pos_d_filtered_y_   = 0.0;
+                    has_prev_pos_error_ = true;
                 }
             } else {
                 pos_integral_x_ = 0.0;
@@ -1030,22 +1096,49 @@ void PathFollowerNode::controlLoop()
 
                 const double ex = proj_pt.x - robot_x;
                 const double ey = proj_pt.y - robot_y;
-                double vx_fb    = position_kp_ * ex;
-                double vy_fb    = position_kp_ * ey;
-                limitVector(vx_fb, vy_fb, max_fb_speed_);
+
+                double d_term_x = 0.0;
+                double d_term_y = 0.0;
+                if (has_prev_pos_error_ && delta_time > 1e-4) {
+                    const double raw_dx = (ex - prev_pos_error_x_) / delta_time;
+                    const double raw_dy = (ey - prev_pos_error_y_) / delta_time;
+                    pos_d_filtered_x_ =
+                        (1.0 - position_d_filter_alpha_) * pos_d_filtered_x_ +
+                        position_d_filter_alpha_ * raw_dx;
+                    pos_d_filtered_y_ =
+                        (1.0 - position_d_filter_alpha_) * pos_d_filtered_y_ +
+                        position_d_filter_alpha_ * raw_dy;
+                    d_term_x = position_kd_ * pos_d_filtered_x_;
+                    d_term_y = position_kd_ * pos_d_filtered_y_;
+                }
+                prev_pos_error_x_   = ex;
+                prev_pos_error_y_   = ey;
+                has_prev_pos_error_ = true;
+
+                double vx_fb = position_kp_ * ex + d_term_x;
+                double vy_fb = position_kp_ * ey + d_term_y;
+                limitVector(vx_fb, vy_fb, max_cruise_fb_speed_);
 
                 vx_desired = vx_ff + vx_fb;
                 vy_desired = vy_ff + vy_fb;
             }
             limitVector(vx_desired, vy_desired, max_speed_);
 
-            // 5. 1次の最大加速度リミッタ（機体保護・スリップ防止）
-            double dv_x              = vx_desired - command_vx_world_;
-            double dv_y              = vy_desired - command_vy_world_;
-            const double accel_limit = (std::hypot(vx_desired, vy_desired) < current_speed)
-                                           ? max_deceleration_
-                                           : max_acceleration_;
-            limitVector(dv_x, dv_y, accel_limit * delta_time);
+            // 5. 1次の最大加速度リミッタ（機体保護・スリップ防止 + 巡航発進時のロケットスタート）
+            double dv_x                = vx_desired - command_vx_world_;
+            double dv_y                = vy_desired - command_vy_world_;
+            const double desired_speed = std::hypot(vx_desired, vy_desired);
+            const double accel_limit   = (desired_speed < current_speed)
+                                             ? max_deceleration_
+                                             : max_acceleration_;
+            double max_dv = accel_limit * delta_time;
+            if (!in_settle_zone && current_speed < min_turn_speed_ &&
+                desired_speed > current_speed) {
+                max_dv = std::max(
+                    max_dv, (min_turn_speed_ - current_speed) + accel_limit * delta_time
+                );
+            }
+            limitVector(dv_x, dv_y, max_dv);
             command_vx_world_ += dv_x;
             command_vy_world_ += dv_y;
 
