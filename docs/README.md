@@ -80,7 +80,7 @@
 ### 処理の流れ
 1. **経路前処理 (`onPlannedPath`)**:
    - `path_interpolation_step` 間隔で経路を細分化し、単位接線ベクトルと曲率 $\kappa$ を計算。
-   - 横加速度制限 $v \le \sqrt{a_{\text{lat,max}} / |\kappa|}$、S字速度プロファイル、ゴール近傍の位置P制御速度上限（$K_p \cdot d_{\text{rem}}$）、および前後方加減速走査から計画速度プロファイルを生成。
+   - 横加速度制限 $v \le \sqrt{a_{\text{lat,max}} / |\kappa|}$、旋回角速度要求 $|d\theta/ds|$ による並進速度制限（`turn_yaw_rate_ratio`, `min_turn_speed`）、S字速度プロファイル、ゴール近傍の位置P制御速度上限（$K_p \cdot d_{\text{rem}}$）、および前後方加減速走査から計画速度プロファイルを生成。
 2. **周期制御ループ (`controlLoop`)**:
    - 現在位置を経路へ直交射影し、`max_path_error` 超過時は非常停止（`Fail`）。
    - **FF + FB 統合速度計算**:
@@ -99,6 +99,8 @@
 | `max_jerk` | 50.0 m/s^3 | 前処理S字プロファイルの最大躍度 |
 | `max_lateral_acceleration` | 2.0 m/s^2 | カーブ通過時の最大横加速度 |
 | `max_angular_velocity / acceleration` | 2.5 rad/s, 5.0 rad/s^2 | 最大角速度・最大角加速度 |
+| `turn_yaw_rate_ratio` | 0.75 | 旋回角速度要求（\|dθ/ds\|）に対する並進速度制限時の許容角速度比率 |
+| `min_turn_speed` | 0.3 m/s | 旋回制限時の最低並進速度下限値 |
 | `path_interpolation_step` | 0.02 m | 経路補間ステップ間隔 |
 | `curvature_window` | 0.10 m | 曲率計算の前後距離窓幅 |
 | `decel_effective_ratio` | 0.85 | 後方減速走査の実効減速度比率 |

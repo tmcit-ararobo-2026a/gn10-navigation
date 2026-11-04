@@ -212,6 +212,8 @@ void PathFollowerNode::declareAndGetParameters()
     this->declare_parameter("curvature_window", 0.10);
     this->declare_parameter("max_angular_velocity", 2.5);
     this->declare_parameter("max_angular_acceleration", 5.0);
+    this->declare_parameter("turn_yaw_rate_ratio", 0.75);
+    this->declare_parameter("min_turn_speed", 0.3);
     this->declare_parameter("path_interpolation_step", 0.02);
     this->declare_parameter("decel_effective_ratio", 0.85);
 
@@ -251,6 +253,8 @@ void PathFollowerNode::declareAndGetParameters()
     curvature_window_         = this->get_parameter("curvature_window").as_double();
     max_angular_velocity_     = this->get_parameter("max_angular_velocity").as_double();
     max_angular_acceleration_ = this->get_parameter("max_angular_acceleration").as_double();
+    turn_yaw_rate_ratio_      = this->get_parameter("turn_yaw_rate_ratio").as_double();
+    min_turn_speed_           = this->get_parameter("min_turn_speed").as_double();
     path_interpolation_step_  = this->get_parameter("path_interpolation_step").as_double();
     decel_effective_ratio_    = this->get_parameter("decel_effective_ratio").as_double();
 
@@ -292,6 +296,10 @@ void PathFollowerNode::declareAndGetParameters()
         !std::isfinite(max_jerk_) || max_jerk_ <= 0.0 ||
         !std::isfinite(max_lateral_acceleration_) || max_lateral_acceleration_ <= 0.0 ||
         !std::isfinite(curvature_window_) || curvature_window_ <= 0.0 ||
+        !std::isfinite(max_angular_velocity_) || max_angular_velocity_ <= 0.0 ||
+        !std::isfinite(max_angular_acceleration_) || max_angular_acceleration_ <= 0.0 ||
+        !std::isfinite(turn_yaw_rate_ratio_) || turn_yaw_rate_ratio_ <= 0.0 ||
+        turn_yaw_rate_ratio_ > 1.0 || !std::isfinite(min_turn_speed_) || min_turn_speed_ <= 0.0 ||
         !std::isfinite(path_interpolation_step_) || path_interpolation_step_ <= 0.0 ||
         !std::isfinite(position_kp_) || position_kp_ < 0.0 ||
         !std::isfinite(position_ki_) || position_ki_ < 0.0 ||
@@ -357,6 +365,10 @@ rcl_interfaces::msg::SetParametersResult PathFollowerNode::onSetParameters(
             max_angular_velocity_ = param.as_double();
         } else if (name == "max_angular_acceleration") {
             max_angular_acceleration_ = param.as_double();
+        } else if (name == "turn_yaw_rate_ratio") {
+            turn_yaw_rate_ratio_ = std::clamp(param.as_double(), 0.05, 1.0);
+        } else if (name == "min_turn_speed") {
+            min_turn_speed_ = std::max(0.01, param.as_double());
         } else if (name == "path_interpolation_step") {
             path_interpolation_step_ = std::max(0.005, param.as_double());
         } else if (name == "position_kp") {
@@ -630,6 +642,20 @@ void PathFollowerNode::onPlannedPath(const nav_msgs::msg::Path::ConstSharedPtr m
         } else {
             path_[index].tangent_x = std::cos(current.yaw);
             path_[index].tangent_y = std::sin(current.yaw);
+        }
+
+        // 旋回角速度要求（|dθ/ds|）に応じた並進速度制限:
+        // 運動連鎖則: ω = dθ/dt = (dθ/ds) * (ds/dt) = yaw_rate_spatial * v
+        // 最大許容角速度 max_angular_velocity_ に対し、PIDフィードバック補正用のヘッドルームを残すため、
+        // 計画時の許容角速度上限を (max_angular_velocity_ * turn_yaw_rate_ratio_) とする。
+        // これにより、急旋回区間で高速直進して旋回が追いつかなくなる現象を防止する。
+        const double delta_dist = std::max(path_[index].distance - path_[index - 1].distance, kEpsilon);
+        const double delta_yaw  = std::abs(normalizeAngle(path_[index].yaw - path_[index - 1].yaw));
+        if (delta_yaw > 1e-4) {
+            const double yaw_rate_spatial      = delta_yaw / delta_dist;
+            const double allowed_plan_yaw_rate = max_angular_velocity_ * turn_yaw_rate_ratio_;
+            const double turn_speed_limit      = allowed_plan_yaw_rate / yaw_rate_spatial;
+            path_[index].speed = std::min(path_[index].speed, std::max(min_turn_speed_, turn_speed_limit));
         }
     }
 

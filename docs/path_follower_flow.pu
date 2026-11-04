@@ -9,11 +9,13 @@ start
 
 partition "経路受信・前処理 (onPlannedPath)" {
     :計画経路受信 (/planned_path);
-    :等間隔リサンプリング & 単位接線ベクトル・曲率計算;
+    :等間隔リサンプリング & 単位接線ベクトル・曲率・空間角速度制限計算;
     note right
       * <b>path_interpolation_step</b> (0.02 m)
       * <b>curvature_window</b> (0.10 m)
       * <b>max_lateral_acceleration</b> (2.0 m/s^2)
+      * <b>turn_yaw_rate_ratio</b> (0.75)
+      * <b>min_turn_speed</b> (0.3 m/s)
     end note
 
     :S字速度プロファイル生成 & 前後方加減速走査;
