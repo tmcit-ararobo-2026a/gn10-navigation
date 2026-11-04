@@ -169,6 +169,8 @@ private:
     double curvature_window_{0.10};
     double max_angular_velocity_{2.5};
     double max_angular_acceleration_{5.0};
+    double turn_yaw_rate_ratio_{0.75};
+    double min_turn_speed_{0.3};
     double path_interpolation_step_{0.02};
     double decel_effective_ratio_{0.85};
 

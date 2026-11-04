@@ -18,6 +18,8 @@ path_follower_node:
     max_lateral_acceleration: 2.0
     max_angular_velocity: 2.5
     max_angular_acceleration: 5.0
+    turn_yaw_rate_ratio: 0.75
+    min_turn_speed: 0.3
     path_interpolation_step: 0.02
     curvature_window: 0.10
     decel_effective_ratio: 0.85
