@@ -1,50 +1,46 @@
 path_follower_node:
   ros__parameters:
-    # 周期・フレーム設定 (50Hz LiDARに同期推奨)
-    control_rate: 50.0
-    map_frame: "map"
-    base_frame: "base_link"
-    bucket_frame: "bucket_bottom"
-    max_pose_age: 0.2
-    max_bucket_age: 0.5
+    base_frame: base_link
+    bucket_frame: bucket_bottom
     control_comm_delay: 0.025
-    max_delay_compensation: 0.15
-
-    # 機体物理制限 (前処理プロファイルおよび1次加速度リミッタで使用)
-    max_speed: 3.0
-    max_acceleration: 8.0
-    max_deceleration: 6.0
-    max_jerk: 150.0
-    max_lateral_acceleration: 3.0
+    control_rate: 50.0
+    curvature_window: 0.5
+    decel_effective_ratio: 0.7
+    goal_settle_count: 5
+    goal_tolerance: 0.025
+    goal_yaw_tolerance: 0.0175
+    heading_d_filter_alpha: 0.6
+    heading_integral_max: 0.3
+    heading_kd: 1.0
+    heading_ki: 0.0
+    heading_kp: 7.0
+    map_frame: map
+    max_acceleration: 7.0
+    max_angular_acceleration: 24.0
     max_angular_velocity: 3.0
-    max_angular_acceleration: 5.0
-    turn_yaw_rate_ratio: 0.75
+    max_bucket_age: 0.5
+    max_cruise_fb_speed: 1.5
+    max_deceleration: 7.0
+    max_delay_compensation: 0.15
+    max_fb_speed: 0.8
+    max_initial_path_error: 0.45
+    max_jerk: 120.0
+    max_lateral_acceleration: 7.0
+    max_path_error: 0.3
+    max_pose_age: 0.2
+    max_speed: 3.0
+    min_docking_speed: 0.2
+    min_docking_yaw_rate: 0.03
     min_turn_speed: 0.3
     path_interpolation_step: 0.02
-    curvature_window: 0.50
-    decel_effective_ratio: 0.7
-
-    # 軌道追従・位置フィードバック制御
-    position_kp: 20.0
-    position_ki: 0.0
-    position_kd: 2.5
     position_d_filter_alpha: 0.4
-    max_fb_speed: 0.60           # ゴール近傍 (in_settle_zone / ドッキング時) のFB速度上限 [m/s]
-    max_cruise_fb_speed: 1.50    # 巡航中 (!in_settle_zone) のFB速度上限 [m/s]
-    min_docking_speed: 0.02
-    settle_zone_distance: 0.50
-
-    # 姿勢 (Yaw) 制御
-    heading_kp: 7.0
-    heading_ki: 0.0
-    heading_kd: 2.5
-    heading_integral_max: 0.3
-    heading_d_filter_alpha: 0.4
-    min_docking_yaw_rate: 0.03
-
-    # ゴール判定・安全停止閾値
-    goal_tolerance: 0.005        # 5 mm
-    goal_yaw_tolerance: 0.0175   # 1.0 deg (rad)
-    goal_settle_count: 5         # 連続5周期維持で完了
-    max_path_error: 0.30
-    max_initial_path_error: 0.45
+    position_kd: 2.5
+    position_ki: 0.0
+    position_kp: 12.0
+    qos_overrides./parameter_events.publisher.depth: 1000
+    qos_overrides./parameter_events.publisher.durability: volatile
+    qos_overrides./parameter_events.publisher.history: keep_last
+    qos_overrides./parameter_events.publisher.reliability: reliable
+    settle_zone_distance: 0.5
+    turn_yaw_rate_ratio: 0.75
+    use_sim_time: false
