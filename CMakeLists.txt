@@ -25,6 +25,7 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(yaml-cpp REQUIRED)
+find_package(lidar_perception_system REQUIRED)
 
 find_package(rosidl_default_generators REQUIRED)
 
@@ -113,6 +114,20 @@ ament_target_dependencies(path_follower_node
   visualization_msgs
 )
 
+# 5. moving_bucket_launcher_node
+add_executable(moving_bucket_launcher_node
+  src/moving_bucket_launcher_node.cpp
+)
+ament_target_dependencies(moving_bucket_launcher_node
+  rclcpp
+  std_msgs
+  geometry_msgs
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+  lidar_perception_system
+)
+
 # インストール設定 (Launch, Config, Node)
 install(TARGETS 
   target_repository
@@ -120,6 +135,7 @@ install(TARGETS
   costmap_generator_node
   path_planner_node
   path_follower_node
+  moving_bucket_launcher_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
