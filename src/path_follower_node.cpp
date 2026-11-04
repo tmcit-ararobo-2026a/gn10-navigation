@@ -995,10 +995,10 @@ void PathFollowerNode::controlLoop()
             double vy_desired = 0.0;
 
             if (in_settle_zone) {
-                pos_integral_x_ = std::clamp(pos_integral_x_ + dx_goal * delta_time, -0.05, 0.05);
-                pos_integral_y_ = std::clamp(pos_integral_y_ + dy_goal * delta_time, -0.05, 0.05);
-
                 if (dist_goal > goal_tolerance_) {
+                    pos_integral_x_ = std::clamp(pos_integral_x_ + dx_goal * delta_time, -0.05, 0.05);
+                    pos_integral_y_ = std::clamp(pos_integral_y_ + dy_goal * delta_time, -0.05, 0.05);
+
                     double vx_fb = position_kp_ * dx_goal + position_ki_ * pos_integral_x_;
                     double vy_fb = position_kp_ * dy_goal + position_ki_ * pos_integral_y_;
                     limitVector(vx_fb, vy_fb, max_fb_speed_);
@@ -1016,6 +1016,10 @@ void PathFollowerNode::controlLoop()
                             vy_desired = min_docking_speed_ * (dy_goal / dist_goal);
                         }
                     }
+                } else {
+                    // ゴール許容誤差 (±5mm) 到達時は位置積分器をリセットし、ワインドアップによる微振動 (ハンチング) を防止
+                    pos_integral_x_ = 0.0;
+                    pos_integral_y_ = 0.0;
                 }
             } else {
                 pos_integral_x_ = 0.0;
