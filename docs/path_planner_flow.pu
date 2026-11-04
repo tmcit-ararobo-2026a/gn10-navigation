@@ -40,7 +40,7 @@ partition "8方向 A* グリッド探索" {
 }
 
 partition "動的適応型 B-spline 平滑化" {
-    :始点・終点を exact_start / exact_goal に置換;
+    :始点・終点を exact_start / approach_goal に置換;
     :stride (max_stride..1) と反復ラプラシアン平滑化を段階的に試行;
     note right
       * <b>bspline.max_stride</b> (4)
@@ -50,6 +50,9 @@ partition "動的適応型 B-spline 平滑化" {
       * <b>bspline.samples_per_segment</b> (10)
     end note
     :許容コスト以下で障害物に干渉しない最も滑らかな経路を採用;
+    if (ゴールが障害物内にめり込んでいる?) then (スナップあり)
+        :アプローチ中継点から本来の目標地点への\n直線進入アプローチ区間を末尾に付加;
+    endif
 }
 
 partition "安全領域での旋回・姿勢計画" {

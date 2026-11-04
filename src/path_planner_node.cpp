@@ -1125,31 +1125,38 @@ void PathPlannerNode::onGoalPose(const geometry_msgs::msg::PoseStamped::ConstSha
     int actual_goal_x  = snapped_goal->first;
     int actual_goal_y  = snapped_goal->second;
 
-    // 障害物スナップが発生していない場合は、グリッド量子化誤差（最大±35mm）を排除するため
-    // 元の連続ワールド座標を厳密に保持する。
+    const bool goal_was_snapped = (actual_goal_x != goal_gx || actual_goal_y != goal_gy);
+
+    // 障害物スナップが発生していない場合は元の連続ワールド座標を厳密に保持し、
+    // ゴールが障害物・インフレーション内にめり込んでいる（スナップされた）場合は、
+    // 安全通行可能セル中心を「アプローチ中継点」としてA*探索・平滑化を行い、
+    // 平滑化経路の終端に本来の目標地点への直線進入アプローチ区間を付加する。
     const std::pair<double, double> exact_start =
         (actual_start_x == start_gx && actual_start_y == start_gy)
             ? std::make_pair(start_wx, start_wy)
             : gridToWorld(actual_start_x, actual_start_y);
-    const std::pair<double, double> exact_goal =
-        (actual_goal_x == goal_gx && actual_goal_y == goal_gy)
-            ? std::make_pair(goal_wx, goal_wy)
-            : gridToWorld(actual_goal_x, actual_goal_y);
+    const std::pair<double, double> approach_goal =
+        goal_was_snapped ? gridToWorld(actual_goal_x, actual_goal_y)
+                         : std::make_pair(goal_wx, goal_wy);
+    const std::pair<double, double> target_goal = std::make_pair(goal_wx, goal_wy);
 
     RCLCPP_INFO(
         this->get_logger(),
-        "Planning path from (%.3f, %.3f) [grid (%d, %d)] to (%.3f, %.3f) [grid (%d, %d)]...",
+        "Planning path from (%.3f, %.3f) [grid (%d, %d)] to approach (%.3f, %.3f) [grid (%d, %d)] (target=(%.3f, %.3f), snapped=%s)...",
         exact_start.first,
         exact_start.second,
         actual_start_x,
         actual_start_y,
-        exact_goal.first,
-        exact_goal.second,
+        approach_goal.first,
+        approach_goal.second,
         actual_goal_x,
-        actual_goal_y
+        actual_goal_y,
+        target_goal.first,
+        target_goal.second,
+        goal_was_snapped ? "true" : "false"
     );
 
-    // 3. 8方向A*探索
+    // 3. 8方向A*探索（安全領域内）
     auto grid_path = aStarSearch(actual_start_x, actual_start_y, actual_goal_x, actual_goal_y);
 
     if (grid_path.empty()) {
@@ -1161,18 +1168,40 @@ void PathPlannerNode::onGoalPose(const geometry_msgs::msg::PoseStamped::ConstSha
         return;
     }
 
-    // 4. 動的適応型 B-spline による平滑化（連続始点・終点座標を厳密保持）
-    auto smoothed_path = smoothPath(grid_path, exact_start, exact_goal);
+    // 4. 動的適応型 B-spline による平滑化（連続始点〜アプローチ点間）
+    auto smoothed_path = smoothPath(grid_path, exact_start, approach_goal);
     if (smoothed_path.empty()) {
         RCLCPP_WARN(this->get_logger(), "Smooth path generated empty. Using grid points.");
         if (grid_path.size() <= 1) {
-            smoothed_path = {exact_start, exact_goal};
+            smoothed_path = {exact_start, approach_goal};
         } else {
             for (const auto& cell : grid_path) {
                 smoothed_path.push_back(gridToWorld(cell.first, cell.second));
             }
             smoothed_path.front() = exact_start;
-            smoothed_path.back()  = exact_goal;
+            smoothed_path.back()  = approach_goal;
+        }
+    }
+
+    // 5. ゴールが障害物内にめり込んでいる場合、アプローチ点から本来の目標地点への直線進入区間を付加
+    if (goal_was_snapped) {
+        const double dx   = target_goal.first - smoothed_path.back().first;
+        const double dy   = target_goal.second - smoothed_path.back().second;
+        const double dist = std::hypot(dx, dy);
+        if (dist > 1e-4) {
+            const double step = (latest_costmap_.info.resolution > 0)
+                                    ? latest_costmap_.info.resolution * 0.5
+                                    : 0.025;
+            const int steps       = std::max(1, static_cast<int>(std::ceil(dist / step)));
+            const auto p_approach = smoothed_path.back();
+            for (int s = 1; s <= steps; ++s) {
+                const double t = static_cast<double>(s) / steps;
+                smoothed_path.emplace_back(
+                    p_approach.first + t * dx,
+                    p_approach.second + t * dy
+                );
+            }
+            smoothed_path.back() = target_goal;
         }
     }
 
