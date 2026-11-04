@@ -14,7 +14,7 @@ path_follower_node:
     max_speed: 3.0
     max_acceleration: 6.0
     max_deceleration: 6.0
-    max_jerk: 80.0
+    max_jerk: 100.0
     max_lateral_acceleration: 3.0
     max_angular_velocity: 3.0
     max_angular_acceleration: 5.0
