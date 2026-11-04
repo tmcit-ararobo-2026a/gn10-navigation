@@ -647,7 +647,7 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPath(
 
     // 全グリッド点のワールド座標を生成し、始点・終点はグリッド量子化前の正確なワールド座標に置換
     std::vector<Point> raw_world_points;
-    raw_world_points.reserve(grid_path.size());
+    raw_world_points.reserve(std::max(std::size_t{2}, grid_path.size()));
     int max_astar_cost = 0;
     const int width    = static_cast<int>(latest_costmap_.info.width);
     for (const auto& cell : grid_path) {
@@ -657,8 +657,14 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPath(
             max_astar_cost = std::max(max_astar_cost, c);
         }
     }
-    raw_world_points.front() = exact_start;
-    raw_world_points.back()  = exact_goal;
+    // 同一セル内の微小移動時 (grid_path.size() == 1) に front と back が同じ要素となり
+    // exact_goal で上書きされて始点が潰れるのを防止する
+    if (raw_world_points.size() <= 1) {
+        raw_world_points = {exact_start, exact_goal};
+    } else {
+        raw_world_points.front() = exact_start;
+        raw_world_points.back()  = exact_goal;
+    }
 
     // 始点・終点を連続座標に置換した際、隣接セル中心との間で逆向き微小折り返しが生じる場合は除去
     if (raw_world_points.size() >= 3) {
@@ -1159,11 +1165,15 @@ void PathPlannerNode::onGoalPose(const geometry_msgs::msg::PoseStamped::ConstSha
     auto smoothed_path = smoothPath(grid_path, exact_start, exact_goal);
     if (smoothed_path.empty()) {
         RCLCPP_WARN(this->get_logger(), "Smooth path generated empty. Using grid points.");
-        for (const auto& cell : grid_path) {
-            smoothed_path.push_back(gridToWorld(cell.first, cell.second));
+        if (grid_path.size() <= 1) {
+            smoothed_path = {exact_start, exact_goal};
+        } else {
+            for (const auto& cell : grid_path) {
+                smoothed_path.push_back(gridToWorld(cell.first, cell.second));
+            }
+            smoothed_path.front() = exact_start;
+            smoothed_path.back()  = exact_goal;
         }
-        smoothed_path.front() = exact_start;
-        smoothed_path.back()  = exact_goal;
     }
 
     const double start_yaw = getYawFromQuaternion(tf_stamped.transform.rotation);
