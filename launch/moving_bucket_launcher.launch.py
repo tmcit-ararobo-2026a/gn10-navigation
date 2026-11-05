@@ -1,30 +1,22 @@
+from pathlib import Path
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
+    share = Path(get_package_share_directory('gn10_navigation'))
+    default_params = str(share / 'config/moving_bucket_launcher_params.yaml')
+
     return LaunchDescription([
         DeclareLaunchArgument(
-            'base_frame',
-            default_value='base_link',
-            description='Robot base link frame id'
-        ),
-        DeclareLaunchArgument(
-            'launch_angle_deg',
-            default_value='45.0',
-            description='Belt launcher muzzle elevation angle [deg]'
-        ),
-        DeclareLaunchArgument(
-            'min_velocity',
-            default_value='3.0',
-            description='Minimum allowable launch velocity [m/s]'
-        ),
-        DeclareLaunchArgument(
-            'max_velocity',
-            default_value='7.75',
-            description='Maximum allowable launch velocity [m/s]'
+            'launcher_params',
+            default_value=default_params,
+            description='Path to moving_bucket_launcher_node parameter YAML file'
         ),
         DeclareLaunchArgument(
             'use_sim_time',
@@ -36,12 +28,9 @@ def generate_launch_description():
             executable='moving_bucket_launcher_node',
             name='moving_bucket_launcher_node',
             output='screen',
-            parameters=[{
-                'base_frame': LaunchConfiguration('base_frame'),
-                'launch_angle_deg': LaunchConfiguration('launch_angle_deg'),
-                'min_velocity': LaunchConfiguration('min_velocity'),
-                'max_velocity': LaunchConfiguration('max_velocity'),
-                'use_sim_time': LaunchConfiguration('use_sim_time'),
-            }],
+            parameters=[
+                LaunchConfiguration('launcher_params'),
+                {'use_sim_time': ParameterValue(LaunchConfiguration('use_sim_time'), value_type=bool)},
+            ],
         ),
     ])
