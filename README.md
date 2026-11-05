@@ -9,7 +9,7 @@ NHKロボコン2026向けの自動走行ナビゲーションパッケージで�
 - **`costmap_generator_node`**: フィールド定義（`nhk2026_map.json`）からMulti-Source BFSを用いてインフレーション付きコストマップ（`/costmap`）を生成します。
 - **`path_planner_node`**: 8方向A*探索、反復ラプラシアン付き動的B-spline平滑化、および旋回区間全域のフットプリント安全判定を行い、量子化誤差のない計画経路（`/planned_path`）を発行します。
 - **`path_follower_node`**: 接線フィードフォワード速度と直交位置フィードバック速度の単一統合制御則、1次最大加速度リミッタ、およびゴール近傍の静止摩擦補償により、高速追従と±5mm・±1.0度以内の精密停止を実現します。
-- **`moving_bucket_launcher_node`**: 相手ロボット上の可動バケツ（Target ID 0: MovingBucket）追従時に、LiDAR Perception Systemによるバケツ底位置（`/bucket_opening_tracker/bottom`）からリアルタイムに弾道射出速度を計算し、`/robot/operation/belt_launcher_speed` へ発行します（固定ターゲット時はトピック干渉回避のため配信停止）。
+- **`moving_bucket_launcher_node`**: 相手ロボット上の可動バケツ（Target ID 7: MovingBucket）追従かつ動作命令 `Move` 時に、LiDAR Perception Systemによるバケツ上部開口部位置（`/bucket_opening_tracker/target`、または底面位置 `/bucket_opening_tracker/bottom` + `bucket_height`）から `base_link` 基準で弾道射出速度を計算し、`/robot/operation/belt_launcher_speed` へ発行します（固定ターゲット時や `Sleep`/`Stanby` 時は配信停止）。
 
 ---
 
@@ -23,16 +23,16 @@ NHKロボコン2026向けの自動走行ナビゲーションパッケージで�
    ▼                              ▼                              ▼
 [target_manager_node]     [path_follower_node]       [moving_bucket_launcher_node]
    │ /goal_pose                   ▲                              ▲
-   │ (PoseStamped)                │ /planned_path (Path)         │ /bucket_opening_tracker/bottom
-   ▼                              │                              │ (BucketBottom)
+   │ (PoseStamped)                │ /planned_path (Path)         │ /bucket_opening_tracker/target
+   ▼                              │                              │ (MovingBucketTrack)
 [path_planner_node] ──────────────┘                  [LiDAR-Perception-System]
    ▲
    │ /costmap (OccupancyGrid)
 [costmap_generator_node]
 
 ※ /robot/operation/belt_launcher_speed 配信の排他制御:
-- target_id != 0: target_manager_node が配信
-- target_id == 0 (MovingBucket): moving_bucket_launcher_node が動的配信
+- target_id != 7: target_manager_node が Move 遷移時に配信
+- target_id == 7 (MovingBucket) かつ navigation_command == Move (2): moving_bucket_launcher_node が動的配信
 ```
 
 詳細な処理フローとパラメータ一覧は [docs/README.md](docs/README.md) を参照してください。
@@ -43,12 +43,13 @@ NHKロボコン2026向けの自動走行ナビゲーションパッケージで�
 
 | 通信名 | 種別 | 型 | 発行元 | 受信元 | 概要 |
 | --- | --- | --- | --- | --- | --- |
-| `/robot/navigation_command` | Topic | `std_msgs/msg/UInt8` | udp_node | TargetMgr / Follower | 動作命令 (`Sleep=0, Stanby=1, Move=2`) |
-| `/robot/target_id` | Topic | `std_msgs/msg/UInt8` | udp_node | TargetMgr / Follower | 目標ID (`0..7`) |
+| `/robot/navigation_command` | Topic | `std_msgs/msg/UInt8` | udp_node | TargetMgr / Follower / MovingBucketLauncher | 動作命令 (`Sleep=0, Stanby=1, Move=2`) |
+| `/robot/target_id` | Topic | `std_msgs/msg/UInt8` | udp_node | TargetMgr / Follower / MovingBucketLauncher | 目標ID (`0..7`, `MovingBucket=7`) |
 | `/robot/operation/navigation_status` | Topic | `std_msgs/msg/UInt8` | PathFollower | udp_node | 現在状態 (`Stanby=0, Ready=1, Moving=2, Tracking=3, Goal=4, Fail=5`) |
 | `/robot/operation/cmd_vel` | Topic | `geometry_msgs/msg/Twist` | PathFollower | udp_node | 機体ローカル速度指令 |
-| `/robot/operation/belt_launcher_speed` | Topic | `std_msgs/msg/Float32` | TargetMgr / MovingBucketLauncher | udp_node | 射出ベルト目標速度 [m/s]（target_idに応じて排他配信） |
-| `/bucket_opening_tracker/bottom` | Topic | `lidar_perception_system/msg/BucketBottom` | LPS | MovingBucketLauncher | 移動バケツ底位置・トラッキング情報 |
+| `/robot/operation/belt_launcher_speed` | Topic | `std_msgs/msg/Float32` | TargetMgr / MovingBucketLauncher | udp_node | 射出ベルト目標速度 [m/s]（target_id・動作命令に応じて排他配信） |
+| `/bucket_opening_tracker/target` | Topic | `lidar_perception_system/msg/MovingBucketTrack` | LPS | MovingBucketLauncher | 移動バケツ上部開口部中心位置・トラッキング情報 |
+| `/bucket_opening_tracker/bottom` | Topic | `lidar_perception_system/msg/BucketBottom` | LPS | MovingBucketLauncher | 移動バケツ底位置（`use_bottom_topic=true` 時のフォールバック） |
 | `/costmap` | Topic | `nav_msgs/msg/OccupancyGrid` | CostmapGen | PathPlanner | 障害物インフレーション付きコストマップ |
 | `/goal_pose` | Topic | `geometry_msgs/msg/PoseStamped` | TargetMgr | PathPlanner | 目標位置・姿勢 |
 | `/planned_path` | Topic | `nav_msgs/msg/Path` | PathPlanner | PathFollower | 姿勢計画付き平滑化経路 |
@@ -56,7 +57,7 @@ NHKロボコン2026向けの自動走行ナビゲーションパッケージで�
 | `/target_manager/get_points` | Service | `gn10_navigation/srv/GetPoints` | Tool | TargetManager | 投擲ポイントデータの取得 |
 | `/target_manager/update_point` | Service | `gn10_navigation/srv/UpdatePoint` | Tool | TargetManager | 投擲ポイントのメモリ更新 |
 | `/target_manager/save_points` | Service | `std_srvs/srv/Trigger` | Tool | TargetManager | 投擲ポイントのYAML保存 |
-| `map -> base_link` | TF | `TransformStamped` | Localizer | Planner / Follower | 機体現在位置・姿勢 |
+| `map -> base_link` | TF | `TransformStamped` | Localizer | Planner / Follower / MovingBucketLauncher | 機体現在位置・姿勢 |
 | `map -> bucket_bottom` | TF | `TransformStamped` | Perception | PathFollower | 移動バケツ位置 |
 
 ---
@@ -83,6 +84,7 @@ ros2 launch gn10_navigation navigation.launch.py use_rviz:=true
 - [`config/costmap_params.yaml`](config/costmap_params.yaml): 解像度、マップ範囲、インフレーション設定
 - [`config/path_planner_params.yaml`](config/path_planner_params.yaml): A*重み、B-spline平滑化度合い、機体外形、安全旋回設定
 - [`config/path_follower_params.yaml`](config/path_follower_params.yaml): 物理速度・加速度制限、位置・姿勢フィードバックゲイン、ゴール許容誤差
+- [`config/moving_bucket_launcher_params.yaml`](config/moving_bucket_launcher_params.yaml): 移動バケツの高さ・上部開口部弾道計算パラメータ
 - [`config/shooting_points_blue.yaml`](config/shooting_points_blue.yaml) / [`config/shooting_points_red.yaml`](config/shooting_points_red.yaml): 各Target IDの目標座標
 
 ## 6. ライセンス

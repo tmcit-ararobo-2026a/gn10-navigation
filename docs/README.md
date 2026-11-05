@@ -128,34 +128,39 @@
 
 ## 5. 移動バケツ追従射出速度計算 (`moving_bucket_launcher_flow.pu`)
 
-相手ロボット上の可動バケツ（Target ID 0: `MovingBucket`）に対し、LiDAR Perception System の推定底面位置から直動ベルトの射出速度をリアルタイムに逆算します。
+相手ロボット上の可動バケツ（Target ID 7: `MovingBucket`）に対し、LiDAR Perception System の推定上部開口部位置（`/bucket_opening_tracker/target`）から `base_link` 基準で直動ベルトの射出速度をリアルタイムに逆算します。
 
 ### 処理の流れ
-1. **排他制御チェック**:
-   - `target_id == MovingBucket (0)` の時のみ計算およびパブリッシュを実行。固定ターゲット時は `target_manager_node` とのトピック競合を防止するため完全停止。
+1. **排他制御および状態チェック**:
+   - `target_id == MovingBucket (7)` かつ `navigation_command == Move (2)` の時のみ計算およびパブリッシュを実行。固定ターゲット時や `Sleep` / `Stanby` 時は `target_manager_node` との競合および不要な速度指令を防止するため完全停止。
 2. **有効性・鮮度検証**:
-   - `BucketBottom.valid == true` かつ `(now - last_observation_stamp) <= max_tracking_age_sec` の場合のみ処理を継続。
-3. **TF相対座標変換**:
-   - 計測座標を `base_link` へ変換し、ランチャー射出位置オフセット（`launcher_offset_x`, `launcher_offset_z`）を差し引いて相対距離 $L$ と高低差 $\Delta z$ を算出。
-4. **3次元弾道方程式による初速逆算**:
-   - 仰角 $\theta$（既定 $45^\circ$）による放物弾道式：
-     $$v_0 = \sqrt{\frac{g L^2}{2 \cos^2\theta (L \tan\theta - \Delta z)}}$$
-   - スリップ・抵抗補正: $v_{\text{target}} = v_0 \cdot \text{scale} + \text{offset}$
-5. **バッテリー電圧低下補正 & クランプ**:
-   - バッテリー電圧（`/robot/feedback/drive_battery_voltage`）が $15\text{V}$ 以上の正常値の場合、基準電圧（$20\text{V}$）との偏差に応じて速度を微調整。
+   - `valid == true` かつ `(now - last_observation_stamp) <= max_tracking_age_sec` の場合のみ処理を継続。
+   - `use_bottom_topic == false`（既定）時は `/bucket_opening_tracker/target`（上部開口部中心）を使用し、`use_bottom_topic == true` 時は `/bucket_opening_tracker/bottom` の Z 座標に `bucket_height` を加算して上部開口部高さを算出。
+3. **TF相対座標変換 (`base_link` 基準)**:
+   - 上部開口部座標を `base_link` へ変換し、`base_link` 原点からの水平距離 $L = \sqrt{x^2 + y^2}$ と有効リリース位置からの水平飛行距離 $\Delta x = L - x_0$、および目標高さ差 $\Delta z = (z_{\text{open}} + \text{aim\_z\_offset}) - z_0$ を算出。
+4. **3次元弾道方程式による初速逆算とリリース速度変換**:
+   - `gn10-shot-manager` の軌道解析で同定した `base_link` 基準の放物弾道式から必要弾道初速 $v_0$ を逆算：
+     $$v_0 = \sqrt{\frac{g \Delta x^2}{2 \cos^2\theta (\Delta x \tan\theta - \Delta z)}}$$
+   - リリース速度変換式によりベルト目標速度を算出：
+     $$v_{\text{belt}} = \text{velocity\_quad} \cdot v_0^2 + \text{velocity\_scale} \cdot v_0 + \text{velocity\_offset}$$
+5. **クランプ & 配信**:
    - 機構許容範囲（`min_velocity` 〜 `max_velocity`）へクランプして `/robot/operation/belt_launcher_speed` へ発行。
 
-### パラメータ
+### パラメータ (`config/moving_bucket_launcher_params.yaml`)
 | パラメータ名 | 既定値 | 役割 |
 |---|---|---|
-| `base_frame` | `base_link` | 基準ロボットフレーム |
-| `launcher_offset_x / z` | 0.20 m / 0.35 m | 機体中心からの射出点オフセット |
-| `launch_angle_deg` | 45.0 deg | ランチャー射出仰角 |
-| `min_velocity / max_velocity` | 3.0 / 7.75 m/s | 機構速度上下限リミット |
-| `velocity_scale / offset` | 1.05 / 0.10 m/s | 弾道スケール・切片補正係数 |
-| `voltage_ref` | 20.0 V | 基準電源電圧 |
-| `voltage_comp_gain` | 0.02 /V | 電圧低下1Vあたりの速度補正比率 |
-| `max_tracking_age_sec` | 0.60 s | バケツ追従計測値の許容最大遅延 |
+| `base_frame` | `base_link` | 軌道計算を行う基準ロボットフレーム |
+| `opening_topic` | `/bucket_opening_tracker/target` | バケツ上部開口部トラッキングトピック |
+| `bottom_topic` | `/bucket_opening_tracker/bottom` | バケツ底面トピック（`use_bottom_topic=true` 時） |
+| `use_bottom_topic` | `false` | `true` の場合は底面Z座標 + `bucket_height` を上部開口部として使用 |
+| `bucket_height` | `0.255` m | バケツ底面から上部開口部までの高さ |
+| `aim_z_offset` | `0.0` m | 上部開口部中心に対する狙い高さオフセット |
+| `launcher_offset_x / z` | `0.348` m / `1.034` m | `base_link` 基準の有効リリース位置オフセット $(x_0, z_0)$ |
+| `launch_angle_deg` | `45.88` deg | 有効リリース仰角 $\theta$ |
+| `velocity_quad / scale / offset` | `0.0` / `0.806` / `-0.243` | 弾道初速 $v_0$ からベルトリリース速度 $v_{\text{belt}}$ への変換係数 |
+| `min_velocity / max_velocity` | `2.5` / `7.75` m/s | 機構速度上下限リミット |
+| `min_horizontal_dist / max_horizontal_dist` | `0.6` / `5.5` m | 計算対象とする水平距離範囲 |
+| `max_tracking_age_sec` | `0.5` s | バケツ追従計測値の許容最大遅延 |
 
 ---
 

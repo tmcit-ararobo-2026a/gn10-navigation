@@ -27,77 +27,283 @@ MovingBucketLauncherNode::MovingBucketLauncherNode(const rclcpp::NodeOptions& op
         std::bind(&MovingBucketLauncherNode::onNavigationCommand, this, std::placeholders::_1)
     );
 
-    battery_sub_ = this->create_subscription<std_msgs::msg::Float32>(
-        "/robot/feedback/drive_battery_voltage",
+    bucket_opening_sub_ = this->create_subscription<lidar_perception_system::msg::MovingBucketTrack>(
+        opening_topic_,
         10,
-        std::bind(&MovingBucketLauncherNode::onBatteryVoltage, this, std::placeholders::_1)
+        std::bind(&MovingBucketLauncherNode::onBucketOpening, this, std::placeholders::_1)
     );
 
     bucket_bottom_sub_ = this->create_subscription<lidar_perception_system::msg::BucketBottom>(
-        "/bucket_opening_tracker/bottom",
+        bottom_topic_,
         10,
         std::bind(&MovingBucketLauncherNode::onBucketBottom, this, std::placeholders::_1)
     );
 
     // Shared publisher with target_manager_node.
-    // Important: publish ONLY when target_id == MovingBucket to avoid collision.
+    // Published ONLY when target_id == MovingBucket (7) and nav_cmd == Move (1).
     belt_launcher_speed_pub_ = this->create_publisher<std_msgs::msg::Float32>(
         "/robot/operation/belt_launcher_speed", 10
     );
 
-    RCLCPP_INFO(this->get_logger(), "MovingBucketLauncherNode initialized.");
+    param_callback_handle_ = this->add_on_set_parameters_callback(
+        std::bind(&MovingBucketLauncherNode::onSetParameters, this, std::placeholders::_1)
+    );
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "MovingBucketLauncherNode initialized (opening_topic='%s', use_bottom_topic=%s, bucket_height=%.3f m).",
+        opening_topic_.c_str(),
+        use_bottom_topic_ ? "true" : "false",
+        bucket_height_
+    );
 }
 
 void MovingBucketLauncherNode::loadParameters()
 {
-    this->declare_parameter<std::string>("base_frame", "base_link");
-    this->declare_parameter<double>("launcher_offset_x", 0.2);
-    this->declare_parameter<double>("launcher_offset_z", 0.35);
-    this->declare_parameter<double>("launch_angle_deg", 45.0);
-    this->declare_parameter<double>("min_velocity", 3.0);
-    this->declare_parameter<double>("max_velocity", 7.75);
-    this->declare_parameter<double>("velocity_scale", 1.05);
-    this->declare_parameter<double>("velocity_offset", 0.1);
-    this->declare_parameter<double>("voltage_ref", 20.0);
-    this->declare_parameter<double>("voltage_comp_gain", 0.02);
-    this->declare_parameter<double>("max_tracking_age_sec", 0.6);
+    this->declare_parameter<std::string>("base_frame", base_frame_);
+    this->declare_parameter<std::string>("opening_topic", opening_topic_);
+    this->declare_parameter<std::string>("bottom_topic", bottom_topic_);
+    this->declare_parameter<bool>("use_bottom_topic", use_bottom_topic_);
+    this->declare_parameter<double>("bucket_height", bucket_height_);
+    this->declare_parameter<double>("aim_z_offset", aim_z_offset_);
+    this->declare_parameter<double>("launcher_offset_x", launcher_offset_x_);
+    this->declare_parameter<double>("launcher_offset_z", launcher_offset_z_);
+    this->declare_parameter<double>("launch_angle_deg", launch_angle_deg_);
+    this->declare_parameter<double>("velocity_quad", velocity_quad_);
+    this->declare_parameter<double>("velocity_scale", velocity_scale_);
+    this->declare_parameter<double>("velocity_offset", velocity_offset_);
+    this->declare_parameter<double>("min_velocity", min_velocity_);
+    this->declare_parameter<double>("max_velocity", max_velocity_);
+    this->declare_parameter<double>("min_horizontal_dist", min_horizontal_dist_);
+    this->declare_parameter<double>("max_horizontal_dist", max_horizontal_dist_);
+    this->declare_parameter<double>("max_tracking_age_sec", max_tracking_age_sec_);
 
     base_frame_           = this->get_parameter("base_frame").as_string();
+    opening_topic_        = this->get_parameter("opening_topic").as_string();
+    bottom_topic_         = this->get_parameter("bottom_topic").as_string();
+    use_bottom_topic_     = this->get_parameter("use_bottom_topic").as_bool();
+    bucket_height_        = this->get_parameter("bucket_height").as_double();
+    aim_z_offset_         = this->get_parameter("aim_z_offset").as_double();
     launcher_offset_x_    = this->get_parameter("launcher_offset_x").as_double();
     launcher_offset_z_    = this->get_parameter("launcher_offset_z").as_double();
     launch_angle_deg_     = this->get_parameter("launch_angle_deg").as_double();
-    min_velocity_         = this->get_parameter("min_velocity").as_double();
-    max_velocity_         = this->get_parameter("max_velocity").as_double();
+    velocity_quad_        = this->get_parameter("velocity_quad").as_double();
     velocity_scale_       = this->get_parameter("velocity_scale").as_double();
     velocity_offset_      = this->get_parameter("velocity_offset").as_double();
-    voltage_ref_          = this->get_parameter("voltage_ref").as_double();
-    voltage_comp_gain_    = this->get_parameter("voltage_comp_gain").as_double();
+    min_velocity_         = this->get_parameter("min_velocity").as_double();
+    max_velocity_         = this->get_parameter("max_velocity").as_double();
+    min_horizontal_dist_  = this->get_parameter("min_horizontal_dist").as_double();
+    max_horizontal_dist_  = this->get_parameter("max_horizontal_dist").as_double();
     max_tracking_age_sec_ = this->get_parameter("max_tracking_age_sec").as_double();
+}
+
+rcl_interfaces::msg::SetParametersResult MovingBucketLauncherNode::onSetParameters(
+    const std::vector<rclcpp::Parameter>& parameters
+)
+{
+    rcl_interfaces::msg::SetParametersResult result;
+    result.successful = true;
+
+    for (const auto& param : parameters) {
+        const auto& name = param.get_name();
+        if (name == "base_frame") {
+            base_frame_ = param.as_string();
+        } else if (name == "use_bottom_topic") {
+            use_bottom_topic_ = param.as_bool();
+        } else if (name == "bucket_height") {
+            const double val = param.as_double();
+            if (!std::isfinite(val) || val < 0.0) {
+                result.successful = false;
+                result.reason = "bucket_height must be finite and non-negative";
+                return result;
+            }
+            bucket_height_ = val;
+        } else if (name == "aim_z_offset") {
+            const double val = param.as_double();
+            if (!std::isfinite(val)) {
+                result.successful = false;
+                result.reason = "aim_z_offset must be finite";
+                return result;
+            }
+            aim_z_offset_ = val;
+        } else if (name == "launcher_offset_x") {
+            const double val = param.as_double();
+            if (!std::isfinite(val)) {
+                result.successful = false;
+                result.reason = "launcher_offset_x must be finite";
+                return result;
+            }
+            launcher_offset_x_ = val;
+        } else if (name == "launcher_offset_z") {
+            const double val = param.as_double();
+            if (!std::isfinite(val)) {
+                result.successful = false;
+                result.reason = "launcher_offset_z must be finite";
+                return result;
+            }
+            launcher_offset_z_ = val;
+        } else if (name == "launch_angle_deg") {
+            const double val = param.as_double();
+            if (!std::isfinite(val) || val <= 0.0 || val >= 89.0) {
+                result.successful = false;
+                result.reason = "launch_angle_deg must be in (0.0, 89.0)";
+                return result;
+            }
+            launch_angle_deg_ = val;
+        } else if (name == "velocity_quad") {
+            const double val = param.as_double();
+            if (!std::isfinite(val)) {
+                result.successful = false;
+                result.reason = "velocity_quad must be finite";
+                return result;
+            }
+            velocity_quad_ = val;
+        } else if (name == "velocity_scale") {
+            const double val = param.as_double();
+            if (!std::isfinite(val) || val <= 0.0) {
+                result.successful = false;
+                result.reason = "velocity_scale must be finite and positive";
+                return result;
+            }
+            velocity_scale_ = val;
+        } else if (name == "velocity_offset") {
+            const double val = param.as_double();
+            if (!std::isfinite(val)) {
+                result.successful = false;
+                result.reason = "velocity_offset must be finite";
+                return result;
+            }
+            velocity_offset_ = val;
+        } else if (name == "min_velocity") {
+            const double val = param.as_double();
+            if (!std::isfinite(val) || val < 0.0 || val > max_velocity_) {
+                result.successful = false;
+                result.reason = "min_velocity must be in [0.0, max_velocity]";
+                return result;
+            }
+            min_velocity_ = val;
+        } else if (name == "max_velocity") {
+            const double val = param.as_double();
+            if (!std::isfinite(val) || val < min_velocity_) {
+                result.successful = false;
+                result.reason = "max_velocity must be >= min_velocity";
+                return result;
+            }
+            max_velocity_ = val;
+        } else if (name == "min_horizontal_dist") {
+            const double val = param.as_double();
+            if (!std::isfinite(val) || val < 0.0 || val >= max_horizontal_dist_) {
+                result.successful = false;
+                result.reason = "min_horizontal_dist must be in [0.0, max_horizontal_dist)";
+                return result;
+            }
+            min_horizontal_dist_ = val;
+        } else if (name == "max_horizontal_dist") {
+            const double val = param.as_double();
+            if (!std::isfinite(val) || val <= min_horizontal_dist_) {
+                result.successful = false;
+                result.reason = "max_horizontal_dist must be > min_horizontal_dist";
+                return result;
+            }
+            max_horizontal_dist_ = val;
+        } else if (name == "max_tracking_age_sec") {
+            const double val = param.as_double();
+            if (!std::isfinite(val) || val <= 0.0) {
+                result.successful = false;
+                result.reason = "max_tracking_age_sec must be positive";
+                return result;
+            }
+            max_tracking_age_sec_ = val;
+        }
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Parameter '%s' updated to: %s",
+            name.c_str(),
+            param.value_to_string().c_str()
+        );
+    }
+
+    return result;
+}
+
+bool MovingBucketLauncherNode::isPublishAllowed() const
+{
+    return current_target_id_ == static_cast<uint8_t>(TargetId::MovingBucket) &&
+           nav_cmd_ == NavigationCommand::Move;
 }
 
 void MovingBucketLauncherNode::onTargetId(const std_msgs::msg::UInt8::ConstSharedPtr msg)
 {
-    current_target_id_ = msg->data;
+    if (current_target_id_ != msg->data) {
+        current_target_id_ = msg->data;
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Target ID updated to: %u (%s)",
+            current_target_id_,
+            toString(static_cast<TargetId>(current_target_id_))
+        );
+    }
 }
 
 void MovingBucketLauncherNode::onNavigationCommand(const std_msgs::msg::UInt8::ConstSharedPtr msg)
 {
-    nav_cmd_ = static_cast<NavigationCommand>(msg->data);
+    const auto received_cmd = static_cast<NavigationCommand>(msg->data);
+    if (nav_cmd_ != received_cmd) {
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Navigation command updated to: %u (%s)",
+            msg->data,
+            toString(received_cmd)
+        );
+        nav_cmd_ = received_cmd;
+    }
 }
 
-void MovingBucketLauncherNode::onBatteryVoltage(const std_msgs::msg::Float32::ConstSharedPtr msg)
+void MovingBucketLauncherNode::onBucketOpening(
+    const lidar_perception_system::msg::MovingBucketTrack::ConstSharedPtr msg
+)
 {
-    current_battery_voltage_ = msg->data;
-    last_voltage_time_ = this->now();
+    if (use_bottom_topic_) {
+        return;
+    }
+
+    // Avoid collision with target_manager_node and do not publish when not in Move state.
+    if (!isPublishAllowed()) {
+        return;
+    }
+
+    if (!msg->valid) {
+        RCLCPP_DEBUG(this->get_logger(), "MovingBucketTrack measurement is invalid. Skipping speed calculation.");
+        return;
+    }
+
+    const rclcpp::Time obs_time(msg->last_observation_stamp);
+    const double age_sec = (this->now() - obs_time).seconds();
+    if (age_sec > max_tracking_age_sec_) {
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(),
+            *this->get_clock(),
+            2000,
+            "Bucket opening track stale (age=%.2f s > %.2f s). Skipping speed calculation.",
+            age_sec,
+            max_tracking_age_sec_
+        );
+        return;
+    }
+
+    calculateAndPublishSpeed(msg->position, msg->header.frame_id);
 }
 
 void MovingBucketLauncherNode::onBucketBottom(
     const lidar_perception_system::msg::BucketBottom::ConstSharedPtr msg
 )
 {
-    // CRITICAL: Avoid collision with target_manager_node.
-    // Only publish when current target is MovingBucket (ID 0).
-    if (current_target_id_ != static_cast<uint8_t>(TargetId::MovingBucket)) {
+    if (!use_bottom_topic_) {
+        return;
+    }
+
+    // Avoid collision with target_manager_node and do not publish when not in Move state.
+    if (!isPublishAllowed()) {
         return;
     }
 
@@ -106,32 +312,35 @@ void MovingBucketLauncherNode::onBucketBottom(
         return;
     }
 
-    // Check freshness
-    rclcpp::Time obs_time(msg->last_observation_stamp);
-    if ((this->now() - obs_time).seconds() > max_tracking_age_sec_) {
+    const rclcpp::Time obs_time(msg->last_observation_stamp);
+    const double age_sec = (this->now() - obs_time).seconds();
+    if (age_sec > max_tracking_age_sec_) {
         RCLCPP_WARN_THROTTLE(
             this->get_logger(),
             *this->get_clock(),
             2000,
-            "Bucket tracking stale (age=%.2f s). Skipping speed calculation.",
-            (this->now() - obs_time).seconds()
+            "Bucket bottom track stale (age=%.2f s > %.2f s). Skipping speed calculation.",
+            age_sec,
+            max_tracking_age_sec_
         );
         return;
     }
 
-    calculateAndPublishSpeed(msg->center, msg->header.frame_id);
+    geometry_msgs::msg::Point opening_pos = msg->center;
+    opening_pos.z += bucket_height_;
+    calculateAndPublishSpeed(opening_pos, msg->header.frame_id);
 }
 
 void MovingBucketLauncherNode::calculateAndPublishSpeed(
-    const geometry_msgs::msg::Point& bucket_bottom_pos,
+    const geometry_msgs::msg::Point& opening_pos_map,
     const std::string& frame_id
 )
 {
-    // Transform bucket bottom point to base_frame
+    // Transform upper bucket opening position to base_frame (base_link)
     geometry_msgs::msg::PointStamped point_in, point_robot;
     point_in.header.frame_id = frame_id;
     point_in.header.stamp = rclcpp::Time(0);  // Latest available TF
-    point_in.point = bucket_bottom_pos;
+    point_in.point = opening_pos_map;
 
     try {
         point_robot = tf_buffer_->transform(point_in, base_frame_, tf2::durationFromSec(0.1));
@@ -140,7 +349,7 @@ void MovingBucketLauncherNode::calculateAndPublishSpeed(
             this->get_logger(),
             *this->get_clock(),
             2000,
-            "Could not transform bucket point from '%s' to '%s': %s",
+            "Could not transform bucket opening from '%s' to '%s': %s",
             frame_id.c_str(),
             base_frame_.c_str(),
             ex.what()
@@ -148,54 +357,71 @@ void MovingBucketLauncherNode::calculateAndPublishSpeed(
         return;
     }
 
-    // Calculate relative horizontal distance L and vertical delta Z relative to launcher muzzle
-    const double rel_x = point_robot.point.x - launcher_offset_x_;
-    const double rel_y = point_robot.point.y;
-    const double rel_z = point_robot.point.z - launcher_offset_z_;
-
-    const double horizontal_dist = std::hypot(rel_x, rel_y);
-    if (horizontal_dist < 0.5) {
-        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Bucket too close (L=%.2f m)", horizontal_dist);
+    // Horizontal distance in base_link frame and relative distance from effective release point
+    const double base_dist = std::hypot(point_robot.point.x, point_robot.point.y);
+    if (base_dist < min_horizontal_dist_ || base_dist > max_horizontal_dist_) {
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(),
+            *this->get_clock(),
+            2000,
+            "Bucket horizontal distance out of range (L=%.2f m, valid=[%.2f, %.2f] m)",
+            base_dist,
+            min_horizontal_dist_,
+            max_horizontal_dist_
+        );
         return;
     }
 
-    // Ballistic trajectory model:
-    // delta_z = L * tan(theta) - (g * L^2) / (2 * v0^2 * cos^2(theta))
-    // => v0 = sqrt( (g * L^2) / (2 * cos^2(theta) * (L * tan(theta) - delta_z)) )
+    const double delta_x = base_dist - launcher_offset_x_;
+    if (delta_x <= 0.05) {
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(),
+            *this->get_clock(),
+            2000,
+            "Bucket too close to launcher release offset (delta_x=%.2f m)",
+            delta_x
+        );
+        return;
+    }
+
+    const double target_z = point_robot.point.z + aim_z_offset_;
+    const double delta_z = target_z - launcher_offset_z_;
+
+    // Ballistic trajectory model in base_link frame:
+    // z(L) = z0 + delta_x * tan(theta) - (g * delta_x^2) / (2 * v0^2 * cos^2(theta))
+    // => v0 = sqrt( (g * delta_x^2) / (2 * cos^2(theta) * (delta_x * tan(theta) - delta_z)) )
     constexpr double g = 9.80665;
     const double theta_rad = launch_angle_deg_ * M_PI / 180.0;
     const double cos_theta = std::cos(theta_rad);
     const double tan_theta = std::tan(theta_rad);
 
-    const double denom = 2.0 * cos_theta * cos_theta * (horizontal_dist * tan_theta - rel_z);
+    const double denom = 2.0 * cos_theta * cos_theta * (delta_x * tan_theta - delta_z);
     if (denom <= 0.0) {
         RCLCPP_WARN_THROTTLE(
             this->get_logger(),
             *this->get_clock(),
             2000,
-            "Target bucket unreachable at L=%.2f m, delta_z=%.2f m with angle=%.1f deg",
-            horizontal_dist,
-            rel_z,
+            "Target opening unreachable at L=%.2f m (dx=%.2f m), dZ=%.2f m with angle=%.2f deg",
+            base_dist,
+            delta_x,
+            delta_z,
             launch_angle_deg_
         );
         return;
     }
 
-    const double v_ballistic = std::sqrt((g * horizontal_dist * horizontal_dist) / denom);
+    const double v_ballistic = std::sqrt((g * delta_x * delta_x) / denom);
 
-    // Apply scaling and empirical offset
-    double v_target = v_ballistic * velocity_scale_ + velocity_offset_;
+    // Convert ballistic speed v0 to belt release velocity command:
+    // v_belt = velocity_quad * v0^2 + velocity_scale * v0 + velocity_offset
+    const double v_target =
+        velocity_quad_ * v_ballistic * v_ballistic +
+        velocity_scale_ * v_ballistic +
+        velocity_offset_;
 
-    // Battery voltage compensation
-    if (current_battery_voltage_ >= 15.0f && (this->now() - last_voltage_time_).seconds() <= 2.0) {
-        const double v_err = voltage_ref_ - static_cast<double>(current_battery_voltage_);
-        v_target *= (1.0 + voltage_comp_gain_ * v_err);
-    }
-
-    // Clamp within hardware limit
+    // Clamp within hardware limits
     const double v_clamped = std::clamp(v_target, min_velocity_, max_velocity_);
 
-    // Publish
     std_msgs::msg::Float32 speed_msg;
     speed_msg.data = static_cast<float>(v_clamped);
     belt_launcher_speed_pub_->publish(speed_msg);
@@ -204,9 +430,12 @@ void MovingBucketLauncherNode::calculateAndPublishSpeed(
         this->get_logger(),
         *this->get_clock(),
         250,
-        "MovingBucket target: L=%.2f m, dZ=%.2f m -> belt_speed=%.2f m/s (raw=%.2f m/s)",
-        horizontal_dist,
-        rel_z,
+        "MovingBucket opening: L=%.2f m (dx=%.2f m), z_open=%.2f m (dZ=%.2f m) -> v0=%.2f m/s, belt_speed=%.2f m/s (raw=%.2f m/s)",
+        base_dist,
+        delta_x,
+        target_z,
+        delta_z,
+        v_ballistic,
         v_clamped,
         v_target
     );
@@ -222,4 +451,3 @@ int main(int argc, char** argv)
     rclcpp::shutdown();
     return 0;
 }
-

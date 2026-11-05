@@ -12,11 +12,11 @@ title moving_bucket_launcher_node 処理フロー図
 
 start
 
-:バケツ底認識コールバック (onBucketBottom)\n/bucket_opening_tracker/bottom 受信;
+:バケツ上部開口部認識コールバック\n/bucket_opening_tracker/target (MovingBucketTrack)\n(または use_bottom_topic=true 時は bottom + bucket_height);
 
-if (current_target_id == MovingBucket (0) ?) then (Yes)
-else (No: 固定ターゲット選択中)
-    :トピック干渉回避のため処理スキップ\n(target_manager_node の配信を優先);
+if (current_target_id == MovingBucket (7)\nかつ nav_cmd == Move (2) ?) then (Yes)
+else (No: 固定ターゲット選択中 または Sleep/Stanby)
+    :トピック干渉・不要出力回避のため処理スキップ;
     stop
 endif
 
@@ -40,16 +40,15 @@ else (No: TF例外)
     stop
 endif
 
-:ランチャー射出位置オフセット補正\nrel_x = point_robot.x - launcher_offset_x\nrel_z = point_robot.z - launcher_offset_z;
-:水平相対距離算出\nL = hypot(rel_x, rel_y);
+:base_link 基準での距離・高低差算出\nL = hypot(point_robot.x, point_robot.y)\nΔx = L - launcher_offset_x\nΔz = (point_robot.z + aim_z_offset) - launcher_offset_z;
 
-if (L >= 0.5m ?) then (Yes)
-else (No: 近すぎる)
-    :安全のためスキップ;
+if (min_horizontal_dist <= L <= max_horizontal_dist\nかつ Δx > 0.05m ?) then (Yes)
+else (No: 射程範囲外)
+    :射程範囲外のためスキップ;
     stop
 endif
 
-:3次元弾道方程式による必要初速逆算\nv0 = sqrt( (g * L^2) / (2 * cos^2(θ) * (L * tan(θ) - Δz)) );
+:3次元弾道方程式による必要初速逆算\nv0 = sqrt( (g * Δx^2) / (2 * cos^2(θ) * (Δx * tan(θ) - Δz)) );
 
 if (目標到達可能 (分母 > 0) ?) then (Yes)
 else (No: 物理的到達不可)
@@ -57,13 +56,7 @@ else (No: 物理的到達不可)
     stop
 endif
 
-:空気抵抗・スリップ補正\nv_target = v0 * velocity_scale + velocity_offset;
-
-if (バッテリー電圧正常 (>= 15V かつ 2s以内) ?) then (Yes)
-    :電圧降下補正\nv_target *= (1.0 + voltage_comp_gain * (voltage_ref - current_volt));
-else (No)
-    :電圧基準値 (voltage_ref) を適用;
-endif
+:リリース速度変換 (shot-manager 軌道同定パラメータ)\nv_target = velocity_quad * v0^2 + velocity_scale * v0 + velocity_offset;
 
 :機構許容範囲クランプ\nv_clamped = clamp(v_target, min_velocity, max_velocity);
 
