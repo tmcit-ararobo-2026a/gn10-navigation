@@ -2,12 +2,12 @@ path_follower_node:
   ros__parameters:
     base_frame: base_link
     bucket_frame: bucket_bottom
-    control_comm_delay: 0.025
+    control_comm_delay: 0.02
     control_rate: 50.0
     curvature_window: 0.5
-    decel_effective_ratio: 0.7
+    decel_effective_ratio: 0.6
     goal_settle_count: 5
-    goal_tolerance: 0.025
+    goal_tolerance: 0.02
     goal_yaw_tolerance: 0.0175
     heading_d_filter_alpha: 0.6
     heading_integral_max: 0.3
@@ -15,17 +15,17 @@ path_follower_node:
     heading_ki: 0.0
     heading_kp: 7.0
     map_frame: map
-    max_acceleration: 7.0
+    max_acceleration: 5.4
     max_angular_acceleration: 24.0
     max_angular_velocity: 3.0
     max_bucket_age: 0.5
-    max_cruise_fb_speed: 1.5
-    max_deceleration: 7.0
+    max_cruise_fb_speed: 3.0
+    max_deceleration: 8.0
     max_delay_compensation: 0.15
-    max_fb_speed: 0.8
+    max_fb_speed: 0.7
     max_initial_path_error: 0.45
-    max_jerk: 120.0
-    max_lateral_acceleration: 7.0
+    max_jerk: 60.0
+    max_lateral_acceleration: 3.0
     max_path_error: 0.3
     max_pose_age: 0.2
     max_speed: 3.0
@@ -34,7 +34,7 @@ path_follower_node:
     min_turn_speed: 0.3
     path_interpolation_step: 0.02
     position_d_filter_alpha: 0.4
-    position_kd: 2.5
+    position_kd: 0.0
     position_ki: 0.0
     position_kp: 12.0
     qos_overrides./parameter_events.publisher.depth: 1000

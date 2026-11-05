@@ -4,7 +4,7 @@ path_planner_node:
       map_frame: "map"
       base_frame: "base_link"
     a_star:
-      planning_cost: 1.5
+      planning_cost: 0.5
       # 障害物・インフレーション内にスタート/ゴールがある場合の最近傍通行可能セル探索半径 [m]
       snap_distance: 0.4
     bspline:
@@ -13,16 +13,16 @@ path_planner_node:
       # 1反復あたりの内部制御点を隣接点の中点へ寄せる割合 (0.0〜1.0)
       smoothing_strength: 1.0
       # 内部制御点の反復ラプラシアン平滑化回数 (0〜50: 増やすほど階段ノイズが消え滑らかになる)
-      smoothing_iterations: 5
+      smoothing_iterations: 8
       # 動的適応平滑化で試行する制御点間引きステップの最大値 (1〜10)
-      max_stride: 4
+      max_stride: 10
       # 平滑化経路が通過を許容する最大セルコスト (0〜99: 低コスト安全領域内で平滑化を維持)
       smooth_max_cost: 80
     line_approximation:
       # 直線近似を許容する最大セルコスト (-1: 無効, 0〜99: このコスト以下の領域のみ直線化)
-      max_cost: 20
+      max_cost: -1
       # 直線化する最小セグメント距離 [m]
-      min_distance: 0.5
+      min_distance: 1.2
     footprint:
       # config/robot_shape_dimensioned.svg の青い8頂点外形。単位 m、反時計回り。
       # 原点: 元形状の幾何中心 (SVG: 819.90, 850.332381 mm)。+x 前方、+y 左。
@@ -41,6 +41,6 @@ path_planner_node:
       # 旋回区間全域で許容する最大フットプリントコスト (0~99: 通行可能, 100: 障害物)
       turn_max_cost: 20
       # 旋回干渉判定の角度ステップ [rad] (約5.7度)
-      angle_step: 0.1
+      angle_step: 0.15
       # 旋回区間の移動距離 [m]
       turn_distance: 0.6
