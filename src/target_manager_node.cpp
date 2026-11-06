@@ -42,9 +42,8 @@ TargetManagerNode::TargetManagerNode(const rclcpp::NodeOptions& options)
 
     // Publishers
     goal_pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/goal_pose", 10);
-    belt_launcher_speed_pub_ = this->create_publisher<std_msgs::msg::Float32>(
-        "/robot/operation/belt_launcher_speed", 10
-    );
+    belt_launcher_speed_pub_ =
+        this->create_publisher<std_msgs::msg::Float32>("/robot/operation/belt_launcher_speed", 10);
 
     // Services
     update_point_srv_ = this->create_service<gn10_navigation::srv::UpdatePoint>(
@@ -70,11 +69,11 @@ TargetManagerNode::TargetManagerNode(const rclcpp::NodeOptions& options)
             &TargetManagerNode::handleGetPoints, this, std::placeholders::_1, std::placeholders::_2
         )
     );
-
-    param_callback_handle_ = this->add_on_set_parameters_callback(
-        std::bind(&TargetManagerNode::onSetParameters, this, std::placeholders::_1)
-    );
-
+    /*
+        param_callback_handle_ = this->add_on_set_parameters_callback(
+            std::bind(&TargetManagerNode::onSetParameters, this, std::placeholders::_1)
+        );
+    */
     RCLCPP_INFO(this->get_logger(), "TargetManagerNode initialized.");
 }
 
@@ -91,7 +90,9 @@ void TargetManagerNode::loadParameters()
     RCLCPP_INFO(
         this->get_logger(),
         "Parameters loaded: yaml_file_path='%s', map_frame='%s', goal_publish_throttle_sec=%.2f s",
-        yaml_file_path_.c_str(), map_frame_.c_str(), goal_publish_throttle_sec_
+        yaml_file_path_.c_str(),
+        map_frame_.c_str(),
+        goal_publish_throttle_sec_
     );
 }
 
@@ -108,20 +109,35 @@ rcl_interfaces::msg::SetParametersResult TargetManagerNode::onSetParameters(
             double val = param.as_double();
             if (std::isfinite(val) && val >= 0.0) {
                 goal_publish_throttle_sec_ = val;
-                RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+                RCLCPP_INFO(
+                    this->get_logger(),
+                    "Parameter '%s' updated to: %s",
+                    name.c_str(),
+                    param.value_to_string().c_str()
+                );
             } else {
                 result.successful = false;
-                result.reason = "goal_publish_throttle_sec must be non-negative";
+                result.reason     = "goal_publish_throttle_sec must be non-negative";
                 return result;
             }
         } else if (name == "map_frame") {
             map_frame_ = param.as_string();
-            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Parameter '%s' updated to: %s",
+                name.c_str(),
+                param.value_to_string().c_str()
+            );
         } else if (name == "yaml_file_path") {
             yaml_file_path_ = param.as_string();
             repository_.setFilePath(yaml_file_path_);
             repository_.load();
-            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s and reloaded repository", name.c_str(), param.value_to_string().c_str());
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Parameter '%s' updated to: %s and reloaded repository",
+                name.c_str(),
+                param.value_to_string().c_str()
+            );
         }
     }
     return result;
@@ -301,10 +317,11 @@ void TargetManagerNode::handleGetPoints(
     std::shared_ptr<gn10_navigation::srv::GetPoints::Response> response
 )
 {
-    response->file_path = repository_.getResolvedFilePath();
+    response->file_path    = repository_.getResolvedFilePath();
     response->yaml_content = repository_.toYamlString();
-    response->success = !response->yaml_content.empty();
-    response->message = response->success ? "Successfully retrieved shooting points." : "Shooting points empty.";
+    response->success      = !response->yaml_content.empty();
+    response->message =
+        response->success ? "Successfully retrieved shooting points." : "Shooting points empty.";
     RCLCPP_INFO(
         this->get_logger(),
         "Sent %zu shooting points from '%s' to client",

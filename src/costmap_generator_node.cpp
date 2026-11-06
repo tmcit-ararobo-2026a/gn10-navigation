@@ -1,5 +1,4 @@
 #include "gn10_navigation/costmap_generator_node.hpp"
-#include "gn10_navigation/robot_geometry.hpp"
 
 #include <algorithm>
 #include <ament_index_cpp/get_package_share_directory.hpp>
@@ -8,6 +7,8 @@
 #include <limits>
 #include <queue>
 #include <stdexcept>
+
+#include "gn10_navigation/robot_geometry.hpp"
 
 namespace gn10_navigation {
 
@@ -22,12 +23,12 @@ CostmapGeneratorNode::CostmapGeneratorNode(const rclcpp::NodeOptions& options)
     map_qos.reliable();
 
     costmap_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>("costmap", map_qos);
-
-    // 動的パラメータ変更コールバックの登録
-    param_callback_handle_ = this->add_on_set_parameters_callback(
-        std::bind(&CostmapGeneratorNode::onSetParameters, this, std::placeholders::_1)
-    );
-
+    /*
+        // 動的パラメータ変更コールバックの登録
+        param_callback_handle_ = this->add_on_set_parameters_callback(
+            std::bind(&CostmapGeneratorNode::onSetParameters, this, std::placeholders::_1)
+        );
+    */
     // 初回生成＆キャッシュ
     cached_costmap_msg_ = generateCostmap();
 
@@ -43,7 +44,7 @@ void CostmapGeneratorNode::resetTimer(double rate)
         rate = 1.0;
     }
     auto period = std::chrono::duration<double>(1.0 / rate);
-    timer_ = this->create_wall_timer(
+    timer_      = this->create_wall_timer(
         std::chrono::duration_cast<std::chrono::nanoseconds>(period),
         std::bind(&CostmapGeneratorNode::publishCachedCostmap, this)
     );
@@ -68,7 +69,9 @@ void CostmapGeneratorNode::declareAndGetParameters()
     this->declare_parameter(
         "inflation.robot_radius", kDefaultRobotRadius
     );  // 中心点の不可侵半径 [m] (絶対不可侵: 254)
-    this->declare_parameter("inflation.margin", kDefaultInflationMargin);  // コスト波及マージン幅 [m]
+    this->declare_parameter(
+        "inflation.margin", kDefaultInflationMargin
+    );  // コスト波及マージン幅 [m]
 
     // オブジェクト別コスト定義 (JSONで未指定時のフォールバック)
     this->declare_parameter("costs.wall", 120);
@@ -112,8 +115,16 @@ void CostmapGeneratorNode::declareAndGetParameters()
         this->get_logger(),
         "Parameters loaded: publish_rate=%.2f Hz, resolution=%.3f, bounds=[%.1f, %.1f, %.1f, %.1f], "
         "robot_clearance=[%.2f, %.2f], robot_radius=%.3f, margin=%.3f",
-        publish_rate_, resolution_, map_min_x_, map_max_x_, map_min_y_, map_max_y_,
-        robot_z_min_, robot_z_max_, robot_radius_, inflation_margin_
+        publish_rate_,
+        resolution_,
+        map_min_x_,
+        map_max_x_,
+        map_min_y_,
+        map_max_y_,
+        robot_z_min_,
+        robot_z_max_,
+        robot_radius_,
+        inflation_margin_
     );
 }
 
@@ -133,64 +144,134 @@ rcl_interfaces::msg::SetParametersResult CostmapGeneratorNode::onSetParameters(
             if (rate > 0.0) {
                 publish_rate_ = rate;
                 resetTimer(publish_rate_);
-                RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+                RCLCPP_INFO(
+                    this->get_logger(),
+                    "Parameter '%s' updated to: %s",
+                    name.c_str(),
+                    param.value_to_string().c_str()
+                );
             } else {
                 result.successful = false;
-                result.reason = "publish_rate must be positive";
+                result.reason     = "publish_rate must be positive";
                 return result;
             }
         } else if (name == "resolution") {
             resolution_     = param.as_double();
             need_regenerate = true;
-            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Parameter '%s' updated to: %s",
+                name.c_str(),
+                param.value_to_string().c_str()
+            );
         } else if (name == "map_bounds.min_x") {
             map_min_x_      = param.as_double();
             need_regenerate = true;
-            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Parameter '%s' updated to: %s",
+                name.c_str(),
+                param.value_to_string().c_str()
+            );
         } else if (name == "map_bounds.max_x") {
             map_max_x_      = param.as_double();
             need_regenerate = true;
-            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Parameter '%s' updated to: %s",
+                name.c_str(),
+                param.value_to_string().c_str()
+            );
         } else if (name == "map_bounds.min_y") {
             map_min_y_      = param.as_double();
             need_regenerate = true;
-            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Parameter '%s' updated to: %s",
+                name.c_str(),
+                param.value_to_string().c_str()
+            );
         } else if (name == "map_bounds.max_y") {
             map_max_y_      = param.as_double();
             need_regenerate = true;
-            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Parameter '%s' updated to: %s",
+                name.c_str(),
+                param.value_to_string().c_str()
+            );
         } else if (name == "robot_clearance.z_min") {
             robot_z_min_    = param.as_double();
             need_regenerate = true;
-            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Parameter '%s' updated to: %s",
+                name.c_str(),
+                param.value_to_string().c_str()
+            );
         } else if (name == "robot_clearance.z_max") {
             robot_z_max_    = param.as_double();
             need_regenerate = true;
-            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Parameter '%s' updated to: %s",
+                name.c_str(),
+                param.value_to_string().c_str()
+            );
         } else if (name == "inflation.robot_radius") {
             robot_radius_   = param.as_double();
             need_regenerate = true;
-            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Parameter '%s' updated to: %s",
+                name.c_str(),
+                param.value_to_string().c_str()
+            );
         } else if (name == "inflation.margin") {
             inflation_margin_ = param.as_double();
             need_regenerate   = true;
-            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Parameter '%s' updated to: %s",
+                name.c_str(),
+                param.value_to_string().c_str()
+            );
         } else if (name == "costs.wall") {
             cost_wall_      = static_cast<int>(param.as_int());
             need_regenerate = true;
-            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Parameter '%s' updated to: %s",
+                name.c_str(),
+                param.value_to_string().c_str()
+            );
         } else if (name == "costs.partition") {
             cost_partition_ = static_cast<int>(param.as_int());
             need_regenerate = true;
-            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Parameter '%s' updated to: %s",
+                name.c_str(),
+                param.value_to_string().c_str()
+            );
         } else if (name == "costs.obstacle") {
             cost_obstacle_  = static_cast<int>(param.as_int());
             need_regenerate = true;
-            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Parameter '%s' updated to: %s",
+                name.c_str(),
+                param.value_to_string().c_str()
+            );
         } else if (name == "costs.default_cost") {
             cost_default_   = static_cast<int>(param.as_int());
             need_regenerate = true;
-            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Parameter '%s' updated to: %s",
+                name.c_str(),
+                param.value_to_string().c_str()
+            );
         }
     }
 
@@ -213,9 +294,14 @@ int CostmapGeneratorNode::getObjectCost(const FieldObject& obj) const
     const auto& comment = obj.comment;
     if (comment.find("外壁") != std::string::npos) {
         return cost_wall_;
-    } else if (comment.find("仕切り板") != std::string::npos || comment.find("教壇") != std::string::npos) {
+    } else if (
+        comment.find("仕切り板") != std::string::npos || comment.find("教壇") != std::string::npos
+    ) {
         return cost_partition_;
-    } else if (comment.find("バケツ") != std::string::npos || comment.find("机") != std::string::npos || comment.find("椅子") != std::string::npos || comment.find("旗") != std::string::npos) {
+    } else if (
+        comment.find("バケツ") != std::string::npos || comment.find("机") != std::string::npos ||
+        comment.find("椅子") != std::string::npos || comment.find("旗") != std::string::npos
+    ) {
         return cost_obstacle_;
     }
     return cost_default_;
@@ -268,17 +354,17 @@ nav_msgs::msg::OccupancyGrid CostmapGeneratorNode::generateCostmap()
             continue;
         }
 
-        int cost = getObjectCost(obj);
-        bool is_passable = obj.passable;
+        int cost          = getObjectCost(obj);
+        bool is_passable  = obj.passable;
         auto& target_grid = is_passable ? penalty_costs : obstacle_costs;
 
         if (obj.type == BOX || obj.type == VISUAL_BOX || obj.type == ZONE) {
             double half_w = obj.half_x();
             double half_d = obj.half_y();
-            double min_x = obj.center_x - half_w;
-            double max_x = obj.center_x + half_w;
-            double min_y = obj.center_y - half_d;
-            double max_y = obj.center_y + half_d;
+            double min_x  = obj.center_x - half_w;
+            double max_x  = obj.center_x + half_w;
+            double min_y  = obj.center_y - half_d;
+            double max_y  = obj.center_y + half_d;
 
             int min_x_idx = std::max(0, static_cast<int>((min_x - origin_x) / resolution_));
             int max_x_idx = std::min(width - 1, static_cast<int>((max_x - origin_x) / resolution_));
@@ -288,7 +374,7 @@ nav_msgs::msg::OccupancyGrid CostmapGeneratorNode::generateCostmap()
 
             for (int x = min_x_idx; x <= max_x_idx; ++x) {
                 for (int y = min_y_idx; y <= max_y_idx; ++y) {
-                    int idx           = y * width + x;
+                    int idx          = y * width + x;
                     target_grid[idx] = std::max(target_grid[idx], static_cast<uint8_t>(cost));
                 }
             }
@@ -313,7 +399,7 @@ nav_msgs::msg::OccupancyGrid CostmapGeneratorNode::generateCostmap()
                                      (cell_y - obj.center_y) * (cell_y - obj.center_y);
 
                     if (dist_sq <= radius * radius) {
-                        int idx           = y * width + x;
+                        int idx          = y * width + x;
                         target_grid[idx] = std::max(target_grid[idx], static_cast<uint8_t>(cost));
                     }
                 }
@@ -396,7 +482,7 @@ void CostmapGeneratorNode::applyMultiSourceBfsInflation(
                     cost = 254;
                 } else if (dist <= max_dist && inflation_margin_ > 0.0) {
                     double factor = 1.0 - (dist - robot_radius_) / inflation_margin_;
-                    cost = static_cast<uint8_t>(
+                    cost          = static_cast<uint8_t>(
                         std::clamp(std::round(item.base_cost * factor), 0.0, 253.0)
                     );
                 }
@@ -428,7 +514,8 @@ void CostmapGeneratorNode::applyMultiSourceBfsInflation(
     }
 
     // ④ OccupancyGridスケーリング
-    // 仕様: 254のセルを100(不可侵)、それ以外の波及・ペナルティコスト(0〜253)を0〜99の範囲にスケール変換
+    // 仕様:
+    // 254のセルを100(不可侵)、それ以外の波及・ペナルティコスト(0〜253)を0〜99の範囲にスケール変換
     for (size_t i = 0; i < computed_cost.size(); ++i) {
         uint8_t c = computed_cost[i];
         if (c >= 254) {
