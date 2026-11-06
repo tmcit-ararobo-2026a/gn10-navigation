@@ -16,7 +16,7 @@ path_follower_node:
     heading_kp: 7.0
     tracking_kp: 3.5
     tracking_ki: 0.0
-    tracking_kd: 0.15
+    tracking_kd: 0.0
     tracking_integral_max: 0.2
     tracking_d_filter_alpha: 0.2
     tracking_deadband: 0.015
@@ -46,7 +46,7 @@ path_follower_node:
     position_d_filter_alpha: 0.4
     position_kd: 0.0
     position_ki: 0.0
-    position_kp: 12.0
+    position_kp: 8.0
     qos_overrides./parameter_events.publisher.depth: 1000
     qos_overrides./parameter_events.publisher.durability: volatile
     qos_overrides./parameter_events.publisher.history: keep_last

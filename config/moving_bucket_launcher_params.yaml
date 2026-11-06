@@ -11,12 +11,12 @@ moving_bucket_launcher_node:
     use_bottom_topic: false
     bucket_height: 0.255
     aim_z_offset: 0.000
-    launcher_offset_x: 0.306
-    launcher_offset_z: 0.905
-    launch_angle_deg: 46.20
-    velocity_quad: 0.0000
-    velocity_scale: 0.6806
-    velocity_offset: -0.0726
+    launcher_offset_x: 0.428
+    launcher_offset_z: 0.987
+    launch_angle_deg: 49.78
+    velocity_quad: 0.01
+    velocity_scale: 1.2
+    velocity_offset: -1.5000
     min_velocity: 2.50
     max_velocity: 7.75
     min_horizontal_dist: 0.6
