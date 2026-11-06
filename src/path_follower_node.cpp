@@ -1009,7 +1009,7 @@ void PathFollowerNode::controlLoop()
                 break;
             }
 
-            // LiDARの重心計測ノイズを低減するため、map座標系上でバケツ位置に1次ローパスフィルタ(EMA)を適用
+            // LiDARの重心計測ノイズおよび旋回射影時の時間差による跳躍を防止
             const double raw_bucket_x = bucket_tf.transform.translation.x;
             const double raw_bucket_y = bucket_tf.transform.translation.y;
             if (!has_tracked_bucket_) {
@@ -1017,10 +1017,26 @@ void PathFollowerNode::controlLoop()
                 tracked_bucket_y_ = raw_bucket_y;
                 has_tracked_bucket_ = true;
             } else {
+                // 物理移動速度制限（Rate Limiter）:
+                // 相手ロボットの最大移動速度は高々 2.0 m/s。旋回時のTF時間差や認識ノイズによる
+                // 1ステップでの見かけ上の過大な跳躍（30〜40cm等のジャンプ）をクランプし、
+                // 制御ループの正帰還振動（自転による見かけの目標移動 $\to$ 旋回加速）を完全に遮断する。
+                const double dx = raw_bucket_x - tracked_bucket_x_;
+                const double dy = raw_bucket_y - tracked_bucket_y_;
+                const double dist = std::hypot(dx, dy);
+                constexpr double max_bucket_speed = 2.5;  // [m/s]
+                const double max_step = max_bucket_speed * delta_time + 0.05;  // 0.05mのマージン
+                double clamped_x = raw_bucket_x;
+                double clamped_y = raw_bucket_y;
+                if (dist > max_step && dist > 1e-4) {
+                    clamped_x = tracked_bucket_x_ + (dx / dist) * max_step;
+                    clamped_y = tracked_bucket_y_ + (dy / dist) * max_step;
+                }
+
                 tracked_bucket_x_ = (1.0 - tracking_pos_filter_alpha_) * tracked_bucket_x_ +
-                                    tracking_pos_filter_alpha_ * raw_bucket_x;
+                                    tracking_pos_filter_alpha_ * clamped_x;
                 tracked_bucket_y_ = (1.0 - tracking_pos_filter_alpha_) * tracked_bucket_y_ +
-                                    tracking_pos_filter_alpha_ * raw_bucket_y;
+                                    tracking_pos_filter_alpha_ * clamped_y;
             }
 
             const double target_yaw = std::atan2(

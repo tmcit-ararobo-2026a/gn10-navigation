@@ -83,3 +83,36 @@ TEST_F(TrackingStabilityTest, PositionFilterEMA)
     EXPECT_NEAR(filtered_x, true_x, 0.02);
     EXPECT_NEAR(filtered_y, true_y, 0.02);
 }
+
+TEST_F(TrackingStabilityTest, PositionJumpRateLimiter)
+{
+    // Test that a sudden 0.40m jump (from rotation TF latency) is clamped
+    const double initial_x = 2.0;
+    const double initial_y = 1.0;
+    const double delta_time = 0.02; // 50 Hz
+    constexpr double max_bucket_speed = 2.5; // m/s
+    const double max_step = max_bucket_speed * delta_time + 0.05; // 0.10 m
+
+    double tracked_x = initial_x;
+    double tracked_y = initial_y;
+
+    // Sudden 0.40m jump along X
+    const double jump_x = initial_x + 0.40;
+    const double jump_y = initial_y;
+
+    const double dx = jump_x - tracked_x;
+    const double dy = jump_y - tracked_y;
+    const double dist = std::hypot(dx, dy);
+
+    double clamped_x = jump_x;
+    double clamped_y = jump_y;
+    if (dist > max_step && dist > 1e-4) {
+        clamped_x = tracked_x + (dx / dist) * max_step;
+        clamped_y = tracked_y + (dy / dist) * max_step;
+    }
+
+    // Displacement of clamped position must not exceed max_step (0.10 m)
+    EXPECT_LE(clamped_x - tracked_x, max_step + 1e-6);
+    EXPECT_NEAR(clamped_x, initial_x + max_step, 1e-5);
+    EXPECT_EQ(clamped_y, initial_y);
+}
