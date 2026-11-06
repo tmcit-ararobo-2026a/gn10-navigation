@@ -188,11 +188,9 @@ PathFollowerNode::PathFollowerNode(const rclcpp::NodeOptions& options)
     lookahead_marker_pub_ =
         this->create_publisher<visualization_msgs::msg::Marker>("/debug/reference_point", 10);
 
-    /*
     param_callback_handle_ = this->add_on_set_parameters_callback(
         std::bind(&PathFollowerNode::onSetParameters, this, std::placeholders::_1)
     );
-    */
 
     auto period = std::chrono::duration<double>(1.0 / control_rate_);
     timer_      = this->create_wall_timer(
@@ -978,6 +976,85 @@ void PathFollowerNode::controlLoop()
             break;
 
         case NavigationStatus::Tracking: {
+            geometry_msgs::msg::TransformStamped bucket_tf;
+            try {
+                bucket_tf =
+                    tf_buffer_->lookupTransform(map_frame_, bucket_frame_, tf2::TimePointZero);
+                const double age = (this->now() - rclcpp::Time(bucket_tf.header.stamp)).seconds();
+                if (max_bucket_age_ > 0.0 && (age > max_bucket_age_ || age < -0.1)) {
+                    throw tf2::TransformException("bucket transform is stale");
+                }
+                last_bucket_seen_time_ = this->now();
+            } catch (const tf2::TransformException& exception) {
+                const double lost_duration = (last_bucket_seen_time_.nanoseconds() > 0)
+                                                 ? (this->now() - last_bucket_seen_time_).seconds()
+                                                 : 1e9;
+                if (lost_duration > tracking_timeout_) {
+                    status_ = NavigationStatus::Fail;
+                    stop();
+                    RCLCPP_WARN_THROTTLE(
+                        this->get_logger(),
+                        *this->get_clock(),
+                        1000,
+                        "Cannot get valid bucket transform for %.2f s (> %.2f s) -> FAIL: %s",
+                        lost_duration,
+                        tracking_timeout_,
+                        exception.what()
+                    );
+                    break;
+                }
+                // 一時的なTF欠損時は急停止せず、角速度を減速して待機
+                command_yaw_rate_ += std::clamp(
+                    0.0 - command_yaw_rate_,
+                    -max_tracking_angular_acceleration_ * delta_time,
+                    max_tracking_angular_acceleration_ * delta_time
+                );
+                if (std::abs(command_yaw_rate_) < min_docking_yaw_rate_) {
+                    command_yaw_rate_ = 0.0;
+                }
+                publishCmdVel(0.0, 0.0, command_yaw_rate_);
+                break;
+            }
+
+            // LiDARの重心計測ノイズを低減するため、map座標系上でバケツ位置に1次ローパスフィルタ(EMA)を適用
+            const double raw_bucket_x = bucket_tf.transform.translation.x;
+            const double raw_bucket_y = bucket_tf.transform.translation.y;
+            if (!has_tracked_bucket_) {
+                tracked_bucket_x_   = raw_bucket_x;
+                tracked_bucket_y_   = raw_bucket_y;
+                has_tracked_bucket_ = true;
+            } else {
+                tracked_bucket_x_ = (1.0 - tracking_pos_filter_alpha_) * tracked_bucket_x_ +
+                                    tracking_pos_filter_alpha_ * raw_bucket_x;
+                tracked_bucket_y_ = (1.0 - tracking_pos_filter_alpha_) * tracked_bucket_y_ +
+                                    tracking_pos_filter_alpha_ * raw_bucket_y;
+            }
+
+            const double target_yaw =
+                std::atan2(tracked_bucket_y_ - robot_y, tracked_bucket_x_ - robot_x);
+            double yaw_error = normalizeAngle(target_yaw - robot_yaw);
+
+            // 目標方向と概ね一致している時の小刻みなハンチング・車輪振動を防止する不感帯処理
+            if (std::abs(yaw_error) <= tracking_deadband_) {
+                yaw_error = 0.0;
+            }
+
+            const double pid_rate    = tracking_pid_.update(yaw_error, delta_time, true);
+            const double target_rate = std::clamp(
+                pid_rate, -max_tracking_angular_velocity_, max_tracking_angular_velocity_
+            );
+            command_yaw_rate_ += std::clamp(
+                target_rate - command_yaw_rate_,
+                -max_tracking_angular_acceleration_ * delta_time,
+                max_tracking_angular_acceleration_ * delta_time
+            );
+
+            // 不感帯内の微小クリープ角速度をゼロ化して完全に安定静止
+            if (yaw_error == 0.0 && std::abs(command_yaw_rate_) < min_docking_yaw_rate_) {
+                command_yaw_rate_ = 0.0;
+            }
+
+            publishCmdVel(0.0, 0.0, command_yaw_rate_);
             break;
         }
 
