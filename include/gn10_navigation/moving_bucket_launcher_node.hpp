@@ -33,16 +33,25 @@ private:
     void onNavigationCommand(const std_msgs::msg::UInt8::ConstSharedPtr msg);
     void onBucketOpening(const lidar_perception_system::msg::MovingBucketTrack::ConstSharedPtr msg);
     void onBucketBottom(const lidar_perception_system::msg::BucketBottom::ConstSharedPtr msg);
+    void onTimer();
 
     bool isPublishAllowed() const;
     void calculateAndPublishSpeed(
         const geometry_msgs::msg::Point& opening_pos_map,
         const std::string& frame_id
     );
+    void calculateAndPublishSpeedFromBase(
+        double base_x,
+        double base_y,
+        double base_z
+    );
 
     // TF
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+
+    // Periodic timer for speed calculation
+    rclcpp::TimerBase::SharedPtr timer_;
 
     // Subscriptions
     rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr target_id_sub_;
@@ -59,9 +68,16 @@ private:
     // State
     uint8_t current_target_id_{255};
     NavigationCommand nav_cmd_{NavigationCommand::Stanby};
+    double filtered_speed_{0.0};
+    bool filtered_speed_valid_{false};
 
     // Parameters (managed via config/moving_bucket_launcher_params.yaml & dynamic reconfigure)
     std::string base_frame_{"base_link"};
+    std::string bucket_frame_{"bucket_bottom"};
+    bool use_tf_{true};                 // true: lookup bucket pose directly via TF (same source as path_follower)
+    bool is_bottom_frame_{true};        // true: bucket_frame is bottom, add bucket_height to get opening center
+    double calculation_rate_{20.0};     // Periodic speed update rate [Hz]
+    double speed_filter_alpha_{0.25};   // Low-pass filter coefficient on launcher speed
     std::string opening_topic_{"/bucket_opening_tracker/target"};
     std::string bottom_topic_{"/bucket_opening_tracker/bottom"};
     bool use_bottom_topic_{false};      // false: use upper opening directly; true: derive opening from bottom + bucket_height

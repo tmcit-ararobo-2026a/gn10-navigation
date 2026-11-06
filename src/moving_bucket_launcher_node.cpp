@@ -12,7 +12,7 @@ MovingBucketLauncherNode::MovingBucketLauncherNode(const rclcpp::NodeOptions& op
     loadParameters();
 
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
-    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, this, false);
 
     // Subscriptions
     target_id_sub_ = this->create_subscription<std_msgs::msg::UInt8>(
@@ -49,9 +49,18 @@ MovingBucketLauncherNode::MovingBucketLauncherNode(const rclcpp::NodeOptions& op
         std::bind(&MovingBucketLauncherNode::onSetParameters, this, std::placeholders::_1)
     );
 
+    const auto period_ms = static_cast<int>(1000.0 / std::max(1.0, calculation_rate_));
+    timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(period_ms),
+        std::bind(&MovingBucketLauncherNode::onTimer, this)
+    );
+
     RCLCPP_INFO(
         this->get_logger(),
-        "MovingBucketLauncherNode initialized (opening_topic='%s', use_bottom_topic=%s, bucket_height=%.3f m).",
+        "MovingBucketLauncherNode initialized (use_tf=%s, bucket_frame='%s', rate=%.1f Hz, opening_topic='%s', use_bottom_topic=%s, bucket_height=%.3f m).",
+        use_tf_ ? "true" : "false",
+        bucket_frame_.c_str(),
+        calculation_rate_,
         opening_topic_.c_str(),
         use_bottom_topic_ ? "true" : "false",
         bucket_height_
@@ -61,6 +70,11 @@ MovingBucketLauncherNode::MovingBucketLauncherNode(const rclcpp::NodeOptions& op
 void MovingBucketLauncherNode::loadParameters()
 {
     this->declare_parameter<std::string>("base_frame", base_frame_);
+    this->declare_parameter<std::string>("bucket_frame", bucket_frame_);
+    this->declare_parameter<bool>("use_tf", use_tf_);
+    this->declare_parameter<bool>("is_bottom_frame", is_bottom_frame_);
+    this->declare_parameter<double>("calculation_rate", calculation_rate_);
+    this->declare_parameter<double>("speed_filter_alpha", speed_filter_alpha_);
     this->declare_parameter<std::string>("opening_topic", opening_topic_);
     this->declare_parameter<std::string>("bottom_topic", bottom_topic_);
     this->declare_parameter<bool>("use_bottom_topic", use_bottom_topic_);
@@ -79,6 +93,11 @@ void MovingBucketLauncherNode::loadParameters()
     this->declare_parameter<double>("max_tracking_age_sec", max_tracking_age_sec_);
 
     base_frame_           = this->get_parameter("base_frame").as_string();
+    bucket_frame_         = this->get_parameter("bucket_frame").as_string();
+    use_tf_               = this->get_parameter("use_tf").as_bool();
+    is_bottom_frame_      = this->get_parameter("is_bottom_frame").as_bool();
+    calculation_rate_     = this->get_parameter("calculation_rate").as_double();
+    speed_filter_alpha_   = this->get_parameter("speed_filter_alpha").as_double();
     opening_topic_        = this->get_parameter("opening_topic").as_string();
     bottom_topic_         = this->get_parameter("bottom_topic").as_string();
     use_bottom_topic_     = this->get_parameter("use_bottom_topic").as_bool();
@@ -108,6 +127,33 @@ rcl_interfaces::msg::SetParametersResult MovingBucketLauncherNode::onSetParamete
         const auto& name = param.get_name();
         if (name == "base_frame") {
             base_frame_ = param.as_string();
+        } else if (name == "bucket_frame") {
+            bucket_frame_ = param.as_string();
+        } else if (name == "use_tf") {
+            use_tf_ = param.as_bool();
+        } else if (name == "is_bottom_frame") {
+            is_bottom_frame_ = param.as_bool();
+        } else if (name == "calculation_rate") {
+            const double val = param.as_double();
+            if (!std::isfinite(val) || val <= 0.0) {
+                result.successful = false;
+                result.reason = "calculation_rate must be positive";
+                return result;
+            }
+            calculation_rate_ = val;
+            const auto period_ms = static_cast<int>(1000.0 / std::max(1.0, calculation_rate_));
+            timer_ = this->create_wall_timer(
+                std::chrono::milliseconds(period_ms),
+                std::bind(&MovingBucketLauncherNode::onTimer, this)
+            );
+        } else if (name == "speed_filter_alpha") {
+            const double val = param.as_double();
+            if (!std::isfinite(val) || val <= 0.0 || val > 1.0) {
+                result.successful = false;
+                result.reason = "speed_filter_alpha must be in (0.0, 1.0]";
+                return result;
+            }
+            speed_filter_alpha_ = val;
         } else if (name == "use_bottom_topic") {
             use_bottom_topic_ = param.as_bool();
         } else if (name == "bucket_height") {
@@ -236,6 +282,9 @@ void MovingBucketLauncherNode::onTargetId(const std_msgs::msg::UInt8::ConstShare
 {
     if (current_target_id_ != msg->data) {
         current_target_id_ = msg->data;
+        if (!isPublishAllowed()) {
+            filtered_speed_valid_ = false;
+        }
         RCLCPP_INFO(
             this->get_logger(),
             "Target ID updated to: %u (%s)",
@@ -249,14 +298,71 @@ void MovingBucketLauncherNode::onNavigationCommand(const std_msgs::msg::UInt8::C
 {
     const auto received_cmd = static_cast<NavigationCommand>(msg->data);
     if (nav_cmd_ != received_cmd) {
+        nav_cmd_ = received_cmd;
+        if (!isPublishAllowed()) {
+            filtered_speed_valid_ = false;
+        }
         RCLCPP_INFO(
             this->get_logger(),
             "Navigation command updated to: %u (%s)",
             msg->data,
             toString(received_cmd)
         );
-        nav_cmd_ = received_cmd;
     }
+}
+
+void MovingBucketLauncherNode::onTimer()
+{
+    if (!isPublishAllowed()) {
+        filtered_speed_valid_ = false;
+        return;
+    }
+
+    if (!use_tf_) {
+        return;
+    }
+
+    geometry_msgs::msg::TransformStamped tf_stamped;
+    try {
+        tf_stamped = tf_buffer_->lookupTransform(
+            base_frame_, bucket_frame_, tf2::TimePointZero
+        );
+    } catch (const tf2::TransformException& ex) {
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(),
+            *this->get_clock(),
+            2000,
+            "Could not lookup transform '%s' -> '%s': %s",
+            base_frame_.c_str(),
+            bucket_frame_.c_str(),
+            ex.what()
+        );
+        return;
+    }
+
+    const auto stamp_time = rclcpp::Time(tf_stamped.header.stamp);
+    if (stamp_time.nanoseconds() > 0 && max_tracking_age_sec_ > 0.0) {
+        const double age_sec = (this->now() - stamp_time).seconds();
+        if (age_sec > max_tracking_age_sec_ || age_sec < -0.1) {
+            RCLCPP_WARN_THROTTLE(
+                this->get_logger(),
+                *this->get_clock(),
+                2000,
+                "Bucket transform '%s' -> '%s' is stale (age=%.2f s > %.2f s). Skipping speed calculation.",
+                base_frame_.c_str(),
+                bucket_frame_.c_str(),
+                age_sec,
+                max_tracking_age_sec_
+            );
+            return;
+        }
+    }
+
+    const double base_x = tf_stamped.transform.translation.x;
+    const double base_y = tf_stamped.transform.translation.y;
+    const double base_z = tf_stamped.transform.translation.z + (is_bottom_frame_ ? bucket_height_ : 0.0);
+
+    calculateAndPublishSpeedFromBase(base_x, base_y, base_z);
 }
 
 void MovingBucketLauncherNode::onBucketOpening(
@@ -269,6 +375,7 @@ void MovingBucketLauncherNode::onBucketOpening(
 
     // Avoid collision with target_manager_node and do not publish when not in Move state.
     if (!isPublishAllowed()) {
+        filtered_speed_valid_ = false;
         return;
     }
 
@@ -277,9 +384,12 @@ void MovingBucketLauncherNode::onBucketOpening(
         return;
     }
 
-    const rclcpp::Time obs_time(msg->last_observation_stamp);
+    rclcpp::Time obs_time(msg->last_observation_stamp);
+    if (obs_time.nanoseconds() == 0) {
+        obs_time = msg->header.stamp;
+    }
     const double age_sec = (this->now() - obs_time).seconds();
-    if (age_sec > max_tracking_age_sec_) {
+    if (age_sec > max_tracking_age_sec_ || age_sec < -0.1) {
         RCLCPP_WARN_THROTTLE(
             this->get_logger(),
             *this->get_clock(),
@@ -304,6 +414,7 @@ void MovingBucketLauncherNode::onBucketBottom(
 
     // Avoid collision with target_manager_node and do not publish when not in Move state.
     if (!isPublishAllowed()) {
+        filtered_speed_valid_ = false;
         return;
     }
 
@@ -312,9 +423,12 @@ void MovingBucketLauncherNode::onBucketBottom(
         return;
     }
 
-    const rclcpp::Time obs_time(msg->last_observation_stamp);
+    rclcpp::Time obs_time(msg->last_observation_stamp);
+    if (obs_time.nanoseconds() == 0) {
+        obs_time = msg->header.stamp;
+    }
     const double age_sec = (this->now() - obs_time).seconds();
-    if (age_sec > max_tracking_age_sec_) {
+    if (age_sec > max_tracking_age_sec_ || age_sec < -0.1) {
         RCLCPP_WARN_THROTTLE(
             this->get_logger(),
             *this->get_clock(),
@@ -357,8 +471,17 @@ void MovingBucketLauncherNode::calculateAndPublishSpeed(
         return;
     }
 
+    calculateAndPublishSpeedFromBase(point_robot.point.x, point_robot.point.y, point_robot.point.z);
+}
+
+void MovingBucketLauncherNode::calculateAndPublishSpeedFromBase(
+    double base_x,
+    double base_y,
+    double base_z
+)
+{
     // Horizontal distance in base_link frame and relative distance from effective release point
-    const double base_dist = std::hypot(point_robot.point.x, point_robot.point.y);
+    const double base_dist = std::hypot(base_x, base_y);
     if (base_dist < min_horizontal_dist_ || base_dist > max_horizontal_dist_) {
         RCLCPP_WARN_THROTTLE(
             this->get_logger(),
@@ -384,7 +507,7 @@ void MovingBucketLauncherNode::calculateAndPublishSpeed(
         return;
     }
 
-    const double target_z = point_robot.point.z + aim_z_offset_;
+    const double target_z = base_z + aim_z_offset_;
     const double delta_z = target_z - launcher_offset_z_;
 
     // Ballistic trajectory model in base_link frame:
@@ -422,8 +545,17 @@ void MovingBucketLauncherNode::calculateAndPublishSpeed(
     // Clamp within hardware limits
     const double v_clamped = std::clamp(v_target, min_velocity_, max_velocity_);
 
+    // Low-pass filter to smooth distance measurement noise and prevent launcher motor jitter
+    if (!filtered_speed_valid_) {
+        filtered_speed_ = v_clamped;
+        filtered_speed_valid_ = true;
+    } else {
+        filtered_speed_ = (1.0 - speed_filter_alpha_) * filtered_speed_ +
+                          speed_filter_alpha_ * v_clamped;
+    }
+
     std_msgs::msg::Float32 speed_msg;
-    speed_msg.data = static_cast<float>(v_clamped);
+    speed_msg.data = static_cast<float>(filtered_speed_);
     belt_launcher_speed_pub_->publish(speed_msg);
 
     RCLCPP_INFO_THROTTLE(
@@ -436,13 +568,14 @@ void MovingBucketLauncherNode::calculateAndPublishSpeed(
         target_z,
         delta_z,
         v_ballistic,
-        v_clamped,
+        filtered_speed_,
         v_target
     );
 }
 
 }  // namespace gn10_navigation
 
+#ifndef GN10_NAVIGATION_MOVING_BUCKET_LAUNCHER_NO_MAIN
 int main(int argc, char** argv)
 {
     rclcpp::init(argc, argv);
@@ -451,3 +584,4 @@ int main(int argc, char** argv)
     rclcpp::shutdown();
     return 0;
 }
+#endif

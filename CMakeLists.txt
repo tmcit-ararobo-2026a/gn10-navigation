@@ -149,11 +149,49 @@ install(PROGRAMS scripts/tracking_debugger_gui.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
-if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/grid_safety_test.cpp")
+if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_cmake_pytest REQUIRED)
-  ament_add_gtest(grid_safety_test test/grid_safety_test.cpp)
-  target_include_directories(grid_safety_test PRIVATE include)
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/grid_safety_test.cpp")
+    ament_add_gtest(grid_safety_test test/grid_safety_test.cpp)
+    target_include_directories(grid_safety_test PRIVATE include)
+  endif()
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/moving_bucket_launcher_test.cpp")
+    ament_add_gtest(moving_bucket_launcher_test
+      test/moving_bucket_launcher_test.cpp
+      src/moving_bucket_launcher_node.cpp
+    )
+    target_compile_definitions(moving_bucket_launcher_test PRIVATE GN10_NAVIGATION_MOVING_BUCKET_LAUNCHER_NO_MAIN)
+    ament_target_dependencies(moving_bucket_launcher_test
+      rclcpp
+      std_msgs
+      geometry_msgs
+      tf2
+      tf2_ros
+      tf2_geometry_msgs
+      lidar_perception_system
+    )
+    target_include_directories(moving_bucket_launcher_test PRIVATE include)
+  endif()
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/tracking_stability_test.cpp")
+    ament_add_gtest(tracking_stability_test
+      test/tracking_stability_test.cpp
+    )
+    ament_target_dependencies(tracking_stability_test
+      rclcpp
+      nav_msgs
+      geometry_msgs
+      std_msgs
+      tf2
+      tf2_ros
+      tf2_geometry_msgs
+      visualization_msgs
+    )
+    target_include_directories(tracking_stability_test PRIVATE include)
+  endif()
 endif()
 
 ament_export_dependencies(rosidl_default_runtime)

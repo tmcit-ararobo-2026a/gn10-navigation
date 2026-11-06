@@ -65,5 +65,4 @@ fp-info-cache
 __pycache__/
 .pytest_cache/
 
-# Local documentation and tests
-test/
+# Local documentation and temporary files
