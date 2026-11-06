@@ -17,7 +17,7 @@ path_planner_node:
       # 動的適応平滑化で試行する制御点間引きステップの最大値 (1〜10)
       max_stride: 10
       # 平滑化経路が通過を許容する最大セルコスト (0〜99: 低コスト安全領域内で平滑化を維持)
-      smooth_max_cost: 80
+      smooth_max_cost: 40
     line_approximation:
       # 直線近似を許容する最大セルコスト (-1: 無効, 0〜99: このコスト以下の領域のみ直線化)
       max_cost: -1
