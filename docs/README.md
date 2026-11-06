@@ -123,35 +123,48 @@
 | `goal_settle_count` | 5 | ゴール完了判定の連続維持周期数 |
 | `max_path_error / max_initial_path_error` | 0.30 m / 0.45 m | 非常停止する経路逸脱距離上限 |
 | `max_pose_age / control_comm_delay` | 0.2 s / 0.025 s | TF許容遅延と通信遅延補正時間 |
+| `tracking_kp / ki / kd` | 3.5 / 0.0 / 0.15 | MovingBucket追従専用Yaw PIDゲイン |
+| `tracking_integral_max` | 0.2 | MovingBucket追従I項上限 |
+| `tracking_d_filter_alpha` | 0.2 | MovingBucket追従D項LPF係数 |
+| `tracking_deadband` | 0.015 rad (約0.86度) | 追従目標角度誤差の不感帯（微小チャタリング・モータ鳴き防止） |
+| `tracking_pos_filter_alpha` | 0.25 | TFバケツ目標位置（map系）のEMA平滑化係数 |
+| `max_tracking_angular_velocity / acceleration` | 2.0 rad/s / 12.0 rad/s^2 | 移動バケツ追従時の最大角速度・角加速度制限 |
+| `tracking_timeout` | 1.0 s | バケツTF一時ロスト時の追従猶予時間（超過時にFail遷移） |
 
 ---
 
 ## 5. 移動バケツ追従射出速度計算 (`moving_bucket_launcher_flow.pu`)
 
-相手ロボット上の可動バケツ（Target ID 7: `MovingBucket`）に対し、LiDAR Perception System の推定上部開口部位置（`/bucket_opening_tracker/target`）から `base_link` 基準で直動ベルトの射出速度をリアルタイムに逆算します。
+相手ロボット上の可動バケツ（Target ID 7: `MovingBucket`）に対し、TF（既定: `bucket_bottom`）または LiDAR Perception System の開口部トピックから `base_link` 基準で直動ベルトの射出速度をリアルタイムに逆算します。
 
 ### 処理の流れ
 1. **排他制御および状態チェック**:
    - `target_id == MovingBucket (7)` かつ `navigation_command == Move (2)` の時のみ計算およびパブリッシュを実行。固定ターゲット時や `Sleep` / `Stanby` 時は `target_manager_node` との競合および不要な速度指令を防止するため完全停止。
-2. **有効性・鮮度検証**:
-   - `valid == true` かつ `(now - last_observation_stamp) <= max_tracking_age_sec` の場合のみ処理を継続。
-   - `use_bottom_topic == false`（既定）時は `/bucket_opening_tracker/target`（上部開口部中心）を使用し、`use_bottom_topic == true` 時は `/bucket_opening_tracker/bottom` の Z 座標に `bucket_height` を加算して上部開口部高さを算出。
-3. **TF相対座標変換 (`base_link` 基準)**:
-   - 上部開口部座標を `base_link` へ変換し、`base_link` 原点からの水平距離 $L = \sqrt{x^2 + y^2}$ と有効リリース位置からの水平飛行距離 $\Delta x = L - x_0$、および目標高さ差 $\Delta z = (z_{\text{open}} + \text{aim\_z\_offset}) - z_0$ を算出。
+2. **位置取得方式（TF同期またはトピックコールバック）**:
+   - `use_tf == true`（既定）: `calculation_rate`（20Hz）で `bucket_frame`（既定: `bucket_bottom`）の `base_link` 相対座標を TF バッファから直接取得。`is_bottom_frame == true` の場合は Z 座標に `bucket_height` を自動加算して上部開口部高さを算出。
+   - `use_tf == false`: `/bucket_opening_tracker/target` または `bottom` トピックを受信した際に `base_link` へ座標変換して計算。
+3. **有効性・鮮度検証**:
+   - 動的TF時は `(now - stamp) <= max_tracking_age_sec`（静的TFやタイムスタンプ0は有効扱い）を満たす場合のみ処理継続。
 4. **3次元弾道方程式による初速逆算とリリース速度変換**:
+   - `base_link` 原点からの水平距離 $L = \sqrt{x^2 + y^2}$ と有効リリース位置からの水平飛行距離 $\Delta x = L - x_0$、および目標高さ差 $\Delta z = (z_{\text{open}} + \text{aim\_z\_offset}) - z_0$ を算出。
    - `gn10-shot-manager` の軌道解析で同定した `base_link` 基準の放物弾道式から必要弾道初速 $v_0$ を逆算：
      $$v_0 = \sqrt{\frac{g \Delta x^2}{2 \cos^2\theta (\Delta x \tan\theta - \Delta z)}}$$
    - リリース速度変換式によりベルト目標速度を算出：
      $$v_{\text{belt}} = \text{velocity\_quad} \cdot v_0^2 + \text{velocity\_scale} \cdot v_0 + \text{velocity\_offset}$$
-5. **クランプ & 配信**:
-   - 機構許容範囲（`min_velocity` 〜 `max_velocity`）へクランプして `/robot/operation/belt_launcher_speed` へ発行。
+5. **クランプ & 指数平滑化 (EMA) & 配信**:
+   - 機構許容範囲（`min_velocity` 〜 `max_velocity`）へクランプした後、`speed_filter_alpha`（既定: 0.25）のEMAフィルタで平滑化し、目標速度ジッターを抑制して `/robot/operation/belt_launcher_speed` へ発行。
 
 ### パラメータ (`config/moving_bucket_launcher_params.yaml`)
 | パラメータ名 | 既定値 | 役割 |
 |---|---|---|
 | `base_frame` | `base_link` | 軌道計算を行う基準ロボットフレーム |
-| `opening_topic` | `/bucket_opening_tracker/target` | バケツ上部開口部トラッキングトピック |
-| `bottom_topic` | `/bucket_opening_tracker/bottom` | バケツ底面トピック（`use_bottom_topic=true` 時） |
+| `bucket_frame` | `bucket_bottom` | TF追従対象のバケツフレーム |
+| `use_tf` | `true` | TFキャッシュから周期タイマーで目標位置を取得するかどうか |
+| `is_bottom_frame` | `true` | `bucket_frame` が底面か（`true` の場合 Z 座標に `bucket_height` を加算） |
+| `calculation_rate` | `20.0` Hz | TF基準の速度計算・配信タイマー周期 |
+| `speed_filter_alpha` | `0.25` | 射出目標速度の1次EMAローパスフィルタ係数 |
+| `opening_topic` | `/bucket_opening_tracker/target` | バケツ上部開口部トラッキングトピック（`use_tf=false` 時） |
+| `bottom_topic` | `/bucket_opening_tracker/bottom` | バケツ底面トピック（`use_tf=false` かつ `use_bottom_topic=true` 時） |
 | `use_bottom_topic` | `false` | `true` の場合は底面Z座標 + `bucket_height` を上部開口部として使用 |
 | `bucket_height` | `0.255` m | バケツ底面から上部開口部までの高さ |
 | `aim_z_offset` | `0.0` m | 上部開口部中心に対する狙い高さオフセット |

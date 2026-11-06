@@ -207,6 +207,24 @@ private:
     std::string bucket_frame_;
     double max_bucket_age_{0.5};
 
+    // 移動バケツ追従制御パラメータ
+    double tracking_kp_{3.5};
+    double tracking_ki_{0.0};
+    double tracking_kd_{0.15};
+    double tracking_integral_max_{0.2};
+    double tracking_d_filter_alpha_{0.2};
+    double tracking_deadband_{0.015};          // Yaw誤差不感帯 [rad] (~0.86 deg)
+    double tracking_pos_filter_alpha_{0.25};   // 目標バケツ位置低周波通過フィルタ係数
+    double max_tracking_angular_velocity_{2.0};
+    double max_tracking_angular_acceleration_{12.0};
+    double tracking_timeout_{1.0};             // バケツTFロスト判定猶予時間 [s]
+
+    // 移動バケツ追従内部状態
+    double tracked_bucket_x_{0.0};
+    double tracked_bucket_y_{0.0};
+    bool has_tracked_bucket_{false};
+    rclcpp::Time last_bucket_seen_time_{0, 0, RCL_ROS_TIME};
+
     // 内部状態
     NavigationStatus status_{NavigationStatus::Stanby};
     NavigationCommand last_cmd_{NavigationCommand::Stanby};

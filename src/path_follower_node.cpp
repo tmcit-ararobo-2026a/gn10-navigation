@@ -247,6 +247,17 @@ void PathFollowerNode::declareAndGetParameters()
     this->declare_parameter("bucket_frame", "bucket_bottom");
     this->declare_parameter("max_bucket_age", 0.5);
 
+    this->declare_parameter("tracking_kp", 3.5);
+    this->declare_parameter("tracking_ki", 0.0);
+    this->declare_parameter("tracking_kd", 0.15);
+    this->declare_parameter("tracking_integral_max", 0.2);
+    this->declare_parameter("tracking_d_filter_alpha", 0.2);
+    this->declare_parameter("tracking_deadband", 0.015);
+    this->declare_parameter("tracking_pos_filter_alpha", 0.25);
+    this->declare_parameter("max_tracking_angular_velocity", 2.0);
+    this->declare_parameter("max_tracking_angular_acceleration", 12.0);
+    this->declare_parameter("tracking_timeout", 1.0);
+
     control_rate_             = this->get_parameter("control_rate").as_double();
     max_speed_                = this->get_parameter("max_speed").as_double();
     max_acceleration_         = this->get_parameter("max_acceleration").as_double();
@@ -288,8 +299,20 @@ void PathFollowerNode::declareAndGetParameters()
 
     heading_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
     heading_pid_.setFilterAlpha(heading_d_filter_alpha_);
-    tracking_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
-    tracking_pid_.setFilterAlpha(heading_d_filter_alpha_);
+
+    tracking_kp_                   = this->get_parameter("tracking_kp").as_double();
+    tracking_ki_                   = this->get_parameter("tracking_ki").as_double();
+    tracking_kd_                   = this->get_parameter("tracking_kd").as_double();
+    tracking_integral_max_         = this->get_parameter("tracking_integral_max").as_double();
+    tracking_d_filter_alpha_       = this->get_parameter("tracking_d_filter_alpha").as_double();
+    tracking_deadband_             = this->get_parameter("tracking_deadband").as_double();
+    tracking_pos_filter_alpha_     = this->get_parameter("tracking_pos_filter_alpha").as_double();
+    max_tracking_angular_velocity_ = this->get_parameter("max_tracking_angular_velocity").as_double();
+    max_tracking_angular_acceleration_ = this->get_parameter("max_tracking_angular_acceleration").as_double();
+    tracking_timeout_              = this->get_parameter("tracking_timeout").as_double();
+
+    tracking_pid_.setGains(tracking_kp_, tracking_ki_, tracking_kd_, tracking_integral_max_);
+    tracking_pid_.setFilterAlpha(tracking_d_filter_alpha_);
 
     map_frame_      = this->get_parameter("map_frame").as_string();
     base_frame_     = this->get_parameter("base_frame").as_string();
@@ -414,23 +437,43 @@ rcl_interfaces::msg::SetParametersResult PathFollowerNode::onSetParameters(
         } else if (name == "heading_kp") {
             heading_kp_ = param.as_double();
             heading_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
-            tracking_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
         } else if (name == "heading_ki") {
             heading_ki_ = param.as_double();
             heading_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
-            tracking_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
         } else if (name == "heading_kd") {
             heading_kd_ = param.as_double();
             heading_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
-            tracking_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
         } else if (name == "heading_integral_max") {
             heading_integral_max_ = std::max(0.0, param.as_double());
             heading_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
-            tracking_pid_.setGains(heading_kp_, heading_ki_, heading_kd_, heading_integral_max_);
         } else if (name == "heading_d_filter_alpha") {
             heading_d_filter_alpha_ = std::clamp(param.as_double(), 0.0, 1.0);
             heading_pid_.setFilterAlpha(heading_d_filter_alpha_);
-            tracking_pid_.setFilterAlpha(heading_d_filter_alpha_);
+        } else if (name == "tracking_kp") {
+            tracking_kp_ = std::max(0.0, param.as_double());
+            tracking_pid_.setGains(tracking_kp_, tracking_ki_, tracking_kd_, tracking_integral_max_);
+        } else if (name == "tracking_ki") {
+            tracking_ki_ = std::max(0.0, param.as_double());
+            tracking_pid_.setGains(tracking_kp_, tracking_ki_, tracking_kd_, tracking_integral_max_);
+        } else if (name == "tracking_kd") {
+            tracking_kd_ = std::max(0.0, param.as_double());
+            tracking_pid_.setGains(tracking_kp_, tracking_ki_, tracking_kd_, tracking_integral_max_);
+        } else if (name == "tracking_integral_max") {
+            tracking_integral_max_ = std::max(0.0, param.as_double());
+            tracking_pid_.setGains(tracking_kp_, tracking_ki_, tracking_kd_, tracking_integral_max_);
+        } else if (name == "tracking_d_filter_alpha") {
+            tracking_d_filter_alpha_ = std::clamp(param.as_double(), 0.0, 1.0);
+            tracking_pid_.setFilterAlpha(tracking_d_filter_alpha_);
+        } else if (name == "tracking_deadband") {
+            tracking_deadband_ = std::max(0.0, param.as_double());
+        } else if (name == "tracking_pos_filter_alpha") {
+            tracking_pos_filter_alpha_ = std::clamp(param.as_double(), 0.01, 1.0);
+        } else if (name == "max_tracking_angular_velocity") {
+            max_tracking_angular_velocity_ = std::max(0.1, param.as_double());
+        } else if (name == "max_tracking_angular_acceleration") {
+            max_tracking_angular_acceleration_ = std::max(0.1, param.as_double());
+        } else if (name == "tracking_timeout") {
+            tracking_timeout_ = std::max(0.05, param.as_double());
         } else if (name == "min_docking_yaw_rate") {
             min_docking_yaw_rate_ = std::max(0.0, param.as_double());
         } else if (name == "control_comm_delay") {
@@ -461,6 +504,9 @@ void PathFollowerNode::onNavigationCommand(const std_msgs::msg::UInt8::ConstShar
         if (current_target_id_ == TargetId::MovingBucket) {
             if (status_ != NavigationStatus::Tracking) {
                 status_ = NavigationStatus::Tracking;
+                tracking_pid_.reset();
+                has_tracked_bucket_ = false;
+                last_bucket_seen_time_ = this->now();
                 RCLCPP_INFO(this->get_logger(), "Transition to TRACKING for MovingBucket.");
             }
         } else {
@@ -495,6 +541,9 @@ void PathFollowerNode::onTargetId(const std_msgs::msg::UInt8::ConstSharedPtr msg
     current_target_id_ = target_id;
     if (status_ == NavigationStatus::Moving && current_target_id_ == TargetId::MovingBucket) {
         status_ = NavigationStatus::Tracking;
+        tracking_pid_.reset();
+        has_tracked_bucket_ = false;
+        last_bucket_seen_time_ = this->now();
         RCLCPP_INFO(
             this->get_logger(), "Target changed to MovingBucket -> Transition to TRACKING."
         );
@@ -787,6 +836,8 @@ void PathFollowerNode::stop()
     was_in_settle_zone_ = false;
     heading_pid_.reset();
     tracking_pid_.reset();
+    has_tracked_bucket_ = false;
+    last_bucket_seen_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
     publishCmdVel(0.0, 0.0, 0.0);
 }
 
@@ -926,31 +977,77 @@ void PathFollowerNode::controlLoop()
                 if (max_bucket_age_ > 0.0 && (age > max_bucket_age_ || age < -0.1)) {
                     throw tf2::TransformException("bucket transform is stale");
                 }
+                last_bucket_seen_time_ = this->now();
             } catch (const tf2::TransformException& exception) {
-                status_ = NavigationStatus::Fail;
-                stop();
-                RCLCPP_WARN_THROTTLE(
-                    this->get_logger(),
-                    *this->get_clock(),
-                    1000,
-                    "Cannot get valid bucket transform: %s",
-                    exception.what()
+                const double lost_duration = (last_bucket_seen_time_.nanoseconds() > 0)
+                    ? (this->now() - last_bucket_seen_time_).seconds()
+                    : 1e9;
+                if (lost_duration > tracking_timeout_) {
+                    status_ = NavigationStatus::Fail;
+                    stop();
+                    RCLCPP_WARN_THROTTLE(
+                        this->get_logger(),
+                        *this->get_clock(),
+                        1000,
+                        "Cannot get valid bucket transform for %.2f s (> %.2f s) -> FAIL: %s",
+                        lost_duration,
+                        tracking_timeout_,
+                        exception.what()
+                    );
+                    break;
+                }
+                // 一時的なTF欠損時は急停止せず、角速度を減速して待機
+                command_yaw_rate_ += std::clamp(
+                    0.0 - command_yaw_rate_,
+                    -max_tracking_angular_acceleration_ * delta_time,
+                    max_tracking_angular_acceleration_ * delta_time
                 );
+                if (std::abs(command_yaw_rate_) < min_docking_yaw_rate_) {
+                    command_yaw_rate_ = 0.0;
+                }
+                publishCmdVel(0.0, 0.0, command_yaw_rate_);
                 break;
             }
+
+            // LiDARの重心計測ノイズを低減するため、map座標系上でバケツ位置に1次ローパスフィルタ(EMA)を適用
+            const double raw_bucket_x = bucket_tf.transform.translation.x;
+            const double raw_bucket_y = bucket_tf.transform.translation.y;
+            if (!has_tracked_bucket_) {
+                tracked_bucket_x_ = raw_bucket_x;
+                tracked_bucket_y_ = raw_bucket_y;
+                has_tracked_bucket_ = true;
+            } else {
+                tracked_bucket_x_ = (1.0 - tracking_pos_filter_alpha_) * tracked_bucket_x_ +
+                                    tracking_pos_filter_alpha_ * raw_bucket_x;
+                tracked_bucket_y_ = (1.0 - tracking_pos_filter_alpha_) * tracked_bucket_y_ +
+                                    tracking_pos_filter_alpha_ * raw_bucket_y;
+            }
+
             const double target_yaw = std::atan2(
-                bucket_tf.transform.translation.y - robot_y,
-                bucket_tf.transform.translation.x - robot_x
+                tracked_bucket_y_ - robot_y,
+                tracked_bucket_x_ - robot_x
             );
-            const double yaw_error = normalizeAngle(target_yaw - robot_yaw);
-            const double pid_rate  = tracking_pid_.update(yaw_error, delta_time, true);
+            double yaw_error = normalizeAngle(target_yaw - robot_yaw);
+
+            // 目標方向と概ね一致している時の小刻みなハンチング・車輪振動を防止する不感帯処理
+            if (std::abs(yaw_error) <= tracking_deadband_) {
+                yaw_error = 0.0;
+            }
+
+            const double pid_rate = tracking_pid_.update(yaw_error, delta_time, true);
             const double target_rate =
-                std::clamp(pid_rate, -max_angular_velocity_, max_angular_velocity_);
+                std::clamp(pid_rate, -max_tracking_angular_velocity_, max_tracking_angular_velocity_);
             command_yaw_rate_ += std::clamp(
                 target_rate - command_yaw_rate_,
-                -max_angular_acceleration_ * delta_time,
-                max_angular_acceleration_ * delta_time
+                -max_tracking_angular_acceleration_ * delta_time,
+                max_tracking_angular_acceleration_ * delta_time
             );
+
+            // 不感帯内の微小クリープ角速度をゼロ化して完全に安定静止
+            if (yaw_error == 0.0 && std::abs(command_yaw_rate_) < min_docking_yaw_rate_) {
+                command_yaw_rate_ = 0.0;
+            }
+
             publishCmdVel(0.0, 0.0, command_yaw_rate_);
             break;
         }
@@ -1222,6 +1319,7 @@ void PathFollowerNode::publishLookaheadMarker(double x, double y)
 
 }  // namespace gn10_navigation
 
+#ifndef GN10_NAVIGATION_PATH_FOLLOWER_NO_MAIN
 int main(int argc, char** argv)
 {
     rclcpp::init(argc, argv);
@@ -1230,3 +1328,4 @@ int main(int argc, char** argv)
     rclcpp::shutdown();
     return 0;
 }
+#endif

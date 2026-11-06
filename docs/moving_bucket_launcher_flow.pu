@@ -12,35 +12,45 @@ title moving_bucket_launcher_node 処理フロー図
 
 start
 
-:バケツ上部開口部認識コールバック\n/bucket_opening_tracker/target (MovingBucketTrack)\n(または use_bottom_topic=true 時は bottom + bucket_height);
+if (トリガー方式 ?) then (周期タイマー: use_tf=true [既定])
+    :タイマー周期起動 (calculation_rate: 20Hz);
+    if (current_target_id == MovingBucket (7)\nかつ nav_cmd == Move (2) ?) then (Yes)
+    else (No: 固定ターゲット選択中 または Sleep/Stanby)
+        :トピック干渉・不要出力回避のためスキップ\n(filtered_speed_valid=false リセット);
+        stop
+    endif
 
-if (current_target_id == MovingBucket (7)\nかつ nav_cmd == Move (2) ?) then (Yes)
-else (No: 固定ターゲット選択中 または Sleep/Stanby)
-    :トピック干渉・不要出力回避のため処理スキップ;
-    stop
+    :TF取得 (tf_buffer_->lookupTransform)\nbase_link -> bucket_bottom (最新キャッシュ);
+    if (TF取得成功 ?) then (Yes)
+    else (No: TF例外)
+        :エラーログ出力しスキップ;
+        stop
+    endif
+
+    if (stamp > 0 かつ (now - stamp) > max_tracking_age_sec ?) then (古い)
+        :鮮度タイムアウトのためスキップ;
+        stop
+    else (鮮度OK または 静的TF)
+    endif
+
+    :base_link 相対座標取得\nz_open = is_bottom_frame ? z + bucket_height : z;
+else (トピックコールバック: use_tf=false)
+    :バケツ開口部/底面トピック受信\n(/bucket_opening_tracker/target or bottom);
+    if (current_target_id == MovingBucket (7)\nかつ nav_cmd == Move (2) ?) then (Yes)
+    else (No)
+        :スキップ;
+        stop
+    endif
+    if (msg->valid && (now - stamp) <= max_tracking_age_sec ?) then (Yes)
+    else (No)
+        :スキップ;
+        stop
+    endif
+    :TF変換 (frame_id -> base_link);
+    :base_link 相対座標取得;
 endif
 
-if (msg->valid == true ?) then (Yes)
-else (No)
-    :認識結果が無効のためスキップ;
-    stop
-endif
-
-if ((now - last_observation_stamp) <= max_tracking_age_sec ?) then (Yes)
-else (No: 鮮度タイムアウト)
-    :古い計測値のためスキップ;
-    stop
-endif
-
-:TF変換 (tf_buffer_->transform)\nframe_id -> base_link (point_robot);
-
-if (TF取得成功 ?) then (Yes)
-else (No: TF例外)
-    :エラーログ出力しスキップ;
-    stop
-endif
-
-:base_link 基準での距離・高低差算出\nL = hypot(point_robot.x, point_robot.y)\nΔx = L - launcher_offset_x\nΔz = (point_robot.z + aim_z_offset) - launcher_offset_z;
+:base_link 基準での距離・高低差算出\nL = hypot(base_x, base_y)\nΔx = L - launcher_offset_x\nΔz = (z_open + aim_z_offset) - launcher_offset_z;
 
 if (min_horizontal_dist <= L <= max_horizontal_dist\nかつ Δx > 0.05m ?) then (Yes)
 else (No: 射程範囲外)
@@ -60,7 +70,9 @@ endif
 
 :機構許容範囲クランプ\nv_clamped = clamp(v_target, min_velocity, max_velocity);
 
-:射出速度配信 (belt_launcher_speed_pub_)\n/robot/operation/belt_launcher_speed = v_clamped;
+:指数平滑化 (EMA) ローパスフィルタ\nv_filtered = (1 - alpha) * v_filtered + alpha * v_clamped;
+
+:射出速度配信 (belt_launcher_speed_pub_)\n/robot/operation/belt_launcher_speed = v_filtered;
 
 stop
 

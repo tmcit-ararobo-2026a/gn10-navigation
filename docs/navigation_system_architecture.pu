@@ -41,8 +41,8 @@ UpperCmd --> TargetMgr : /robot/target_id (uint8)\n/robot/navigation_command (ui
 UpperCmd --> Follower : /robot/navigation_command (uint8)\n/robot/target_id (uint8)
 UpperCmd --> MovingBucketLauncher : /robot/target_id (uint8)\n/robot/navigation_command (uint8)
 
-BucketPerception --> MovingBucketLauncher : /bucket_opening_tracker/target (MovingBucketTrack)\n/bucket_opening_tracker/bottom (BucketBottom)
-TF --> MovingBucketLauncher : map -> base_link
+BucketPerception --> MovingBucketLauncher : /bucket_opening_tracker/target (use_tf=false時)\n/bucket_opening_tracker/bottom
+TF --> MovingBucketLauncher : base_link -> bucket_bottom (既定)\nmap -> base_link
 
 TargetMgr --> Planner : /goal_pose (PoseStamped)
 TargetMgr --> LauncherActuator : /robot/operation/belt_launcher_speed (Float32)\n(target_id != MovingBucket かつ Move遷移時)
@@ -61,7 +61,8 @@ note right of MovingBucketLauncher
   <b>移動バケツ追従射出速度計算:</b>
   - TargetId::MovingBucket (ID 7) かつ Move 時のみ配信
   - target_manager_node とのトピック干渉を完全回避
-  - バケツ上部開口部の base_link 相対距離(L)・高低差(Δz)から弾道逆算
+  - TF (既定: bucket_bottom) から base_link 相対距離(L)・高低差(Δz)を周期計算
+  - 3次元弾道方程式による初速逆算 & 指数平滑化(EMA)フィルタによるジッター抑制
   - パラメータは YAML 管理 & 動的変更対応
 end note
 

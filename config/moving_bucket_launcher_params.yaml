@@ -1,8 +1,13 @@
 moving_bucket_launcher_node:
   ros__parameters:
     base_frame: base_link
+    bucket_frame: bucket_bottom
+    use_tf: true
+    is_bottom_frame: true
+    calculation_rate: 20.0
+    speed_filter_alpha: 0.25
     opening_topic: /bucket_opening_tracker/target
-    bottom_topic: /bucket_opening_tracker/bottom
+    bottom_topic: /bucket_opening_tracker/bottom_track
     use_bottom_topic: false
     bucket_height: 0.255
     aim_z_offset: 0.000

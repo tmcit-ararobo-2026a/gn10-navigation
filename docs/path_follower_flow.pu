@@ -35,7 +35,28 @@ partition "周期制御ループ (controlLoop: 50Hz)" {
     endif
 
     if (MovingBucket 追従モード?) then (Tracking)
-        :bucket_frame 方向へYaw角PID制御;
+        :TF取得 (map -> bucket_bottom);
+        if (TF成功?) then (Yes)
+            :TFタイムアウトタイマー更新;
+            :目標位置の指数平滑化 (EMA) LPF\n(tracking_pos_filter_alpha: 0.25);
+        else (No: 一時ロスト)
+            if (ロスト経過時間 <= tracking_timeout [1.0s]?) then (猶予内)
+                :前回平滑化位置を保持し、追従継続;
+            else (タイムアウト)
+                :非常停止 & FAIL遷移;
+                stop
+            endif
+        endif
+
+        :ロボット現在位置から平滑化目標への目標Yaw角算出\nyaw_diff = normalizeAngle(target_yaw - current_yaw);
+
+        if (|yaw_diff| < tracking_deadband [0.015 rad]?) then (不感帯内)
+            :yaw_diff = 0.0 (チャタリング・モータ鳴き防止);
+        endif
+
+        :追従専用PID制御 (tracking_kp=3.5, ki=0, kd=0.15)\n+ D項1次LPF (tracking_d_filter_alpha: 0.2);
+        :角速度・角加速度リミッタ (2.0 rad/s, 12.0 rad/s^2);
+        :速度指令配信 (/robot/operation/cmd_vel\n並進速度=0, 角速度=omega);
         stop
     else (Moving 経路追従)
         :現在位置の直交射影 (proj_pt) と経路逸脱監視;

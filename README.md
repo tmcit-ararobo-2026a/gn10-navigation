@@ -8,8 +8,8 @@ NHKロボコン2026向けの自動走行ナビゲーションパッケージで�
 - **`target_manager_node`**: 固定Target IDに応じた目標座標（`/goal_pose`）および射出ベルト速度（`/robot/operation/belt_launcher_speed`）を管理・発行します（MovingBucket時は射出速度発行をスキップ）。
 - **`costmap_generator_node`**: フィールド定義（`nhk2026_map.json`）からMulti-Source BFSを用いてインフレーション付きコストマップ（`/costmap`）を生成します。
 - **`path_planner_node`**: 8方向A*探索、反復ラプラシアン付き動的B-spline平滑化、および旋回区間全域のフットプリント安全判定を行い、量子化誤差のない計画経路（`/planned_path`）を発行します。
-- **`path_follower_node`**: 接線フィードフォワード速度と直交位置フィードバック速度の単一統合制御則、1次最大加速度リミッタ、およびゴール近傍の静止摩擦補償により、高速追従と±5mm・±1.0度以内の精密停止を実現します。
-- **`moving_bucket_launcher_node`**: 相手ロボット上の可動バケツ（Target ID 7: MovingBucket）追従かつ動作命令 `Move` 時に、LiDAR Perception Systemによるバケツ上部開口部位置（`/bucket_opening_tracker/target`、または底面位置 `/bucket_opening_tracker/bottom` + `bucket_height`）から `base_link` 基準で弾道射出速度を計算し、`/robot/operation/belt_launcher_speed` へ発行します（固定ターゲット時や `Sleep`/`Stanby` 時は配信停止）。
+- **`path_follower_node`**: 接線フィードフォワード速度と直交位置フィードバック速度の単一統合制御則、1次最大加速度リミッタ、およびゴール近傍の静止摩擦補償により、高速追従と±5mm・±1.0度以内の精密停止を実現します。また、移動バケツ追従（Tracking）時はTF基準の目標位置LPF平滑化、専用PID、不感帯（デッドバンド）および一時ドロップアウト猶予により、チャタリングのない滑らかな追従姿勢制御を行います。
+- **`moving_bucket_launcher_node`**: 相手ロボット上の可動バケツ（Target ID 7: MovingBucket）追従かつ動作命令 `Move` 時に、TF（既定: `bucket_bottom` + `bucket_height`）またはLiDAR Perceptionトピックから `base_link` 基準でリアルタイムに弾道射出速度を動的計算し、LPF平滑化を経て `/robot/operation/belt_launcher_speed` へ発行します（固定ターゲット時や `Sleep`/`Stanby` 時は配信停止）。
 
 ---
 
@@ -58,7 +58,7 @@ NHKロボコン2026向けの自動走行ナビゲーションパッケージで�
 | `/target_manager/update_point` | Service | `gn10_navigation/srv/UpdatePoint` | Tool | TargetManager | 投擲ポイントのメモリ更新 |
 | `/target_manager/save_points` | Service | `std_srvs/srv/Trigger` | Tool | TargetManager | 投擲ポイントのYAML保存 |
 | `map -> base_link` | TF | `TransformStamped` | Localizer | Planner / Follower / MovingBucketLauncher | 機体現在位置・姿勢 |
-| `map -> bucket_bottom` | TF | `TransformStamped` | Perception | PathFollower | 移動バケツ位置 |
+| `map -> bucket_bottom` | TF | `TransformStamped` | Perception | Follower / MovingBucketLauncher | 移動バケツ底面位置 |
 
 ---
 
