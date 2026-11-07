@@ -14,8 +14,8 @@ moving_bucket_launcher_node:
     launcher_offset_x: 0.179
     launcher_offset_z: 0.837
     launch_angle_deg: 48.09
-    velocity_quad: 0.0000
-    velocity_scale: 0.9353
+    velocity_quad: 0.005
+    velocity_scale: 1.0
     velocity_offset: -1.5000
     min_velocity: 2.50
     max_velocity: 7.75
