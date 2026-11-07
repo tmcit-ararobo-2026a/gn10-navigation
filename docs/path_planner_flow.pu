@@ -30,7 +30,7 @@ partition "TF自己位置取得 & 始点・終点決定" {
 partition "8方向 A* グリッド探索" {
     :A* アルゴリズム実行;
     note right
-      * <b>a_star.planning_cost</b> (1.5)
+      * <b>a_star.planning_cost</b> (0.5)
         cost = step_dist + costmap_val * planning_cost
     end note
     if (経路発見?) then (失敗)
@@ -43,17 +43,17 @@ partition "動的適応型 B-spline 平滑化" {
     :始点・終点を exact_start / approach_goal に置換;
     :stride (max_stride..1) と反復ラプラシアン平滑化を段階的に試行;
     note right
-      * <b>bspline.max_stride</b> (4)
+      * <b>bspline.max_stride</b> (10)
       * <b>bspline.smoothing_strength</b> (1.0)
-      * <b>bspline.smoothing_iterations</b> (5)
-      * <b>bspline.smooth_max_cost</b> (80)
+      * <b>bspline.smoothing_iterations</b> (8)
+      * <b>bspline.smooth_max_cost</b> (40)
       * <b>bspline.samples_per_segment</b> (10)
     end note
     :許容コスト以下で障害物に干渉しない最も滑らかな経路を採用;
-    :低コスト領域かつ最小距離以上の区間を直線近似;
+    :低コスト領域かつ最小距離以上の区間を直線近似 (設定時のみ);
     note right
-      * <b>line_approximation.max_cost</b> (20)
-      * <b>line_approximation.min_distance</b> (0.5 m)
+      * <b>line_approximation.max_cost</b> (-1: 無効)
+      * <b>line_approximation.min_distance</b> (1.2 m)
     end note
     if (ゴールが障害物内にめり込んでいる?) then (スナップあり)
         :アプローチ中継点から本来の目標地点への\n直線進入アプローチ区間を末尾に付加;
@@ -64,9 +64,9 @@ partition "安全領域での旋回・姿勢計画" {
     :各点での全回転角度の最大フットプリントコストを算出;
     :長さ turn_distance の区間ウィンドウを走査し、\n区間全域が最も安全な旋回領域を選定;
     note right
-      * <b>footprint.polygon</b>
+      * <b>footprint.polygon</b> (8頂点外形)
       * <b>rotation_planning.turn_max_cost</b> (20)
-      * <b>rotation_planning.angle_step</b> (0.1 rad)
+      * <b>rotation_planning.angle_step</b> (0.15 rad)
       * <b>rotation_planning.turn_distance</b> (0.6 m)
     end note
     :Smoothstep (S字補間) で目標Yaw角を割り当て;

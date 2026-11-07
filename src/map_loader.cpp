@@ -94,7 +94,7 @@ std::vector<FieldObject> MapLoader::loadFromJSON(const std::string& file_path)
             } else if (obj.type == ZONE) {
                 obj.passable = true;  // ZONE タイプはデフォルトで通過可能ペナルティ領域
             } else {
-                obj.passable = false; // デフォルトは障害物（不可侵）
+                obj.passable = false;  // デフォルトは障害物（不可侵）
             }
 
             map.push_back(obj);
