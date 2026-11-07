@@ -13,7 +13,7 @@ path_follower_node:
     heading_integral_max: 0.3
     heading_kd: 1.0
     heading_ki: 0.0
-    heading_kp: 7.0
+    heading_kp: 5.0
     tracking_kp: 3.5
     tracking_ki: 0.0
     tracking_kd: 0.0
@@ -37,7 +37,7 @@ path_follower_node:
     max_jerk: 60.0
     max_lateral_acceleration: 3.0
     max_path_error: 0.3
-    max_pose_age: 0.4
+    max_pose_age: 0.3
     max_speed: 3.0
     min_docking_speed: 0.2
     min_docking_yaw_rate: 0.03
