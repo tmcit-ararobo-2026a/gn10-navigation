@@ -1,3 +1,22 @@
+/**
+ * @file target_manager_node.cpp
+ * @brief NHKロボコン2026向け目標位置・射出速度管理ノード
+ *
+ * 【処理概要】
+ * 1. Target IDと目標投擲点 (Pose & Launcher Speed) の対応管理:
+ *    - YAMLファイル (shooting_points_blue.yaml / shooting_points_red.yaml) から
+ *      各 Target ID に対応する目標座標 (x, y, yaw) および射出ベルト速度を読み込み管理。
+ * 2. 目標ポーズ配信 (/goal_pose):
+ *    - 動作命令 /robot/navigation_command が Move (2) に遷移した際、
+ *      選択中の Target ID に対応する目標ポーズを path_planner_node へ発行。
+ * 3. 射出ベルト速度の排他配信制御 (/robot/operation/belt_launcher_speed):
+ *    - 固定ターゲット (target_id != 7):
+ *      Move 遷移時に YAML で設定された固定射出速度を発行。
+ *    - 移動バケツ追従 (target_id == 7: MovingBucket):
+ *      相手ロボットの位置に応じて動的計算が必要なため、本ノードからの配信をスキップし、
+ *      moving_bucket_launcher_node によるリアルタイム動的配信に委ねる。
+ */
+
 #include "gn10_navigation/target_manager_node.hpp"
 
 #include <tf2/LinearMath/Quaternion.h>
@@ -42,9 +61,8 @@ TargetManagerNode::TargetManagerNode(const rclcpp::NodeOptions& options)
 
     // Publishers
     goal_pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/goal_pose", 10);
-    belt_launcher_speed_pub_ = this->create_publisher<std_msgs::msg::Float32>(
-        "/robot/operation/belt_launcher_speed", 10
-    );
+    belt_launcher_speed_pub_ =
+        this->create_publisher<std_msgs::msg::Float32>("/robot/operation/belt_launcher_speed", 10);
 
     // Services
     update_point_srv_ = this->create_service<gn10_navigation::srv::UpdatePoint>(
@@ -91,7 +109,9 @@ void TargetManagerNode::loadParameters()
     RCLCPP_INFO(
         this->get_logger(),
         "Parameters loaded: yaml_file_path='%s', map_frame='%s', goal_publish_throttle_sec=%.2f s",
-        yaml_file_path_.c_str(), map_frame_.c_str(), goal_publish_throttle_sec_
+        yaml_file_path_.c_str(),
+        map_frame_.c_str(),
+        goal_publish_throttle_sec_
     );
 }
 
@@ -108,20 +128,35 @@ rcl_interfaces::msg::SetParametersResult TargetManagerNode::onSetParameters(
             double val = param.as_double();
             if (std::isfinite(val) && val >= 0.0) {
                 goal_publish_throttle_sec_ = val;
-                RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+                RCLCPP_INFO(
+                    this->get_logger(),
+                    "Parameter '%s' updated to: %s",
+                    name.c_str(),
+                    param.value_to_string().c_str()
+                );
             } else {
                 result.successful = false;
-                result.reason = "goal_publish_throttle_sec must be non-negative";
+                result.reason     = "goal_publish_throttle_sec must be non-negative";
                 return result;
             }
         } else if (name == "map_frame") {
             map_frame_ = param.as_string();
-            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s", name.c_str(), param.value_to_string().c_str());
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Parameter '%s' updated to: %s",
+                name.c_str(),
+                param.value_to_string().c_str()
+            );
         } else if (name == "yaml_file_path") {
             yaml_file_path_ = param.as_string();
             repository_.setFilePath(yaml_file_path_);
             repository_.load();
-            RCLCPP_INFO(this->get_logger(), "Parameter '%s' updated to: %s and reloaded repository", name.c_str(), param.value_to_string().c_str());
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Parameter '%s' updated to: %s and reloaded repository",
+                name.c_str(),
+                param.value_to_string().c_str()
+            );
         }
     }
     return result;
@@ -301,10 +336,11 @@ void TargetManagerNode::handleGetPoints(
     std::shared_ptr<gn10_navigation::srv::GetPoints::Response> response
 )
 {
-    response->file_path = repository_.getResolvedFilePath();
+    response->file_path    = repository_.getResolvedFilePath();
     response->yaml_content = repository_.toYamlString();
-    response->success = !response->yaml_content.empty();
-    response->message = response->success ? "Successfully retrieved shooting points." : "Shooting points empty.";
+    response->success      = !response->yaml_content.empty();
+    response->message =
+        response->success ? "Successfully retrieved shooting points." : "Shooting points empty.";
     RCLCPP_INFO(
         this->get_logger(),
         "Sent %zu shooting points from '%s' to client",
