@@ -743,8 +743,16 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPath(
     // 全グリッド点のワールド座標を生成し、始点・終点はグリッド量子化前の正確なワールド座標に置換
     std::vector<Point> raw_world_points;
     raw_world_points.reserve(std::max(std::size_t{2}, grid_path.size()));
+    int max_astar_cost = 0;
+    const int width    = static_cast<int>(latest_costmap_.info.width);
     for (const auto& cell : grid_path) {
         raw_world_points.push_back(gridToWorld(cell.first, cell.second));
+        if (isInsideGrid(cell.first, cell.second)) {
+            const int c = std::max(
+                0, static_cast<int>(latest_costmap_.data[cell.second * width + cell.first])
+            );
+            max_astar_cost = std::max(max_astar_cost, c);
+        }
     }
     // 同一セル内の微小移動時 (grid_path.size() == 1) に front と back が同じ要素となり
     // exact_goal で上書きされて始点が潰れるのを防止する
@@ -776,10 +784,10 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPath(
         }
     }
 
-    const int allowed_max_cost = std::clamp(bspline_smooth_max_cost_, 0, 99);
+    const int primary_max_cost = std::clamp(bspline_smooth_max_cost_, 0, 99);
 
     if (raw_world_points.size() <= 2) {
-        return evaluateBspline(raw_world_points, 0.0, 0, allowed_max_cost);
+        return evaluateBspline(raw_world_points, 0.0, 0, primary_max_cost);
     }
 
     const double max_strength = std::clamp(bspline_smoothing_strength_, 0.0, 1.0);
@@ -808,6 +816,7 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPath(
         }
     }
 
+    // 1. まず設定値 (smooth_max_cost) を厳格に適用して平滑化を試行
     for (const auto& level : levels) {
         std::vector<Point> control_points;
         control_points.reserve(raw_world_points.size() / level.stride + 2);
@@ -819,9 +828,45 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPath(
         }
 
         auto candidate_path =
-            evaluateBspline(control_points, level.strength, level.iterations, allowed_max_cost);
-        if (!candidate_path.empty() && isSmoothPathValid(candidate_path, allowed_max_cost)) {
+            evaluateBspline(control_points, level.strength, level.iterations, primary_max_cost);
+        if (!candidate_path.empty() && isSmoothPathValid(candidate_path, primary_max_cost)) {
             return candidate_path;
+        }
+    }
+
+    // 2. 障害物密集区間や狭路で A* 経路自体が高コスト領域を通過している場合、
+    // A* が通過した実績コスト (max_astar_cost) に限定した余裕 (+5) で平滑化を再試行する。
+    // ※ 無制限 (99) ではなく、A*の安全水準 + 小さめの stride に制限して大ショートカットを防止する。
+    const int secondary_max_cost = std::min(95, std::max(primary_max_cost, max_astar_cost + 5));
+    if (secondary_max_cost > primary_max_cost) {
+        // 狭路では過度な大回りインカットを防ぐため、stride を小さめ（最大10）に制限
+        const int narrow_max_stride = std::min(max_allowed_stride, 10);
+        std::vector<SmoothingLevel> narrow_levels;
+        for (int s = narrow_max_stride; s >= 1; --s) {
+            for (double r : ratios) {
+                const int iters =
+                    (r > 0.0)
+                        ? std::max(1, static_cast<int>(std::ceil(bspline_smoothing_iterations_ * r)))
+                        : 0;
+                narrow_levels.push_back({s, max_strength * r, iters});
+            }
+        }
+
+        for (const auto& level : narrow_levels) {
+            std::vector<Point> control_points;
+            control_points.reserve(raw_world_points.size() / level.stride + 2);
+            for (std::size_t i = 0; i < raw_world_points.size(); i += level.stride) {
+                control_points.push_back(raw_world_points[i]);
+            }
+            if (control_points.back() != raw_world_points.back()) {
+                control_points.push_back(raw_world_points.back());
+            }
+
+            auto candidate_path =
+                evaluateBspline(control_points, level.strength, level.iterations, secondary_max_cost);
+            if (!candidate_path.empty() && isSmoothPathValid(candidate_path, secondary_max_cost)) {
+                return candidate_path;
+            }
         }
     }
 
