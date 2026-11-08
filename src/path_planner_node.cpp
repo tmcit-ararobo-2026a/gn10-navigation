@@ -1,6 +1,6 @@
 /**
  * @file path_planner_node.cpp
- * @brief NHKロボコン2026向け大域経路計画実装 (8方向A* + 動的適応B-spline + 安全旋回計画)
+ * @brief NHKロボコン2026向け大域経路計画実装 (8方向A* + コスト勾配連続緩和Elastic Band + 安全旋回計画)
  *
  * 【大域経路計画アルゴリズムの詳細】
  * 1. 始点・終点の安全スナップ:
@@ -15,12 +15,11 @@
  *    - a_star.planning_cost を大きくすると障害物回避マージンを大きく取る遠回り経路に、
  *      小さくすると幾何学的最短経路を優先する。
  *
- * 3. 動的適応型 B-spline 平滑化 (smoothPathAdaptiveBspline):
- *    - A*格子経路の階段状カドを取り除くため、制御点間引きステップ stride を max_stride (10) から 1
- * へ 段階的に低減しながら、反復ラプラシアン平滑化 (smoothing_iterations: 8 回) を適用。
- *    - 経路上の全サンプルの最大セルコストが smooth_max_cost (40) 以下となる最大の stride を採用。
- *    - これにより、広い空間では大きく間引いて滑らかなロングカーブを描き、
- *      狭路では自動的に細かい間引きへ適応して壁際を安全にすり抜ける。
+ * 3. コスト勾配による連続緩和 Elastic Band (smoothPathElasticBand):
+ *    - 内部張力 F_elastic (曲率最小化・平滑化) とコストマップ反発力 F_rep (-∇Cost) の釣り合いにより、
+ *      障害物を安全に回避しつつ 5cm 格子階段ノイズを連続的かつ滑らかに緩和する。
+ *    - 二値 (0/1) のハードしきい値判定によるジグザグや試行錯誤フォールバックを排除し、
+ *      開けた場所では直線化、障害物近傍では滑らかに膨らむ決定論的軌道を生成。
  *
  * 4. 安全領域での旋回・姿勢計画 (planOrientations):
  *    - 機体の実外形ポリゴン (footprint.polygon) を経路上の各候補点で 360 度回転 (angle_step 刻み)
@@ -126,32 +125,23 @@ void PathPlannerNode::declareAndGetParameters()
     this->declare_parameter("a_star.snap_distance", 0.4);
 
     // ==========================================
-    // 3. 動的適応型 B-spline 平滑化パラメータ
+    // 3. コスト勾配による連続緩和 (Elastic Band) 平滑化パラメータ
     // ==========================================
-    // bspline.samples_per_segment: B-spline 制御点間の補間サンプル数。
-    this->declare_parameter("bspline.samples_per_segment", 10);
-    // bspline.smoothing_strength: 1反復あたりの内部制御点を隣接点の中点へ寄せる割合 (0.0〜1.0)。
-    this->declare_parameter("bspline.smoothing_strength", 1.0);
-    // bspline.smoothing_iterations: 内部制御点の反復ラプラシアン平滑化回数 (0〜50)。
-    // 多いほど滑らかになり階段ノイズが消える。
-    this->declare_parameter("bspline.smoothing_iterations", 8);
-    // bspline.max_stride: 動的適応平滑化で試行する制御点間引きステップの最大値 (1〜50)。
-    // 広い空間で大きな stride を使うことで、A* の折れ線を一気に直線・大半径円弧へ平滑化。
-    this->declare_parameter("bspline.max_stride", 20);
-    // bspline.smooth_max_cost: 平滑化経路が通過を許容する最大セルコスト (0〜99)。
-    // このコストを超えるショートカットは棄却され、低コスト安全領域内での平滑化が保証される。
-    this->declare_parameter("bspline.smooth_max_cost", 40);
+    // elastic_band.iterations: 反復緩和回数 (10〜100, 既定値: 30)
+    this->declare_parameter("elastic_band.iterations", 30);
+    // elastic_band.elastic_strength: 内部張力ゲイン (直線化・曲率最小化の強さ, 0.0〜1.0, 既定値: 0.5)
+    this->declare_parameter("elastic_band.elastic_strength", 0.5);
+    // elastic_band.repulsive_strength: コスト反発ゲイン (障害物・ポテンシャル勾配から押し離す強さ, 既定値: 0.05)
+    this->declare_parameter("elastic_band.repulsive_strength", 0.05);
+    // elastic_band.repulsive_cost_threshold: 反発力が働き始めるコスト閾値 (0〜99, 既定値: 15)
+    this->declare_parameter("elastic_band.repulsive_cost_threshold", 15);
+    // elastic_band.max_cost: 平滑化経路が通過を許容する最大セルコスト (0〜99, 既定値: 40)
+    this->declare_parameter("elastic_band.max_cost", 40);
+    // elastic_band.path_resolution: 出力経路サンプリング解像度 [m] (既定値: 0.05)
+    this->declare_parameter("elastic_band.path_resolution", 0.05);
 
     // ==========================================
-    // 4. 直線近似パラメータ
-    // ==========================================
-    // line_approximation.max_cost: 直線近似を許容する最大セルコスト (-1: 無効, 0〜99)。
-    this->declare_parameter("line_approximation.max_cost", -1);
-    // line_approximation.min_distance [m]: 直線化する最小セグメント長。
-    this->declare_parameter("line_approximation.min_distance", 1.2);
-
-    // ==========================================
-    // 5. フットプリントおよび旋回計画パラメータ
+    // 4. フットプリントおよび旋回計画パラメータ
     // ==========================================
     // footprint.polygon: 機体の外形ポリゴン頂点列 (8頂点 [m])。原点は機体幾何中心。
     this->declare_parameter("footprint.polygon", kDefaultFootprint);
@@ -167,31 +157,31 @@ void PathPlannerNode::declareAndGetParameters()
     base_frame_           = this->get_parameter("map_configs.base_frame").as_string();
     planning_cost_factor_ = this->get_parameter("a_star.planning_cost").as_double();
     snap_distance_        = this->get_parameter("a_star.snap_distance").as_double();
-    bspline_samples_per_segment_ =
-        std::max(1, static_cast<int>(this->get_parameter("bspline.samples_per_segment").as_int()));
-    bspline_smoothing_strength_   = this->get_parameter("bspline.smoothing_strength").as_double();
-    bspline_smoothing_iterations_ = std::clamp(
-        static_cast<int>(this->get_parameter("bspline.smoothing_iterations").as_int()), 0, 50
+    eband_iterations_     = std::clamp(
+        static_cast<int>(this->get_parameter("elastic_band.iterations").as_int()), 1, 200
     );
-    bspline_max_stride_ =
-        std::clamp(static_cast<int>(this->get_parameter("bspline.max_stride").as_int()), 1, 50);
-    bspline_smooth_max_cost_ = std::clamp(
-        static_cast<int>(this->get_parameter("bspline.smooth_max_cost").as_int()), 0, 99
+    eband_elastic_strength_   = this->get_parameter("elastic_band.elastic_strength").as_double();
+    eband_repulsive_strength_ = this->get_parameter("elastic_band.repulsive_strength").as_double();
+    eband_repulsive_cost_threshold_ = std::clamp(
+        static_cast<int>(this->get_parameter("elastic_band.repulsive_cost_threshold").as_int()), 0, 99
     );
-    line_approx_max_cost_ = std::clamp(
-        static_cast<int>(this->get_parameter("line_approximation.max_cost").as_int()), -1, 99
+    eband_max_cost_ = std::clamp(
+        static_cast<int>(this->get_parameter("elastic_band.max_cost").as_int()), 0, 99
     );
-    line_approx_min_distance_ = this->get_parameter("line_approximation.min_distance").as_double();
+    eband_path_resolution_ = this->get_parameter("elastic_band.path_resolution").as_double();
 
-    if (!std::isfinite(bspline_smoothing_strength_) || bspline_smoothing_strength_ < 0.0 ||
-        bspline_smoothing_strength_ > 1.0) {
-        throw std::invalid_argument("bspline.smoothing_strength must be in [0.0, 1.0]");
+    if (!std::isfinite(eband_elastic_strength_) || eband_elastic_strength_ < 0.0 ||
+        eband_elastic_strength_ > 1.0) {
+        throw std::invalid_argument("elastic_band.elastic_strength must be in [0.0, 1.0]");
+    }
+    if (!std::isfinite(eband_repulsive_strength_) || eband_repulsive_strength_ < 0.0) {
+        throw std::invalid_argument("elastic_band.repulsive_strength must be non-negative");
+    }
+    if (!std::isfinite(eband_path_resolution_) || eband_path_resolution_ <= 0.0) {
+        throw std::invalid_argument("elastic_band.path_resolution must be finite and positive");
     }
     if (!std::isfinite(snap_distance_) || snap_distance_ <= 0.0) {
         throw std::invalid_argument("a_star.snap_distance must be finite and positive");
-    }
-    if (!std::isfinite(line_approx_min_distance_) || line_approx_min_distance_ <= 0.0) {
-        throw std::invalid_argument("line_approximation.min_distance must be finite and positive");
     }
 
     const auto polygon_flat = this->get_parameter("footprint.polygon").as_double_array();
@@ -214,18 +204,16 @@ void PathPlannerNode::declareAndGetParameters()
     RCLCPP_INFO(
         this->get_logger(),
         "Parameters loaded: planning_cost=%.2f, snap_distance=%.3f, "
-        "bspline=[samples=%d, strength=%.2f, iters=%d, max_stride=%d, max_cost=%d], "
-        "line_approx=[max_cost=%d, min_dist=%.2f], "
+        "eband=[iters=%d, elastic=%.2f, rep=%.3f, rep_th=%d, max_cost=%d, res=%.3f], "
         "rotation=[turn_max_cost=%d, angle_step=%.2f, turn_dist=%.2f]",
         planning_cost_factor_,
         snap_distance_,
-        bspline_samples_per_segment_,
-        bspline_smoothing_strength_,
-        bspline_smoothing_iterations_,
-        bspline_max_stride_,
-        bspline_smooth_max_cost_,
-        line_approx_max_cost_,
-        line_approx_min_distance_,
+        eband_iterations_,
+        eband_elastic_strength_,
+        eband_repulsive_strength_,
+        eband_repulsive_cost_threshold_,
+        eband_max_cost_,
+        eband_path_resolution_,
         turn_max_cost_,
         angle_step_,
         turn_distance_
@@ -260,67 +248,58 @@ rcl_interfaces::msg::SetParametersResult PathPlannerNode::onSetParameters(
                 result.reason     = "snap_distance must be positive";
                 return result;
             }
-        } else if (name == "bspline.samples_per_segment") {
+        } else if (name == "elastic_band.iterations") {
             int val = static_cast<int>(param.as_int());
-            if (val >= 1) {
-                bspline_samples_per_segment_ = val;
+            if (val >= 1 && val <= 200) {
+                eband_iterations_ = val;
             } else {
                 result.successful = false;
-                result.reason     = "bspline.samples_per_segment must be >= 1";
+                result.reason     = "elastic_band.iterations must be in [1, 200]";
                 return result;
             }
-        } else if (name == "bspline.smoothing_strength") {
+        } else if (name == "elastic_band.elastic_strength") {
             double val = param.as_double();
             if (std::isfinite(val) && val >= 0.0 && val <= 1.0) {
-                bspline_smoothing_strength_ = val;
+                eband_elastic_strength_ = val;
             } else {
                 result.successful = false;
-                result.reason     = "bspline.smoothing_strength must be in [0.0, 1.0]";
+                result.reason     = "elastic_band.elastic_strength must be in [0.0, 1.0]";
                 return result;
             }
-        } else if (name == "bspline.smoothing_iterations") {
-            int val = static_cast<int>(param.as_int());
-            if (val >= 0 && val <= 50) {
-                bspline_smoothing_iterations_ = val;
+        } else if (name == "elastic_band.repulsive_strength") {
+            double val = param.as_double();
+            if (std::isfinite(val) && val >= 0.0) {
+                eband_repulsive_strength_ = val;
             } else {
                 result.successful = false;
-                result.reason     = "bspline.smoothing_iterations must be in [0, 50]";
+                result.reason     = "elastic_band.repulsive_strength must be non-negative";
                 return result;
             }
-        } else if (name == "bspline.max_stride") {
-            int val = static_cast<int>(param.as_int());
-            if (val >= 1 && val <= 50) {
-                bspline_max_stride_ = val;
-            } else {
-                result.successful = false;
-                result.reason     = "bspline.max_stride must be in [1, 50]";
-                return result;
-            }
-        } else if (name == "bspline.smooth_max_cost") {
+        } else if (name == "elastic_band.repulsive_cost_threshold") {
             int val = static_cast<int>(param.as_int());
             if (val >= 0 && val <= 99) {
-                bspline_smooth_max_cost_ = val;
+                eband_repulsive_cost_threshold_ = val;
             } else {
                 result.successful = false;
-                result.reason     = "bspline.smooth_max_cost must be in [0, 99]";
+                result.reason     = "elastic_band.repulsive_cost_threshold must be in [0, 99]";
                 return result;
             }
-        } else if (name == "line_approximation.max_cost") {
+        } else if (name == "elastic_band.max_cost") {
             int val = static_cast<int>(param.as_int());
-            if (val >= -1 && val <= 99) {
-                line_approx_max_cost_ = val;
+            if (val >= 0 && val <= 99) {
+                eband_max_cost_ = val;
             } else {
                 result.successful = false;
-                result.reason     = "line_approximation.max_cost must be in [-1, 99]";
+                result.reason     = "elastic_band.max_cost must be in [0, 99]";
                 return result;
             }
-        } else if (name == "line_approximation.min_distance") {
+        } else if (name == "elastic_band.path_resolution") {
             double val = param.as_double();
             if (std::isfinite(val) && val > 0.0) {
-                line_approx_min_distance_ = val;
+                eband_path_resolution_ = val;
             } else {
                 result.successful = false;
-                result.reason     = "line_approximation.min_distance must be positive";
+                result.reason     = "elastic_band.path_resolution must be positive";
                 return result;
             }
         } else if (name == "rotation_planning.turn_max_cost") {
@@ -586,150 +565,7 @@ std::vector<std::pair<int, int>> PathPlannerNode::aStarSearch(
     return path;
 }
 
-std::vector<std::pair<double, double>> PathPlannerNode::evaluateBspline(
-    const std::vector<std::pair<double, double>>& input_control_points,
-    double smoothing_strength,
-    int smoothing_iterations,
-    int allowed_max_cost
-) const
-{
-    using Point = std::pair<double, double>;
-    if (input_control_points.empty()) {
-        return {};
-    }
-    if (input_control_points.size() <= 2) {
-        // 2点以下の場合は始点・終点を厳密に結ぶ密な線形補間
-        const auto& p0    = input_control_points.front();
-        const auto& p1    = input_control_points.back();
-        const double dist = std::hypot(p1.first - p0.first, p1.second - p0.second);
-        const double step =
-            (latest_costmap_.info.resolution > 0) ? latest_costmap_.info.resolution * 0.5 : 0.025;
-        const int steps = std::max(1, static_cast<int>(std::ceil(dist / step)));
-        std::vector<Point> line_pts;
-        line_pts.reserve(steps + 1);
-        for (int s = 0; s <= steps; ++s) {
-            double t = static_cast<double>(s) / steps;
-            line_pts.emplace_back(
-                p0.first + t * (p1.first - p0.first), p0.second + t * (p1.second - p0.second)
-            );
-        }
-        line_pts.front() = p0;
-        line_pts.back()  = p1;
-        return line_pts;
-    }
-
-    // 制御点数が 4 未満なら中点を補間して 4 点以上にする
-    std::vector<Point> control_points = input_control_points;
-    while (control_points.size() < 4) {
-        std::vector<Point> expanded;
-        expanded.reserve(control_points.size() * 2);
-        for (std::size_t i = 0; i + 1 < control_points.size(); ++i) {
-            expanded.push_back(control_points[i]);
-            expanded.push_back(
-                {0.5 * (control_points[i].first + control_points[i + 1].first),
-                 0.5 * (control_points[i].second + control_points[i + 1].second)}
-            );
-        }
-        expanded.push_back(control_points.back());
-        control_points = std::move(expanded);
-    }
-
-    // 内部制御点の反復ラプラシアン平滑化 (各反復でコスト制約を満たす移動のみ適用)
-    const double clamped_strength = std::clamp(smoothing_strength, 0.0, 1.0);
-    const int iterations          = std::max(0, smoothing_iterations);
-    if (clamped_strength > 0.0 && iterations > 0) {
-        for (int iter = 0; iter < iterations; ++iter) {
-            const auto prev_pts = control_points;
-            for (std::size_t index = 1; index + 1 < control_points.size(); ++index) {
-                const auto& previous = prev_pts[index - 1];
-                const auto& current  = prev_pts[index];
-                const auto& next     = prev_pts[index + 1];
-                const Point midpoint{
-                    0.5 * (previous.first + next.first), 0.5 * (previous.second + next.second)};
-                const Point candidate{
-                    current.first + clamped_strength * (midpoint.first - current.first),
-                    current.second + clamped_strength * (midpoint.second - current.second)};
-                // 移動先および前後との中点が許容コスト以内であれば更新を適用
-                if (getCellCostWorld(candidate.first, candidate.second) <= allowed_max_cost &&
-                    getCellCostWorld(
-                        0.5 * (previous.first + candidate.first),
-                        0.5 * (previous.second + candidate.second)
-                    ) <= allowed_max_cost &&
-                    getCellCostWorld(
-                        0.5 * (next.first + candidate.first), 0.5 * (next.second + candidate.second)
-                    ) <= allowed_max_cost) {
-                    control_points[index] = candidate;
-                }
-            }
-        }
-    }
-
-    constexpr int degree    = 3;
-    const int control_count = static_cast<int>(control_points.size());
-    const int last_span     = control_count - degree;
-    std::vector<double> knots(control_count + degree + 1);
-    for (int index = 0; index < static_cast<int>(knots.size()); ++index) {
-        if (index <= degree) {
-            knots[index] = 0.0;
-        } else if (index >= control_count) {
-            knots[index] = static_cast<double>(last_span);
-        } else {
-            knots[index] = static_cast<double>(index - degree);
-        }
-    }
-
-    const auto evaluate = [&](double parameter) {
-        if (parameter <= 0.0) {
-            return control_points.front();
-        }
-        if (parameter >= static_cast<double>(last_span)) {
-            return control_points.back();
-        }
-
-        int span = degree;
-        for (int index = degree; index < control_count; ++index) {
-            if (parameter >= knots[index] && parameter < knots[index + 1]) {
-                span = index;
-                break;
-            }
-        }
-
-        std::array<Point, degree + 1> values{};
-        for (int offset = 0; offset <= degree; ++offset) {
-            values[offset] = control_points[span - degree + offset];
-        }
-        for (int order = 1; order <= degree; ++order) {
-            for (int offset = degree; offset >= order; --offset) {
-                const int knot_index = span - degree + offset;
-                const double denominator =
-                    knots[knot_index + degree - order + 1] - knots[knot_index];
-                double alpha = 0.0;
-                if (denominator > 0.0) {
-                    alpha = (parameter - knots[knot_index]) / denominator;
-                }
-                values[offset].first =
-                    (1.0 - alpha) * values[offset - 1].first + alpha * values[offset].first;
-                values[offset].second =
-                    (1.0 - alpha) * values[offset - 1].second + alpha * values[offset].second;
-            }
-        }
-        return values[degree];
-    };
-
-    const int sample_count = std::max(last_span * bspline_samples_per_segment_, 10);
-    std::vector<Point> smoothed_path;
-    smoothed_path.reserve(sample_count + 1);
-    for (int sample = 0; sample <= sample_count; ++sample) {
-        const double parameter =
-            static_cast<double>(last_span) * sample / static_cast<double>(sample_count);
-        smoothed_path.push_back(evaluate(parameter));
-    }
-    smoothed_path.front() = input_control_points.front();
-    smoothed_path.back()  = input_control_points.back();
-    return smoothed_path;
-}
-
-std::vector<std::pair<double, double>> PathPlannerNode::smoothPath(
+std::vector<std::pair<double, double>> PathPlannerNode::smoothPathElasticBand(
     const std::vector<std::pair<int, int>>& grid_path,
     const std::pair<double, double>& exact_start,
     const std::pair<double, double>& exact_goal
@@ -740,327 +576,210 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPath(
         return {};
     }
 
-    // 全グリッド点のワールド座標を生成し、始点・終点はグリッド量子化前の正確なワールド座標に置換
-    std::vector<Point> raw_world_points;
-    raw_world_points.reserve(std::max(std::size_t{2}, grid_path.size()));
-    int max_astar_cost = 0;
-    const int width    = static_cast<int>(latest_costmap_.info.width);
-    for (const auto& cell : grid_path) {
-        raw_world_points.push_back(gridToWorld(cell.first, cell.second));
-        if (isInsideGrid(cell.first, cell.second)) {
-            const int c = std::max(
-                0, static_cast<int>(latest_costmap_.data[cell.second * width + cell.first])
-            );
-            max_astar_cost = std::max(max_astar_cost, c);
-        }
-    }
-    // 同一セル内の微小移動時 (grid_path.size() == 1) に front と back が同じ要素となり
-    // exact_goal で上書きされて始点が潰れるのを防止する
-    if (raw_world_points.size() <= 1) {
-        raw_world_points = {exact_start, exact_goal};
-    } else {
-        raw_world_points.front() = exact_start;
-        raw_world_points.back()  = exact_goal;
-    }
-
-    // 始点・終点を連続座標に置換した際、隣接セル中心との間で逆向き微小折り返しが生じる場合は除去
-    if (raw_world_points.size() >= 3) {
-        const double v0x = raw_world_points[1].first - raw_world_points[0].first;
-        const double v0y = raw_world_points[1].second - raw_world_points[0].second;
-        const double v1x = raw_world_points[2].first - raw_world_points[1].first;
-        const double v1y = raw_world_points[2].second - raw_world_points[1].second;
-        if (v0x * v1x + v0y * v1y <= 0.0) {
-            raw_world_points.erase(raw_world_points.begin() + 1);
-        }
-    }
-    if (raw_world_points.size() >= 3) {
-        const std::size_t m = raw_world_points.size();
-        const double v0x    = raw_world_points[m - 2].first - raw_world_points[m - 3].first;
-        const double v0y    = raw_world_points[m - 2].second - raw_world_points[m - 3].second;
-        const double v1x    = raw_world_points[m - 1].first - raw_world_points[m - 2].first;
-        const double v1y    = raw_world_points[m - 1].second - raw_world_points[m - 2].second;
-        if (v0x * v1x + v0y * v1y <= 0.0) {
-            raw_world_points.erase(raw_world_points.begin() + static_cast<std::ptrdiff_t>(m - 2));
-        }
-    }
-
-    const int primary_max_cost = std::clamp(bspline_smooth_max_cost_, 0, 99);
-
-    if (raw_world_points.size() <= 2) {
-        return evaluateBspline(raw_world_points, 0.0, 0, primary_max_cost);
-    }
-
-    const double max_strength = std::clamp(bspline_smoothing_strength_, 0.0, 1.0);
-
-    // 平滑化度合いを動的に変更するための候補リスト
-    // (stride: 制御点の間引きステップ、strength: 内部制御点の平滑化強度)
-    struct SmoothingLevel {
-        int stride;
-        double strength;
-        int iterations;
-    };
-
-    std::vector<SmoothingLevel> levels;
-    const int max_allowed_stride = std::min(
-        bspline_max_stride_, std::max(1, static_cast<int>(raw_world_points.size() - 1) / 3)
-    );
-    const std::vector<double> ratios = {1.0, 0.7, 0.4, 0.2, 0.0};
-
-    for (int s = max_allowed_stride; s >= 1; --s) {
-        for (double r : ratios) {
-            const int iters =
-                (r > 0.0)
-                    ? std::max(1, static_cast<int>(std::ceil(bspline_smoothing_iterations_ * r)))
-                    : 0;
-            levels.push_back({s, max_strength * r, iters});
-        }
-    }
-
-    // 1. まず設定値 (smooth_max_cost) を厳格に適用して平滑化を試行
-    for (const auto& level : levels) {
-        std::vector<Point> control_points;
-        control_points.reserve(raw_world_points.size() / level.stride + 2);
-        for (std::size_t i = 0; i < raw_world_points.size(); i += level.stride) {
-            control_points.push_back(raw_world_points[i]);
-        }
-        if (control_points.back() != raw_world_points.back()) {
-            control_points.push_back(raw_world_points.back());
-        }
-
-        auto candidate_path =
-            evaluateBspline(control_points, level.strength, level.iterations, primary_max_cost);
-        if (!candidate_path.empty() && isSmoothPathValid(candidate_path, primary_max_cost)) {
-            return candidate_path;
-        }
-    }
-
-    // 2. 障害物密集区間や狭路で A* 経路自体が高コスト領域を通過している場合、
-    // A* が通過した実績コスト (max_astar_cost) に限定した余裕 (+5) で平滑化を再試行する。
-    // ※ 無制限 (99) ではなく、A*の安全水準 + 小さめの stride に制限して大ショートカットを防止する。
-    const int secondary_max_cost = std::min(95, std::max(primary_max_cost, max_astar_cost + 5));
-    if (secondary_max_cost > primary_max_cost) {
-        // 狭路では過度な大回りインカットを防ぐため、stride を小さめ（最大10）に制限
-        const int narrow_max_stride = std::min(max_allowed_stride, 10);
-        std::vector<SmoothingLevel> narrow_levels;
-        for (int s = narrow_max_stride; s >= 1; --s) {
-            for (double r : ratios) {
-                const int iters =
-                    (r > 0.0)
-                        ? std::max(1, static_cast<int>(std::ceil(bspline_smoothing_iterations_ * r)))
-                        : 0;
-                narrow_levels.push_back({s, max_strength * r, iters});
-            }
-        }
-
-        for (const auto& level : narrow_levels) {
-            std::vector<Point> control_points;
-            control_points.reserve(raw_world_points.size() / level.stride + 2);
-            for (std::size_t i = 0; i < raw_world_points.size(); i += level.stride) {
-                control_points.push_back(raw_world_points[i]);
-            }
-            if (control_points.back() != raw_world_points.back()) {
-                control_points.push_back(raw_world_points.back());
-            }
-
-            auto candidate_path =
-                evaluateBspline(control_points, level.strength, level.iterations, secondary_max_cost);
-            if (!candidate_path.empty() && isSmoothPathValid(candidate_path, secondary_max_cost)) {
-                return candidate_path;
-            }
-        }
-    }
-
-
-    // フォールバック: 始点・終点の連続座標を維持したまま安全なA*点へクランプ
-    auto base_curve = evaluateBspline(raw_world_points, 0.0, 0, 99);
-    for (std::size_t i = 1; i + 1 < base_curve.size(); ++i) {
-        auto& pt            = base_curve[i];
-        const auto [gx, gy] = worldToGrid(pt.first, pt.second);
-        if (!isPassable(gx, gy)) {
-            double min_d  = std::numeric_limits<double>::max();
-            Point best_pt = pt;
-            for (const auto& orig : raw_world_points) {
-                double d = std::hypot(pt.first - orig.first, pt.second - orig.second);
-                if (d < min_d) {
-                    min_d   = d;
-                    best_pt = orig;
-                }
-            }
-            pt = best_pt;
-        }
-    }
-
-    if (base_curve.size() >= 3) {
-        const auto temp = base_curve;
-        for (std::size_t i = 1; i + 1 < base_curve.size(); ++i) {
-            Point avg{
-                0.25 * temp[i - 1].first + 0.5 * temp[i].first + 0.25 * temp[i + 1].first,
-                0.25 * temp[i - 1].second + 0.5 * temp[i].second + 0.25 * temp[i + 1].second};
-            auto [agx, agy] = worldToGrid(avg.first, avg.second);
-            if (isPassable(agx, agy)) {
-                base_curve[i] = avg;
-            }
-        }
-    }
-
-    base_curve.front() = exact_start;
-    base_curve.back()  = exact_goal;
-    return base_curve;
-}
-
-bool PathPlannerNode::isSmoothPathValid(
-    const std::vector<std::pair<double, double>>& path, int max_allowed_cost
-) const
-{
-    if (path.empty()) {
-        return false;
-    }
-
-    const auto& p_start  = path.front();
-    const auto& p_goal   = path.back();
-    const int start_cost = getCellCostWorld(p_start.first, p_start.second);
-    const int goal_cost  = getCellCostWorld(p_goal.first, p_goal.second);
-
-    // 始点・終点が壁際やインフレーションマージン内に配置されている場合、
-    // 端点から脱出/進入する区間 (0.35m以内) は端点自体のコストまで許容し、中間経路で厳格に判定する
-    constexpr double endpoint_margin_dist = 0.35;
-
-    for (const auto& point : path) {
-        const int cost = getCellCostWorld(point.first, point.second);
-        if (cost >= 100 || cost < 0) {
-            return false;
-        }
-
-        int allowed = max_allowed_cost;
-        const double d_start =
-            std::hypot(point.first - p_start.first, point.second - p_start.second);
-        const double d_goal =
-            std::hypot(point.first - p_goal.first, point.second - p_goal.second);
-
-        if (d_start <= endpoint_margin_dist) {
-            allowed = std::max(allowed, start_cost);
-        }
-        if (d_goal <= endpoint_margin_dist) {
-            allowed = std::max(allowed, goal_cost);
-        }
-
-        if (cost > allowed) {
-            return false;
-        }
-    }
-    return true;
-}
-
-std::vector<std::pair<double, double>> PathPlannerNode::approximateStraightLines(
-    const std::vector<std::pair<double, double>>& path
-) const
-{
-    using Point = std::pair<double, double>;
-    if (path.size() < 3 || line_approx_max_cost_ < 0 || line_approx_min_distance_ <= 0.0) {
-        return path;
-    }
-
+    const double point_resolution = std::max(0.01, eband_path_resolution_);
     const double res =
         (latest_costmap_.info.resolution > 0.0) ? latest_costmap_.info.resolution : 0.05;
-    const double check_step = std::max(0.01, res * 0.5);
-    const double point_step = std::clamp(res * 0.5, 0.01, 0.05);
+    const double delta = std::max(0.01, res);
 
-    const auto isSegmentLowCost = [&](const Point& p0, const Point& p1) -> bool {
-        if (getCellCostWorld(p0.first, p0.second) > line_approx_max_cost_ ||
-            getCellCostWorld(p1.first, p1.second) > line_approx_max_cost_) {
-            return false;
+    if (grid_path.size() <= 2) {
+        const double dist =
+            std::hypot(exact_goal.first - exact_start.first, exact_goal.second - exact_start.second);
+        const int steps = std::max(1, static_cast<int>(std::ceil(dist / point_resolution)));
+        std::vector<Point> pts;
+        pts.reserve(steps + 1);
+        for (int s = 0; s <= steps; ++s) {
+            const double t = static_cast<double>(s) / steps;
+            pts.emplace_back(
+                exact_start.first + t * (exact_goal.first - exact_start.first),
+                exact_start.second + t * (exact_goal.second - exact_start.second)
+            );
         }
-        const double dist     = std::hypot(p1.first - p0.first, p1.second - p0.second);
-        const int num_samples = std::max(1, static_cast<int>(std::ceil(dist / check_step)));
-        for (int s = 0; s <= num_samples; ++s) {
-            const double t  = static_cast<double>(s) / num_samples;
-            const double wx = p0.first + t * (p1.first - p0.first);
-            const double wy = p0.second + t * (p1.second - p0.second);
-            const int cost  = getCellCostWorld(wx, wy);
-            if (cost < 0 || cost > line_approx_max_cost_ || cost >= 100) {
-                return false;
-            }
+        return pts;
+    }
+
+    // 1. グリッドパスからワールド座標列を生成
+    std::vector<Point> raw_points;
+    raw_points.reserve(grid_path.size());
+    for (const auto& cell : grid_path) {
+        raw_points.push_back(gridToWorld(cell.first, cell.second));
+    }
+    raw_points.front() = exact_start;
+    raw_points.back()  = exact_goal;
+
+    // 重複・微小セグメント（1mm未満）の除去
+    std::vector<Point> unique_pts;
+    unique_pts.reserve(raw_points.size());
+    for (const auto& p : raw_points) {
+        if (unique_pts.empty() ||
+            std::hypot(p.first - unique_pts.back().first, p.second - unique_pts.back().second) >
+                1e-3) {
+            unique_pts.push_back(p);
         }
-        return true;
+    }
+    if (unique_pts.size() <= 2) {
+        unique_pts = {exact_start, exact_goal};
+    } else {
+        unique_pts.front() = exact_start;
+        unique_pts.back()  = exact_goal;
+    }
+
+    // 2. 初期バンドの等間隔リサンプリング (折れ線に沿って point_resolution 刻み)
+    std::vector<Point> band;
+    band.push_back(unique_pts.front());
+    for (std::size_t i = 0; i + 1 < unique_pts.size(); ++i) {
+        const auto& p0       = unique_pts[i];
+        const auto& p1       = unique_pts[i + 1];
+        const double seg_len = std::hypot(p1.first - p0.first, p1.second - p0.second);
+        if (seg_len < 1e-4) {
+            continue;
+        }
+        const int steps = std::max(1, static_cast<int>(std::ceil(seg_len / point_resolution)));
+        for (int s = 1; s <= steps; ++s) {
+            const double t = static_cast<double>(s) / steps;
+            band.emplace_back(
+                p0.first + t * (p1.first - p0.first), p0.second + t * (p1.second - p0.second)
+            );
+        }
+    }
+    band.front() = exact_start;
+    band.back()  = exact_goal;
+
+    if (band.size() <= 2) {
+        return band;
+    }
+
+    // 3. コスト勾配算出ヘルパー (中心差分法)
+    auto getCostGradient = [&](double wx, double wy) -> std::pair<double, double> {
+        const double c_right = getCellCostWorld(wx + delta, wy);
+        const double c_left  = getCellCostWorld(wx - delta, wy);
+        const double c_top   = getCellCostWorld(wx, wy + delta);
+        const double c_bot   = getCellCostWorld(wx, wy - delta);
+        const double gx      = (c_right - c_left) / (2.0 * delta);
+        const double gy      = (c_top - c_bot) / (2.0 * delta);
+        return {gx, gy};
     };
 
-    std::vector<Point> result;
-    result.reserve(path.size());
-    result.push_back(path.front());
-    std::vector<std::size_t> junction_indices;
+    // 4. Elastic Band 連続緩和反復ループ
+    const int total_iters = std::max(1, eband_iterations_);
+    for (int iter = 0; iter < total_iters; ++iter) {
+        const auto prev = band;
+        for (std::size_t i = 1; i + 1 < band.size(); ++i) {
+            // (a) 内部張力 (曲率最小化・平滑化力): 中点へ引き戻すスプリング力 (マルチスケール)
+            double f_elastic_x =
+                0.5 * (prev[i - 1].first + prev[i + 1].first) - prev[i].first;
+            double f_elastic_y =
+                0.5 * (prev[i - 1].second + prev[i + 1].second) - prev[i].second;
 
-    std::size_t i = 0;
-    while (i + 1 < path.size()) {
-        std::size_t best_j = i;
-        if (getCellCostWorld(path[i].first, path[i].second) <= line_approx_max_cost_) {
-            for (std::size_t j = path.size() - 1; j > i + 1; --j) {
-                const double chord_dist =
-                    std::hypot(path[j].first - path[i].first, path[j].second - path[i].second);
-                if (chord_dist < line_approx_min_distance_) {
-                    continue;
-                }
-                if (isSegmentLowCost(path[i], path[j])) {
-                    best_j = j;
-                    break;
-                }
+            if (i >= 2 && i + 2 < band.size()) {
+                const double f2_x = 0.5 * (prev[i - 2].first + prev[i + 2].first) - prev[i].first;
+                const double f2_y = 0.5 * (prev[i - 2].second + prev[i + 2].second) - prev[i].second;
+                f_elastic_x = 0.6 * f_elastic_x + 0.4 * f2_x;
+                f_elastic_y = 0.6 * f_elastic_y + 0.4 * f2_y;
             }
-        }
+            f_elastic_x *= eband_elastic_strength_;
+            f_elastic_y *= eband_elastic_strength_;
 
-        if (best_j > i + 1) {
-            if (i > 0) {
-                junction_indices.push_back(result.size() - 1);
-            }
-            const Point& p0        = path[i];
-            const Point& p1        = path[best_j];
-            const double chord_len = std::hypot(p1.first - p0.first, p1.second - p0.second);
-            const int steps = std::max(1, static_cast<int>(std::ceil(chord_len / point_step)));
-            for (int s = 1; s <= steps; ++s) {
-                const double t = static_cast<double>(s) / steps;
-                result.emplace_back(
-                    p0.first + t * (p1.first - p0.first), p0.second + t * (p1.second - p0.second)
-                );
-            }
-            if (best_j + 1 < path.size()) {
-                junction_indices.push_back(result.size() - 1);
-            }
-            i = best_j;
-        } else {
-            result.push_back(path[i + 1]);
-            ++i;
-        }
-    }
+            // (b) コストマップ反発力 (-∇Cost): 障害物ポテンシャルから離れる方向の力
+            const int current_cost = getCellCostWorld(prev[i].first, prev[i].second);
+            double f_rep_x         = 0.0;
+            double f_rep_y         = 0.0;
 
-    // 直線区間と曲線区間の接続点 (junction) のみ局所的な微小コーナーラウンディングを行い、
-    // 直線区間の直線性を維持しつつ接続点の局所曲率スパイクを防止する
-    if (!junction_indices.empty() && result.size() >= 5) {
-        std::vector<bool> smooth_mask(result.size(), false);
-        for (std::size_t j_idx : junction_indices) {
-            const std::size_t start_k = (j_idx > 3) ? (j_idx - 3) : 1;
-            const std::size_t end_k   = std::min(result.size() - 2, j_idx + 3);
-            for (std::size_t k = start_k; k <= end_k; ++k) {
-                smooth_mask[k] = true;
+            if (current_cost > eband_repulsive_cost_threshold_) {
+                const auto [gx, gy] = getCostGradient(prev[i].first, prev[i].second);
+                const double g_norm = std::hypot(gx, gy);
+                if (g_norm > 1e-4) {
+                    const double cost_excess =
+                        static_cast<double>(current_cost - eband_repulsive_cost_threshold_) /
+                        std::max(1.0, 100.0 - eband_repulsive_cost_threshold_);
+                    const double rep_mag =
+                        eband_repulsive_strength_ * std::clamp(cost_excess, 0.0, 1.0) * delta;
+                    // 負の勾配方向 (下り坂) へ反発
+                    f_rep_x = -rep_mag * (gx / g_norm);
+                    f_rep_y = -rep_mag * (gy / g_norm);
+                }
             }
-        }
-        for (int iter = 0; iter < 3; ++iter) {
-            const auto prev = result;
-            for (std::size_t k = 1; k + 1 < result.size(); ++k) {
-                if (!smooth_mask[k]) {
-                    continue;
+
+            // (c) 合力とステップ長制限
+            double dx             = f_elastic_x + f_rep_x;
+            double dy             = f_elastic_y + f_rep_y;
+            const double step_len = std::hypot(dx, dy);
+            const double max_step = delta;
+            if (step_len > max_step) {
+                dx = dx * (max_step / step_len);
+                dy = dy * (max_step / step_len);
+            }
+
+            // (d) 安全性チェック (許容最大コストを超えない範囲で段階的に試行)
+            Point candidate{prev[i].first + dx, prev[i].second + dy};
+            int cand_cost = getCellCostWorld(candidate.first, candidate.second);
+
+            if (cand_cost >= 0 && cand_cost < 100 && cand_cost <= eband_max_cost_) {
+                band[i] = candidate;
+            } else {
+                // 半ステップでの試行 (減衰)
+                candidate = {prev[i].first + 0.5 * dx, prev[i].second + 0.5 * dy};
+                cand_cost = getCellCostWorld(candidate.first, candidate.second);
+                if (cand_cost >= 0 && cand_cost < 100 && cand_cost <= eband_max_cost_) {
+                    band[i] = candidate;
                 }
-                const Point candidate{
-                    0.25 * prev[k - 1].first + 0.5 * prev[k].first + 0.25 * prev[k + 1].first,
-                    0.25 * prev[k - 1].second + 0.5 * prev[k].second + 0.25 * prev[k + 1].second};
-                if (getCellCostWorld(candidate.first, candidate.second) <=
-                    std::max(line_approx_max_cost_, bspline_smooth_max_cost_)) {
-                    result[k] = candidate;
-                }
+                // それでも不可なら移動せず現状維持
             }
         }
     }
 
-    result.front() = path.front();
-    result.back()  = path.back();
-    return result;
+    // 5. 緩和後パスの等間隔リサンプリング (累積弧長による均一補間)
+    std::vector<double> cum_dist(band.size(), 0.0);
+    for (std::size_t i = 1; i < band.size(); ++i) {
+        cum_dist[i] =
+            cum_dist[i - 1] +
+            std::hypot(band[i].first - band[i - 1].first, band[i].second - band[i - 1].second);
+    }
+    const double total_path_len = cum_dist.back();
+    if (total_path_len < 1e-4) {
+        return {exact_start, exact_goal};
+    }
+
+    const int final_steps =
+        std::max(1, static_cast<int>(std::round(total_path_len / point_resolution)));
+    std::vector<Point> smoothed_result;
+    smoothed_result.reserve(final_steps + 1);
+    smoothed_result.push_back(exact_start);
+
+    std::size_t seg_idx = 0;
+    for (int s = 1; s < final_steps; ++s) {
+        const double target_d = (static_cast<double>(s) / final_steps) * total_path_len;
+        while (seg_idx + 1 < cum_dist.size() && cum_dist[seg_idx + 1] < target_d) {
+            ++seg_idx;
+        }
+        if (seg_idx + 1 >= band.size()) {
+            break;
+        }
+        const double seg_d0   = cum_dist[seg_idx];
+        const double seg_d1   = cum_dist[seg_idx + 1];
+        const double seg_span = seg_d1 - seg_d0;
+        const double t        = (seg_span > 1e-6) ? (target_d - seg_d0) / seg_span : 0.0;
+        Point interp{
+            band[seg_idx].first + t * (band[seg_idx + 1].first - band[seg_idx].first),
+            band[seg_idx].second + t * (band[seg_idx + 1].second - band[seg_idx].second)};
+        // 補間点が万一 max_cost を超える場合は安全な最も近いバンド点へクランプ
+        int interp_cost = getCellCostWorld(interp.first, interp.second);
+        if (interp_cost < 0 || interp_cost >= 100 || interp_cost > eband_max_cost_) {
+            interp = (t < 0.5) ? band[seg_idx] : band[seg_idx + 1];
+        }
+        smoothed_result.push_back(interp);
+    }
+    smoothed_result.push_back(exact_goal);
+
+    return smoothed_result;
+}
+
+std::vector<std::pair<double, double>> PathPlannerNode::smoothPath(
+    const std::vector<std::pair<int, int>>& grid_path,
+    const std::pair<double, double>& exact_start,
+    const std::pair<double, double>& exact_goal
+) const
+{
+    return smoothPathElasticBand(grid_path, exact_start, exact_goal);
 }
 
 int PathPlannerNode::getFootprintMaxCost(double wx, double wy, double yaw, int cutoff_cost) const
@@ -1421,7 +1140,7 @@ void PathPlannerNode::onGoalPose(const geometry_msgs::msg::PoseStamped::ConstSha
         return;
     }
 
-    // 4. 動的適応型 B-spline による平滑化（連続始点〜アプローチ点間）
+    // 4. コスト勾配による連続緩和 (Elastic Band) による平滑化（連続始点〜アプローチ点間）
     auto smoothed_path = smoothPath(grid_path, exact_start, approach_goal);
     if (smoothed_path.empty()) {
         RCLCPP_WARN(this->get_logger(), "Smooth path generated empty. Using grid points.");
@@ -1435,9 +1154,6 @@ void PathPlannerNode::onGoalPose(const geometry_msgs::msg::PoseStamped::ConstSha
             smoothed_path.back()  = approach_goal;
         }
     }
-
-    // 4.5. 低コスト領域かつ最小距離以上の区間を直線近似
-    smoothed_path = approximateStraightLines(smoothed_path);
 
     // 5. ゴールが障害物内にめり込んでいる場合、アプローチ点から本来の目標地点への直線進入区間を付加
     if (goal_was_snapped) {
@@ -1479,6 +1195,7 @@ void PathPlannerNode::onGoalPose(const geometry_msgs::msg::PoseStamped::ConstSha
 
 }  // namespace gn10_navigation
 
+#ifndef GN10_NAVIGATION_PATH_PLANNER_NO_MAIN
 int main(int argc, char** argv)
 {
     rclcpp::init(argc, argv);
@@ -1487,3 +1204,4 @@ int main(int argc, char** argv)
     rclcpp::shutdown();
     return 0;
 }
+#endif

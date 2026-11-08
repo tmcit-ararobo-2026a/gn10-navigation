@@ -56,9 +56,38 @@ class PathPlannerNode : public rclcpp::Node
 public:
     explicit PathPlannerNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
 
+    /**
+     * @brief コストマップコールバック (テストからも利用可能)
+     */
+    void onCostmap(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg);
+
+    /**
+     * @brief A* の格子経路をコスト勾配による連続緩和 (Elastic Band) で平滑化する。
+     *        内部張力 (曲率最小化・直線化) とコストマップ反発力 (-∇Cost) の釣り合いにより、
+     *        障害物を安全に回避しつつ 5cm 格子階段ノイズを連続的かつ滑らかに緩和する。
+     *
+     * @param grid_path A* が生成した格子経路
+     * @param exact_start 正確な始点ワールド座標
+     * @param exact_goal 正確な終点ワールド座標
+     * @return 平滑化後のワールド座標列
+     */
+    std::vector<std::pair<double, double>> smoothPathElasticBand(
+        const std::vector<std::pair<int, int>>& grid_path,
+        const std::pair<double, double>& exact_start,
+        const std::pair<double, double>& exact_goal
+    ) const;
+
+    /**
+     * @brief 平滑化エントリーポイント (smoothPathElasticBand を呼び出す)
+     */
+    std::vector<std::pair<double, double>> smoothPath(
+        const std::vector<std::pair<int, int>>& grid_path,
+        const std::pair<double, double>& exact_start,
+        const std::pair<double, double>& exact_goal
+    ) const;
+
 private:
     void declareAndGetParameters();
-    void onCostmap(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg);
     void onGoalPose(const geometry_msgs::msg::PoseStamped::ConstSharedPtr msg);
 
     /**
@@ -127,59 +156,6 @@ private:
     std::vector<std::pair<int, int>> aStarSearch(int start_x, int start_y, int goal_x, int goal_y);
 
     /**
-     * @brief A* の格子経路を動的適応型 B-spline (障害物に干渉しない最大平滑化度合い) で平滑化する。
-     *        始点と終点にはグリッド量子化前の正確なワールド座標を保持する。
-     *
-     * @param grid_path A* が生成した格子経路
-     * @param exact_start 正確な始点ワールド座標
-     * @param exact_goal 正確な終点ワールド座標
-     * @return 平滑化後のワールド座標列
-     */
-    std::vector<std::pair<double, double>> smoothPath(
-        const std::vector<std::pair<int, int>>& grid_path,
-        const std::pair<double, double>& exact_start,
-        const std::pair<double, double>& exact_goal
-    ) const;
-
-    /**
-     * @brief 与えられた制御点列と平滑化設定から 3 次 clamped B-spline 経路を生成する
-     *
-     * @param control_points 制御点列 (ワールド座標)
-     * @param smoothing_strength 1反復あたりの内部制御点の平滑化強度 (0.0〜1.0)
-     * @param smoothing_iterations 反復ラプラシアン平滑化の回数
-     * @param allowed_max_cost 制御点移動時に許容する最大セルコスト
-     * @return std::vector<std::pair<double, double>> 生成された B-spline 補間点列
-     */
-    std::vector<std::pair<double, double>> evaluateBspline(
-        const std::vector<std::pair<double, double>>& control_points,
-        double smoothing_strength,
-        int smoothing_iterations,
-        int allowed_max_cost
-    ) const;
-
-    /**
-     * @brief ワールド座標列がすべて許容コスト以下の通行可能セル上にあるか確認する。
-     *
-     * @param path ワールド座標列
-     * @param max_allowed_cost 許容する最大コスト (1〜99)
-     * @return true すべて許容コスト以下で通行可能
-     * @return false 障害物またはコスト超過セルと干渉している
-     */
-    bool isSmoothPathValid(
-        const std::vector<std::pair<double, double>>& path, int max_allowed_cost = 99
-    ) const;
-
-    /**
-     * @brief 許容コスト以下の領域を通過し、かつ最小距離以上の区間を直線近似する。
-     *
-     * @param path 平滑化後のワールド座標列
-     * @return std::vector<std::pair<double, double>> 直線近似適用後のワールド座標列
-     */
-    std::vector<std::pair<double, double>> approximateStraightLines(
-        const std::vector<std::pair<double, double>>& path
-    ) const;
-
-    /**
      * @brief 指定した位置 (wx, wy) および姿勢 (yaw)
      * におけるロボットフットプリントの最大コストを算出する。
      *
@@ -236,15 +212,13 @@ private:
     std::string base_frame_{"base_link"};
     double planning_cost_factor_{0.5};  // a_star.planning_cost (コストマップ潜在コストの重み)
     double snap_distance_{0.4};  // a_star.snap_distance [m] (障害物からのスナップ探索半径)
-    int bspline_samples_per_segment_{10};
-    double bspline_smoothing_strength_{1.0};
-    int bspline_smoothing_iterations_{8};  // 反復ラプラシアン平滑化の回数
-    int bspline_max_stride_{20};           // 制御点間引きステップの最大試行値
-    int bspline_smooth_max_cost_{40};      // 平滑化経路が許容する最大セルコスト
-
-    // パス直線近似パラメータ
-    int line_approx_max_cost_{-1};          // -1 で無効化
-    double line_approx_min_distance_{1.2};  // 直線化を適用する最小セグメント距離 [m]
+    // コスト勾配による連続緩和 (Elastic Band) パラメータ
+    int eband_iterations_{30};                  // elastic_band.iterations (反復緩和回数)
+    double eband_elastic_strength_{0.5};        // elastic_band.elastic_strength (内部張力ゲイン 0.0〜1.0)
+    double eband_repulsive_strength_{0.05};     // elastic_band.repulsive_strength (コスト反発ゲイン)
+    int eband_repulsive_cost_threshold_{15};    // elastic_band.repulsive_cost_threshold (反発力発生閾値 0〜99)
+    int eband_max_cost_{40};                    // elastic_band.max_cost (許容最大セルコスト 0〜99)
+    double eband_path_resolution_{0.05};        // elastic_band.path_resolution [m] (サンプリング解像度)
 
     // フットプリントおよび旋回計画パラメータ
     std::vector<std::pair<double, double>> footprint_polygon_;

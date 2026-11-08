@@ -82,7 +82,7 @@ ros2 launch gn10_navigation navigation.launch.py use_rviz:=true
 ## 5. 設定ファイル
 
 - [`config/costmap_params.yaml`](config/costmap_params.yaml): 解像度、マップ範囲、インフレーション設定
-- [`config/path_planner_params.yaml`](config/path_planner_params.yaml): A*重み、B-spline平滑化度合い、機体外形、安全旋回設定
+- [`config/path_planner_params.yaml`](config/path_planner_params.yaml): A*重み、Elastic Band平滑化設定、機体外形、安全旋回設定
 - [`config/path_follower_params.yaml`](config/path_follower_params.yaml): 物理速度・加速度制限、位置・姿勢フィードバックゲイン、ゴール許容誤差
 - [`config/moving_bucket_launcher_params.yaml`](config/moving_bucket_launcher_params.yaml): 移動バケツの高さ・上部開口部弾道計算パラメータ
 - [`config/shooting_points_blue.yaml`](config/shooting_points_blue.yaml) / [`config/shooting_points_red.yaml`](config/shooting_points_red.yaml): 各Target IDの目標座標
