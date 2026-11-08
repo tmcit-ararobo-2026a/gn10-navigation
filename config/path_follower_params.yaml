@@ -9,11 +9,11 @@ path_follower_node:
     goal_settle_count: 5
     goal_tolerance: 0.01
     goal_yaw_tolerance: 0.0175
-    heading_d_filter_alpha: 0.6
+    heading_d_filter_alpha: 0.2
     heading_integral_max: 0.3
-    heading_kd: 1.0
+    heading_kd: 0.3
     heading_ki: 0.0
-    heading_kp: 5.0
+    heading_kp: 7.0
     tracking_kp: 3.5
     tracking_ki: 0.0
     tracking_kd: 0.0
