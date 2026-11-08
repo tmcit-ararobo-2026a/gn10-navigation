@@ -15,7 +15,7 @@ path_planner_node:
       # 内部制御点の反復ラプラシアン平滑化回数 (0〜50: 増やすほど階段ノイズが消え滑らかになる)
       smoothing_iterations: 20
       # 動的適応平滑化で試行する制御点間引きステップの最大値 (1〜50)
-      max_stride: 30
+      max_stride: 28
       # 平滑化経路が通過を許容する最大セルコスト (0〜99: 低コスト安全領域内で平滑化を維持)
       smooth_max_cost: 60
     line_approximation:
