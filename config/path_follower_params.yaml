@@ -4,8 +4,8 @@ path_follower_node:
     bucket_frame: bucket_bottom
     control_comm_delay: 0.02
     control_rate: 50.0
-    curvature_window: 0.5
-    decel_effective_ratio: 0.6
+    curvature_window: 0.3
+    decel_effective_ratio: 1.0
     goal_settle_count: 5
     goal_tolerance: 0.01
     goal_yaw_tolerance: 0.0175
@@ -35,9 +35,9 @@ path_follower_node:
     max_fb_speed: 0.7
     max_initial_path_error: 0.45
     max_jerk: 60.0
-    max_lateral_acceleration: 3.0
+    max_lateral_acceleration: 4.0
     max_path_error: 0.3
-    max_pose_age: 0.3
+    max_pose_age: 0.5
     max_speed: 3.0
     min_docking_speed: 0.2
     min_docking_yaw_rate: 0.03
