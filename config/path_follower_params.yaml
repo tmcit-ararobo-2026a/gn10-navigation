@@ -37,7 +37,7 @@ path_follower_node:
     max_jerk: 60.0
     max_lateral_acceleration: 4.0
     max_path_error: 0.3
-    max_pose_age: 0.5
+    max_pose_age: 0.3
     max_speed: 3.0
     min_docking_speed: 0.2
     min_docking_yaw_rate: 0.03
