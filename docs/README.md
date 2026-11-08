@@ -86,10 +86,11 @@ NHKロボコン2026向け自動移動パッケージ `gn10_navigation` の各処
 
    - ヒューリスティック $h(n)$: ゴールまでのユークリッド距離。
 3. **決定論的幾何コーナーフィレット平滑化 (smoothPathFillet / smoothPath)**:
-   - A* 格子経路から RDP（Ramer-Douglas-Peucker, $\epsilon = 0.05\,\mathrm{m}$）法により階段ノイズを除去して主要コーナー頂点を抽出。
+   - A* 格子経路から RDP（Ramer-Douglas-Peucker, 許容誤差 `smoothing.fillet.rdp_epsilon`: 0.05m）法により階段ノイズを除去して主要コーナー頂点を抽出。
    - 各コーナー頂点に対して、目標旋回半径（`smoothing.fillet.target_radius`: 1.3m。$2.4\,\mathrm{m/s}$ で横G $4.5\,\mathrm{m/s^2}$ 以内を維持する大弧）の円弧フィレットを幾何学的に接続。
    - 障害物近傍では、安全許容最大コスト（`smoothing.fillet.max_cost`: 35）を満たす最大半径 $R_{\mathrm{safe}} \ge R_{\min}$ を決定論的二分探索により自動調停。
-   - 試行錯誤ループや突発的なフォールバックを排除し、開始位置の微小ズレにかかわらず常に「直線＋安全な大円弧」を 100% 決定論的に生成します（従来の B-spline 方式への切替も `smoothing.algorithm: "bspline"` で可能）。
+   - 直線と円弧の接続部（Junction）に局所イージングブレンド（`smoothing.fillet.curvature_blend_iterations`: 3 回）を適用し、曲率の急変（操舵ジャーク）を防止して連続曲率化を実現。
+   - 試行錯誤ループや突発的なフォールバックを排除し、開始位置の微小ズレにかかわらず常に「直線＋安全な大円弧」を 100% 決定論的に生成します。
 4. **安全領域での旋回・姿勢計画 (planOrientations)**:
    - 機体の8頂点外形ポリゴン（`footprint.polygon`）を経路上の各点で 360 度（`angle_step`: 0.15 rad 刻み）回転させた際の最大フットプリントコストを算出。
    - 長さ `turn_distance`（0.6m）の移動区間ウィンドウを走査し、区間全域で全方位のフットプリントコストが `turn_max_cost`（20）以下かつ最小となる安全領域を選定。
@@ -100,18 +101,12 @@ NHKロボコン2026向け自動移動パッケージ `gn10_navigation` の各処
 |---|---|---|---|
 | `a_star.planning_cost` | 0.8 | - | コストマップ値に対する重み係数。大きくすると障害物のインフレーションマージンを避けて遠回りし、小さくすると幾何学的な最短経路を優先。 |
 | `a_star.snap_distance` | 0.40 | m | 障害物内セルから通行可能セルを探す最大探索半径。 |
-| `smoothing.algorithm` | "fillet" | - | 平滑化方式。"fillet"（幾何学的円弧フィレット、決定論的・推奨）または "bspline"（旧方式）。 |
+| `smoothing.fillet.rdp_epsilon` | 0.05 | m | RDP法でA*格子階段ノイズを除去する許容誤差。大きくすると大域的な角のみ抽出して大きな大弧になり、小さくするとA*の細かい折れ曲がりを保持。 |
 | `smoothing.fillet.target_radius` | 1.3 | m | 目標旋回半径。2.4 m/s 走行時に許容横加速度（4.5 m/s²）以内で滑らかに曲がれる大弧を形成。 |
 | `smoothing.fillet.min_radius` | 0.2 | m | 狭所・障害物近傍での最小許容旋回半径。 |
 | `smoothing.fillet.max_cost` | 35 | コスト | コーナー円弧が許容する最大セルコスト。このコスト以下となるよう安全半径を自動調停。 |
+| `smoothing.fillet.path_resolution` | 0.05 | m | 出力経路のサンプリング解像度。 |
 | `smoothing.fillet.curvature_blend_iterations` | 3 | 回 | 直線と円弧の接続部を滑らかにブレンドするイージング反復回数。接続部の曲率急変（ジャーク）を防止。 |
-| `bspline.samples_per_segment` | 10 | 点 | B-spline 制御点間の補間サンプル密度。 |
-| `bspline.smoothing_strength` | 0.5 | - | 1反復あたりの内部制御点を隣接点の中点へ寄せる割合（0.0〜1.0）。 |
-| `bspline.smoothing_iterations` | 20 | 回 | 内部制御点の反復ラプラシアン平滑化回数。増やすと平滑化が進みます。 |
-| `bspline.max_stride` | 20 | ステップ | 動的適応平滑化で試行する制御点間引き幅の最大値。直線空間で滑らかな軌道を生成。 |
-| `bspline.smooth_max_cost` | 40 | コスト | 平滑化経路が通過を許容する最大セルコスト。この値を超えるショートカットは棄却され安全マージンが確保されます。 |
-| `line_approximation.max_cost` | -1 | コスト | 直線近似を許容する最大コスト（`-1` は無効）。 |
-| `line_approximation.min_distance` | 1.2 | m | 直線化を適用する最小セグメント長。 |
 | `footprint.polygon` | 8頂点 | m | 機体の外形ポリゴン（全長約0.985m、全幅約1.120m）。 |
 | `rotation_planning.turn_max_cost` | 20 | コスト | 旋回区間全域で許容する最大フットプリントコスト。狭路での旋回を制限し広い空間で旋回させます。 |
 | `rotation_planning.angle_step` | 0.15 | rad | 旋回干渉判定の角度ステップ（約8.6度）。細かくすると判定精度向上、粗くすると計算時間短縮。 |

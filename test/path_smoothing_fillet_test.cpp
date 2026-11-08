@@ -42,7 +42,7 @@ protected:
 TEST_F(PathSmoothingFilletTest, GeneratesDeterministicLargeFilletArc)
 {
     rclcpp::NodeOptions options;
-    options.append_parameter_override("smoothing.algorithm", "fillet");
+    options.append_parameter_override("smoothing.fillet.rdp_epsilon", 0.05);
     options.append_parameter_override("smoothing.fillet.target_radius", 1.3);
     options.append_parameter_override("smoothing.fillet.min_radius", 0.2);
     options.append_parameter_override("smoothing.fillet.max_cost", 35);
@@ -108,7 +108,7 @@ TEST_F(PathSmoothingFilletTest, GeneratesDeterministicLargeFilletArc)
 TEST_F(PathSmoothingFilletTest, SafelyShrinksRadiusNearObstacles)
 {
     rclcpp::NodeOptions options;
-    options.append_parameter_override("smoothing.algorithm", "fillet");
+    options.append_parameter_override("smoothing.fillet.rdp_epsilon", 0.05);
     options.append_parameter_override("smoothing.fillet.target_radius", 1.3);
     options.append_parameter_override("smoothing.fillet.min_radius", 0.2);
     options.append_parameter_override("smoothing.fillet.max_cost", 35);
@@ -152,7 +152,7 @@ TEST_F(PathSmoothingFilletTest, SafelyShrinksRadiusNearObstacles)
 TEST_F(PathSmoothingFilletTest, SmoothlyBlendsCurvatureAtJunctions)
 {
     rclcpp::NodeOptions options;
-    options.append_parameter_override("smoothing.algorithm", "fillet");
+    options.append_parameter_override("smoothing.fillet.rdp_epsilon", 0.05);
     options.append_parameter_override("smoothing.fillet.target_radius", 1.3);
     options.append_parameter_override("smoothing.fillet.min_radius", 0.2);
     options.append_parameter_override("smoothing.fillet.max_cost", 35);

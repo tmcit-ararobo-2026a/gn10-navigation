@@ -8,9 +8,9 @@ path_planner_node:
       # 障害物・インフレーション内にスタート/ゴールがある場合の最近傍通行可能セル探索半径 [m]
       snap_distance: 0.4
     smoothing:
-      # 平滑化方式: "fillet" (幾何学的円弧フィレット, 推奨・決定論的) または "bspline" (旧方式)
-      algorithm: "fillet"
       fillet:
+        # RDP法でA*格子階段ノイズを除去する許容誤差 [m] (大きいほど大域的な角のみ抽出)
+        rdp_epsilon: 0.05
         # 目標旋回半径 [m] (2.4 m/s で横G 4.5 m/s^2 以内を維持するための大弧: R >= 1.28 m)
         target_radius: 1.3
         # 狭所・障害物近傍での最小許容旋回半径 [m] (障害物が接近している場合に縮小を許容する限界)
@@ -21,22 +21,6 @@ path_planner_node:
         path_resolution: 0.05
         # 直線と円弧の接続部を滑らかにブレンドするイージング反復回数 (0: 無効, 1〜10: 推奨3)
         curvature_blend_iterations: 3
-    bspline:
-      # B-spline の隣接制御点間を分割して生成するサンプル数
-      samples_per_segment: 10
-      # 1反復あたりの内部制御点を隣接点の中点へ寄せる割合 (0.0〜1.0)
-      smoothing_strength: 0.5
-      # 内部制御点の反復ラプラシアン平滑化回数 (0〜50: 増やすほど階段ノイズが消え滑らかになる)
-      smoothing_iterations: 20
-      # 動的適応平滑化で試行する制御点間引きステップの最大値 (1〜50)
-      max_stride: 24
-      # 平滑化経路が通過を許容する最大セルコスト (0〜99: 低コスト安全領域内で平滑化を維持)
-      smooth_max_cost: 20
-    line_approximation:
-      # 直線近似を許容する最大セルコスト (-1: 無効, 0〜99: このコスト以下の領域のみ直線化)
-      max_cost: -1
-      # 直線化する最小セグメント距離 [m]
-      min_distance: 1.2
     footprint:
       # config/robot_shape_dimensioned.svg の青い8頂点外形。単位 m、反時計回り。
       # 原点: 元形状の幾何中心 (SVG: 819.90, 850.332381 mm)。+x 前方、+y 左。

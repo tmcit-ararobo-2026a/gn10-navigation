@@ -18,13 +18,12 @@
  *    - コスト関数: cost = step_distance + costmap_val * a_star.planning_cost
  *    - ユークリッド距離ヒューリスティックによる最短・低コスト格子経路探索。
  *
- * 3. 動的適応型 B-spline 平滑化 & 直線近似:
- *    - 制御点の間引きステップ (stride を max_stride: 10 から 1 まで順次試行) と、
- *      反復ラプラシアン平滑化 (隣接点の中点ブレンドを smoothing_iterations: 8 回実行)
- * を組み合わせる。
- *    - 経路上の全サンプルの最大セルコストが smooth_max_cost (40) 以下で干渉のない最大の stride
- * を動的に採択。
- *    - 低コストかつ十分な長さの直線区間を直線近似 (line_approximation.max_cost: -1 で無効化可能)。
+ * 3. 決定論的幾何コーナーフィレット平滑化 (smoothPath):
+ *    - RDP法 (許容誤差 smoothing.fillet.rdp_epsilon: 0.05m) により格子階段ノイズを除去し主要コーナー頂点を抽出。
+ *    - 各コーナーに対して目標旋回半径 (target_radius: 1.3m) の円弧フィレットを直接接続。
+ *    - 障害物近傍では安全許容最大コスト (max_cost: 35) を満たす安全半径 (R >= min_radius: 0.2m) へ二分探索で自動調停。
+ *    - 直線と円弧の接続部には局所イージングブレンド (curvature_blend_iterations: 3) を適用し、連続曲率化を実現。
+ *    - 試行錯誤ループや突発的フォールバックを排除し、完全な決定論的軌道を生成。
  *
  * 4. 安全領域での旋回・姿勢計画 (planOrientations):
  *    - 機体外形ポリゴン (footprint.polygon) を経路上の各点で 360度 (angle_step: 0.15 rad 刻み)
@@ -156,44 +155,6 @@ private:
     std::vector<std::pair<int, int>> aStarSearch(int start_x, int start_y, int goal_x, int goal_y);
 
     /**
-     * @brief 与えられた制御点列と平滑化設定から 3 次 clamped B-spline 経路を生成する
-     *
-     * @param control_points 制御点列 (ワールド座標)
-     * @param smoothing_strength 1反復あたりの内部制御点の平滑化強度 (0.0〜1.0)
-     * @param smoothing_iterations 反復ラプラシアン平滑化の回数
-     * @param allowed_max_cost 制御点移動時に許容する最大セルコスト
-     * @return std::vector<std::pair<double, double>> 生成された B-spline 補間点列
-     */
-    std::vector<std::pair<double, double>> evaluateBspline(
-        const std::vector<std::pair<double, double>>& control_points,
-        double smoothing_strength,
-        int smoothing_iterations,
-        int allowed_max_cost
-    ) const;
-
-    /**
-     * @brief ワールド座標列がすべて許容コスト以下の通行可能セル上にあるか確認する。
-     *
-     * @param path ワールド座標列
-     * @param max_allowed_cost 許容する最大コスト (1〜99)
-     * @return true すべて許容コスト以下で通行可能
-     * @return false 障害物またはコスト超過セルと干渉している
-     */
-    bool isSmoothPathValid(
-        const std::vector<std::pair<double, double>>& path, int max_allowed_cost = 99
-    ) const;
-
-    /**
-     * @brief 許容コスト以下の領域を通過し、かつ最小距離以上の区間を直線近似する。
-     *
-     * @param path 平滑化後のワールド座標列
-     * @return std::vector<std::pair<double, double>> 直線近似適用後のワールド座標列
-     */
-    std::vector<std::pair<double, double>> approximateStraightLines(
-        const std::vector<std::pair<double, double>>& path
-    ) const;
-
-    /**
      * @brief 指定した位置 (wx, wy) および姿勢 (yaw)
      * におけるロボットフットプリントの最大コストを算出する。
      *
@@ -248,27 +209,16 @@ private:
     // パラメータ (config/path_planner_params.yaml と整合)
     std::string map_frame_{"map"};
     std::string base_frame_{"base_link"};
-    double planning_cost_factor_{0.5};  // a_star.planning_cost (コストマップ潜在コストの重み)
+    double planning_cost_factor_{0.8};  // a_star.planning_cost (コストマップ潜在コストの重み)
     double snap_distance_{0.4};  // a_star.snap_distance [m] (障害物からのスナップ探索半径)
 
-    // 平滑化パラメータ
-    std::string smoothing_algorithm_{"fillet"};  // smoothing.algorithm: "fillet" または "bspline"
+    // 幾何コーナーフィレット平滑化パラメータ
+    double fillet_rdp_epsilon_{0.05};           // smoothing.fillet.rdp_epsilon [m] (階段ノイズ除去許容誤差)
     double fillet_target_radius_{1.3};          // smoothing.fillet.target_radius [m] (2.4m/s 対応大弧)
     double fillet_min_radius_{0.2};             // smoothing.fillet.min_radius [m]
     int fillet_max_cost_{35};                   // smoothing.fillet.max_cost (0〜99)
     double fillet_path_resolution_{0.05};       // smoothing.fillet.path_resolution [m]
     int fillet_curvature_blend_iterations_{3};  // smoothing.fillet.curvature_blend_iterations (0〜10)
-
-    // 従来の B-spline パラメータ (互換性維持)
-    int bspline_samples_per_segment_{10};
-    double bspline_smoothing_strength_{1.0};
-    int bspline_smoothing_iterations_{8};  // 反復ラプラシアン平滑化の回数
-    int bspline_max_stride_{20};           // 制御点間引きステップの最大試行値
-    int bspline_smooth_max_cost_{40};      // 平滑化経路が許容する最大セルコスト
-
-    // パス直線近似パラメータ
-    int line_approx_max_cost_{-1};          // -1 で無効化
-    double line_approx_min_distance_{1.2};  // 直線化を適用する最小セグメント距離 [m]
 
     // フットプリントおよび旋回計画パラメータ
     std::vector<std::pair<double, double>> footprint_polygon_;
