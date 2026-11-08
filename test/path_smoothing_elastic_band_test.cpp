@@ -250,3 +250,52 @@ TEST_F(PathSmoothingElasticBandTest, HybridReducesCurvatureWithFillet)
     EXPECT_GT(dist_hybrid, dist_eb + 0.2);
     EXPECT_GT(dist_hybrid, 0.4);
 }
+
+TEST_F(PathSmoothingElasticBandTest, ReproduceBucket1ToBucket2)
+{
+    rclcpp::NodeOptions options;
+    options.append_parameter_override("elastic_band.iterations", 30);
+    options.append_parameter_override("elastic_band.elastic_strength", 1.0);
+    options.append_parameter_override("elastic_band.repulsive_strength", 0.05);
+    options.append_parameter_override("elastic_band.repulsive_cost_threshold", 40);
+    options.append_parameter_override("elastic_band.max_cost", 60);
+    options.append_parameter_override("elastic_band.path_resolution", 0.05);
+
+    options.append_parameter_override("fillet.rdp_epsilon", 0.15);
+    options.append_parameter_override("fillet.target_radius", 2.0);
+    options.append_parameter_override("fillet.min_radius", 0.2);
+    options.append_parameter_override("fillet.max_cost", 60);
+    options.append_parameter_override("fillet.path_resolution", 0.05);
+    options.append_parameter_override("fillet.curvature_blend_iterations", 3);
+
+    auto planner = std::make_shared<gn10_navigation::PathPlannerNode>(options);
+    auto costmap = createMockCostmap(240, 260, 0.05, 0);
+    costmap.info.origin.position.x = -6.0;
+    costmap.info.origin.position.y = -6.5;
+    planner->onCostmap(std::make_shared<nav_msgs::msg::OccupancyGrid>(costmap));
+
+    // FixedBucket1 (0.56, 2.0) -> FixedBucket2 (-1.2724, 0.8996)
+    // 粗い格子パスを作成
+    std::vector<std::pair<int, int>> grid_path;
+    int sx = 131, sy = 169;
+    int gx = 94, gy = 146;
+    for (int step = 0; step <= 50; ++step) {
+        double t = static_cast<double>(step) / 50.0;
+        grid_path.push_back({
+            static_cast<int>(std::round(sx + t * (gx - sx))),
+            static_cast<int>(std::round(sy + t * (gy - sy)))
+        });
+    }
+
+    std::pair<double, double> exact_start = {0.56, 2.0};
+    std::pair<double, double> approach_goal = {-1.275, 0.825};
+
+    auto path = planner->smoothPath(grid_path, exact_start, approach_goal);
+    ASSERT_FALSE(path.empty());
+    for (std::size_t i = 0; i < path.size(); ++i) {
+        EXPECT_TRUE(std::isfinite(path[i].first)) << "path[" << i << "].x is not finite";
+        EXPECT_TRUE(std::isfinite(path[i].second)) << "path[" << i << "].y is not finite";
+        EXPECT_LT(std::abs(path[i].first), 50.0) << "path[" << i << "].x is " << path[i].first;
+        EXPECT_LT(std::abs(path[i].second), 50.0) << "path[" << i << "].y is " << path[i].second;
+    }
+}
