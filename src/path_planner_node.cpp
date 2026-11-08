@@ -743,16 +743,8 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPath(
     // 全グリッド点のワールド座標を生成し、始点・終点はグリッド量子化前の正確なワールド座標に置換
     std::vector<Point> raw_world_points;
     raw_world_points.reserve(std::max(std::size_t{2}, grid_path.size()));
-    int max_astar_cost = 0;
-    const int width    = static_cast<int>(latest_costmap_.info.width);
     for (const auto& cell : grid_path) {
         raw_world_points.push_back(gridToWorld(cell.first, cell.second));
-        if (isInsideGrid(cell.first, cell.second)) {
-            const int c = std::max(
-                0, static_cast<int>(latest_costmap_.data[cell.second * width + cell.first])
-            );
-            max_astar_cost = std::max(max_astar_cost, c);
-        }
     }
     // 同一セル内の微小移動時 (grid_path.size() == 1) に front と back が同じ要素となり
     // exact_goal で上書きされて始点が潰れるのを防止する
@@ -784,8 +776,7 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPath(
         }
     }
 
-    const int allowed_max_cost =
-        std::clamp(std::max(bspline_smooth_max_cost_, max_astar_cost), 0, 99);
+    const int allowed_max_cost = std::clamp(bspline_smooth_max_cost_, 0, 99);
 
     if (raw_world_points.size() <= 2) {
         return evaluateBspline(raw_world_points, 0.0, 0, allowed_max_cost);
@@ -834,25 +825,6 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPath(
         }
     }
 
-    // 厳密な allowed_max_cost で見つからない場合は通行可能領域 (cost <= 99) で再試行
-    if (allowed_max_cost < 99) {
-        for (const auto& level : levels) {
-            std::vector<Point> control_points;
-            control_points.reserve(raw_world_points.size() / level.stride + 2);
-            for (std::size_t i = 0; i < raw_world_points.size(); i += level.stride) {
-                control_points.push_back(raw_world_points[i]);
-            }
-            if (control_points.back() != raw_world_points.back()) {
-                control_points.push_back(raw_world_points.back());
-            }
-
-            auto candidate_path =
-                evaluateBspline(control_points, level.strength, level.iterations, 99);
-            if (!candidate_path.empty() && isSmoothPathValid(candidate_path, 99)) {
-                return candidate_path;
-            }
-        }
-    }
 
     // フォールバック: 始点・終点の連続座標を維持したまま安全なA*点へクランプ
     auto base_curve = evaluateBspline(raw_world_points, 0.0, 0, 99);
@@ -895,9 +867,39 @@ bool PathPlannerNode::isSmoothPathValid(
     const std::vector<std::pair<double, double>>& path, int max_allowed_cost
 ) const
 {
+    if (path.empty()) {
+        return false;
+    }
+
+    const auto& p_start  = path.front();
+    const auto& p_goal   = path.back();
+    const int start_cost = getCellCostWorld(p_start.first, p_start.second);
+    const int goal_cost  = getCellCostWorld(p_goal.first, p_goal.second);
+
+    // 始点・終点が壁際やインフレーションマージン内に配置されている場合、
+    // 端点から脱出/進入する区間 (0.35m以内) は端点自体のコストまで許容し、中間経路で厳格に判定する
+    constexpr double endpoint_margin_dist = 0.35;
+
     for (const auto& point : path) {
         const int cost = getCellCostWorld(point.first, point.second);
-        if (cost > max_allowed_cost || cost >= 100) {
+        if (cost >= 100 || cost < 0) {
+            return false;
+        }
+
+        int allowed = max_allowed_cost;
+        const double d_start =
+            std::hypot(point.first - p_start.first, point.second - p_start.second);
+        const double d_goal =
+            std::hypot(point.first - p_goal.first, point.second - p_goal.second);
+
+        if (d_start <= endpoint_margin_dist) {
+            allowed = std::max(allowed, start_cost);
+        }
+        if (d_goal <= endpoint_margin_dist) {
+            allowed = std::max(allowed, goal_cost);
+        }
+
+        if (cost > allowed) {
             return false;
         }
     }
