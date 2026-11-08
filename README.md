@@ -1,15 +1,15 @@
 # gn10-navigation
 
 NHKロボコン2026向けの自動走行ナビゲーションパッケージです。
-単一責任の原則（KISS原則）と疎結合なトピック通信に基づき、5つの独立したノードで構成されています。
+疎結合なトピック通信に基づき、5つのノードで構成されています。
 
 ## 1. ノード構成
 
-- **`target_manager_node`**: 固定Target IDに応じた目標座標（`/goal_pose`）および射出ベルト速度（`/robot/operation/belt_launcher_speed`）を管理・発行します（MovingBucket時は射出速度発行をスキップ）。
+- **`target_manager_node`**: Target IDに応じた目標座標（`/goal_pose`）および射出ベルト速度（`/robot/operation/belt_launcher_speed`）を発行します（移動バケツ追従時は射出速度発行をスキップ）。
 - **`costmap_generator_node`**: フィールド定義（`nhk2026_map.json`）からMulti-Source BFSを用いてインフレーション付きコストマップ（`/costmap`）を生成します。
-- **`path_planner_node`**: 8方向A*探索、反復ラプラシアン付き動的B-spline平滑化、および旋回区間全域のフットプリント安全判定を行い、量子化誤差のない計画経路（`/planned_path`）を発行します。
-- **`path_follower_node`**: 接線フィードフォワード速度と直交位置フィードバック速度の単一統合制御則、1次最大加速度リミッタ、およびゴール近傍の静止摩擦補償により、最高速度 3.0 m/s の高速追従と±20mm・±1.0度以内の精密停止を実現します。また、移動バケツ追従（Tracking）時はTF基準の目標位置LPF平滑化、専用PID、不感帯（デッドバンド）および一時ドロップアウト猶予により、チャタリングのない滑らかな追従姿勢制御を行います。
-- **`moving_bucket_launcher_node`**: 相手ロボット上の可動バケツ（Target ID 7: MovingBucket）追従かつ動作命令 `Move` 時に、TF（既定: `bucket_bottom` + `bucket_height`）またはLiDAR Perceptionトピックから `base_link` 基準でリアルタイムに弾道射出速度を動的計算し、LPF平滑化を経て `/robot/operation/belt_launcher_speed` へ発行します（固定ターゲット時や `Sleep`/`Stanby` 時は配信停止）。
+- **`path_planner_node`**: 8方向A*探索、B-spline平滑化、および旋回区間のフットプリント安全判定を行い、計画経路（`/planned_path`）を発行します。
+- **`path_follower_node`**: 速度プロファイル計画、接線フィードフォワード＋直交位置フィードバック制御、1次最大加速度リミッタ、および停止判定に基づき経路追従制御を行います。また、移動バケツ追従（Tracking）時はTF基準の目標位置EMA平滑化、PID制御、不感帯およびタイムアウト処理により追従姿勢制御を行います。
+- **`moving_bucket_launcher_node`**: 移動バケツ（Target ID 7: `MovingBucket`）追従かつ動作命令 `Move` 時に、TF（既定: `bucket_bottom` + `bucket_height`）またはLiDAR Perceptionトピックから `base_link` 基準で弾道射出速度を計算し、EMA平滑化を経て `/robot/operation/belt_launcher_speed` へ発行します（固定ターゲット時や `Sleep`/`Stanby` 時は配信停止）。
 
 ---
 
