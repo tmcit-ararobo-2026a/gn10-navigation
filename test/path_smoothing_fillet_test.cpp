@@ -208,3 +208,57 @@ TEST_F(PathSmoothingFilletTest, SmoothlyBlendsCurvatureAtJunctions)
         }
     }
 }
+
+TEST_F(PathSmoothingFilletTest, LargeRdpDoesNotViolateMaxCost)
+{
+    rclcpp::NodeOptions options;
+    // 大きな rdp_epsilon (0.25m) を設定
+    options.append_parameter_override("smoothing.fillet.rdp_epsilon", 0.25);
+    options.append_parameter_override("smoothing.fillet.target_radius", 1.3);
+    options.append_parameter_override("smoothing.fillet.min_radius", 0.2);
+    options.append_parameter_override("smoothing.fillet.max_cost", 35);
+    options.append_parameter_override("smoothing.fillet.path_resolution", 0.05);
+
+    auto planner = std::make_shared<gn10_navigation::PathPlannerNode>(options);
+
+    // 10m x 10m グリッド (解像度 0.05m)
+    auto costmap = createMockCostmap(200, 200, 0.05, 0);
+
+    // 直線 (1.0, 1.0) -> (5.0, 1.0) の中間に、高コスト障害物 (x=3.0, y=1.0 付近, cost=80) を配置
+    // グリッドインデックスで x=55..65, y=18..22 に cost 80
+    for (int y = 18; y <= 22; ++y) {
+        for (int x = 55; x <= 65; ++x) {
+            costmap.data[y * 200 + x] = 80;
+        }
+    }
+    planner->onCostmap(std::make_shared<nav_msgs::msg::OccupancyGrid>(costmap));
+
+    // A* が障害物を避けて y=1.2 (約 0.2m 迂回) を通過する経路を模擬
+    // 幾何偏差は 0.2m (< rdp_epsilon 0.25m) だが、直線ショートカットは cost=80 を貫通するため間引き禁止となるべき
+    std::vector<std::pair<int, int>> grid_path;
+    for (int x = 20; x <= 50; ++x) {
+        grid_path.push_back({x, 20});
+    }
+    for (int x = 51; x <= 69; ++x) {
+        grid_path.push_back({x, 24});  // y=1.20m (迂回)
+    }
+    for (int x = 70; x <= 100; ++x) {
+        grid_path.push_back({x, 20});
+    }
+
+    const std::pair<double, double> exact_start = {1.0, 1.0};
+    const std::pair<double, double> exact_goal  = {5.0, 1.0};
+
+    auto smoothed = planner->smoothPathFillet(grid_path, exact_start, exact_goal);
+    ASSERT_FALSE(smoothed.empty());
+
+    // 生成された全点が max_cost (35) 以下を厳格に満たしていること
+    for (const auto& pt : smoothed) {
+        int gx = static_cast<int>(std::round(pt.first / 0.05));
+        int gy = static_cast<int>(std::round(pt.second / 0.05));
+        if (gx >= 0 && gx < 200 && gy >= 0 && gy < 200) {
+            int cost = costmap.data[gy * 200 + gx];
+            EXPECT_LE(cost, 35) << "Point (" << pt.first << ", " << pt.second << ") penetrated high cost " << cost;
+        }
+    }
+}

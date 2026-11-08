@@ -649,11 +649,30 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPathFillet(
         }
     }
 
-    // 2. Ramer-Douglas-Peucker (RDP) 法によるグリッド量子化階段ノイズの除去
+    // 2. コストマップ制約付き Ramer-Douglas-Peucker (RDP) 法による格子階段ノイズ除去
+    // 幾何誤差が rdp_epsilon 以内であっても、ショートカット直線が max_cost を超える場合は間引きを禁止する
     const double rdp_epsilon = fillet_rdp_epsilon_;
     std::vector<bool> keep_mask(unique_pts.size(), false);
     keep_mask.front() = true;
     keep_mask.back()  = true;
+
+    auto isSegmentSafe = [&](const Point& p1, const Point& p2) -> bool {
+        const double dist = std::hypot(p2.first - p1.first, p2.second - p1.second);
+        if (dist < 1e-4) {
+            return true;
+        }
+        const int steps = std::max(1, static_cast<int>(std::ceil(dist / check_step)));
+        for (int s = 0; s <= steps; ++s) {
+            const double t  = static_cast<double>(s) / steps;
+            const double wx = p1.first + t * (p2.first - p1.first);
+            const double wy = p1.second + t * (p2.second - p1.second);
+            const int cost  = getCellCostWorld(wx, wy);
+            if (cost < 0 || cost > fillet_max_cost_ || cost >= 100) {
+                return false;
+            }
+        }
+        return true;
+    };
 
     auto perpDist = [](const Point& pt, const Point& line_start, const Point& line_end) -> double {
         const double dx  = line_end.first - line_start.first;
@@ -682,7 +701,10 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPathFillet(
                 idx   = i;
             }
         }
-        if (max_d > rdp_epsilon) {
+        if (max_d > rdp_epsilon || !isSegmentSafe(unique_pts[s], unique_pts[e])) {
+            if (idx == s) {
+                idx = s + (e - s) / 2;
+            }
             keep_mask[idx] = true;
             rdpFunc(s, idx);
             rdpFunc(idx, e);
@@ -698,7 +720,7 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPathFillet(
         }
     }
 
-    // ほぼ一直線上に並ぶ連続微小屈曲 (偏角 約5度未満) の整理
+    // ほぼ一直線上に並ぶ連続微小屈曲 (偏角 約5度未満) の整理 (安全性が確認された場合のみ)
     if (waypoints.size() >= 3) {
         std::vector<Point> filtered;
         filtered.reserve(waypoints.size());
@@ -712,7 +734,7 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPathFillet(
             const double l2  = std::hypot(d2x, d2y);
             if (l1 > 1e-4 && l2 > 1e-4) {
                 const double dot = (d1x * d2x + d1y * d2y) / (l1 * l2);
-                if (dot > 0.996) {
+                if (dot > 0.996 && isSegmentSafe(filtered.back(), waypoints[i + 1])) {
                     continue;
                 }
             }
