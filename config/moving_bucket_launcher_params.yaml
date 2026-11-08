@@ -9,14 +9,14 @@ moving_bucket_launcher_node:
     opening_topic: /bucket_opening_tracker/target
     bottom_topic: /bucket_opening_tracker/bottom_track
     use_bottom_topic: false
-    bucket_height: 0.255
+    bucket_height: 0.35
     aim_z_offset: 0.000
-    launcher_offset_x: 0.179
-    launcher_offset_z: 0.837
-    launch_angle_deg: 48.09
-    velocity_quad: 0.005
-    velocity_scale: 1.0
-    velocity_offset: -1.5000
+    launcher_offset_x: 0.15
+    launcher_offset_z: 0.872
+    launch_angle_deg: 45.0
+    velocity_quad: 0.0000
+    velocity_scale: 0.8900
+    velocity_offset: -1.2334
     min_velocity: 2.50
     max_velocity: 7.75
     min_horizontal_dist: 0.6
