@@ -14,7 +14,7 @@ path_follower_node:
     heading_kd: 0.3
     heading_ki: 0.0
     heading_kp: 7.0
-    tracking_kp: 3.5
+    tracking_kp: 5.0
     tracking_ki: 0.0
     tracking_kd: 0.0
     tracking_integral_max: 0.2
