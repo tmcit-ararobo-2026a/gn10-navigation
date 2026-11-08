@@ -9,7 +9,7 @@ path_planner_node:
       snap_distance: 0.4
     elastic_band:
       # 反復緩和回数 (多いほど滑らかに収束, 10〜100, 既定値: 30)
-      iterations: 100
+      iterations: 30
       # 内部張力ゲイン (直線化・曲率最小化の強さ, 0.0〜1.0, 既定値: 0.5)
       elastic_strength: 1.0
       # コスト反発ゲイン (障害物・ポテンシャル勾配から押し離す強さ, 既定値: 0.05)
