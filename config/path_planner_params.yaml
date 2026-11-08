@@ -11,7 +11,7 @@ path_planner_node:
       # B-spline の隣接制御点間を分割して生成するサンプル数
       samples_per_segment: 10
       # 1反復あたりの内部制御点を隣接点の中点へ寄せる割合 (0.0〜1.0)
-      smoothing_strength: 1.0
+      smoothing_strength: 0.5
       # 内部制御点の反復ラプラシアン平滑化回数 (0〜50: 増やすほど階段ノイズが消え滑らかになる)
       smoothing_iterations: 8
       # 動的適応平滑化で試行する制御点間引きステップの最大値 (1〜10)

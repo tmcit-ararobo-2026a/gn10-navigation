@@ -7,7 +7,7 @@ path_follower_node:
     curvature_window: 0.5
     decel_effective_ratio: 0.6
     goal_settle_count: 5
-    goal_tolerance: 0.02
+    goal_tolerance: 0.01
     goal_yaw_tolerance: 0.0175
     heading_d_filter_alpha: 0.6
     heading_integral_max: 0.3
