@@ -650,7 +650,7 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPathFillet(
     }
 
     // 2. Ramer-Douglas-Peucker (RDP) 法によるグリッド量子化階段ノイズの除去
-    const double rdp_epsilon = 0.04;  // グリッド解像度(0.05m)未満の階段ジグザグを除去
+    const double rdp_epsilon = fillet_rdp_epsilon_;
     std::vector<bool> keep_mask(unique_pts.size(), false);
     keep_mask.front() = true;
     keep_mask.back()  = true;
