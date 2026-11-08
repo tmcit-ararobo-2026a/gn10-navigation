@@ -239,7 +239,7 @@ private:
     int bspline_samples_per_segment_{10};
     double bspline_smoothing_strength_{1.0};
     int bspline_smoothing_iterations_{8};  // 反復ラプラシアン平滑化の回数
-    int bspline_max_stride_{10};           // 制御点間引きステップの最大試行値
+    int bspline_max_stride_{20};           // 制御点間引きステップの最大試行値
     int bspline_smooth_max_cost_{40};      // 平滑化経路が許容する最大セルコスト
 
     // パス直線近似パラメータ

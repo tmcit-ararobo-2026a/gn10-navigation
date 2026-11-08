@@ -135,9 +135,9 @@ void PathPlannerNode::declareAndGetParameters()
     // bspline.smoothing_iterations: 内部制御点の反復ラプラシアン平滑化回数 (0〜50)。
     // 多いほど滑らかになり階段ノイズが消える。
     this->declare_parameter("bspline.smoothing_iterations", 8);
-    // bspline.max_stride: 動的適応平滑化で試行する制御点間引きステップの最大値 (1〜10)。
+    // bspline.max_stride: 動的適応平滑化で試行する制御点間引きステップの最大値 (1〜50)。
     // 広い空間で大きな stride を使うことで、A* の折れ線を一気に直線・大半径円弧へ平滑化。
-    this->declare_parameter("bspline.max_stride", 10);
+    this->declare_parameter("bspline.max_stride", 20);
     // bspline.smooth_max_cost: 平滑化経路が通過を許容する最大セルコスト (0〜99)。
     // このコストを超えるショートカットは棄却され、低コスト安全領域内での平滑化が保証される。
     this->declare_parameter("bspline.smooth_max_cost", 40);
@@ -174,7 +174,7 @@ void PathPlannerNode::declareAndGetParameters()
         static_cast<int>(this->get_parameter("bspline.smoothing_iterations").as_int()), 0, 50
     );
     bspline_max_stride_ =
-        std::clamp(static_cast<int>(this->get_parameter("bspline.max_stride").as_int()), 1, 10);
+        std::clamp(static_cast<int>(this->get_parameter("bspline.max_stride").as_int()), 1, 50);
     bspline_smooth_max_cost_ = std::clamp(
         static_cast<int>(this->get_parameter("bspline.smooth_max_cost").as_int()), 0, 99
     );
@@ -289,11 +289,11 @@ rcl_interfaces::msg::SetParametersResult PathPlannerNode::onSetParameters(
             }
         } else if (name == "bspline.max_stride") {
             int val = static_cast<int>(param.as_int());
-            if (val >= 1 && val <= 10) {
+            if (val >= 1 && val <= 50) {
                 bspline_max_stride_ = val;
             } else {
                 result.successful = false;
-                result.reason     = "bspline.max_stride must be in [1, 10]";
+                result.reason     = "bspline.max_stride must be in [1, 50]";
                 return result;
             }
         } else if (name == "bspline.smooth_max_cost") {
