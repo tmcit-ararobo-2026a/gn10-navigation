@@ -56,9 +56,38 @@ class PathPlannerNode : public rclcpp::Node
 public:
     explicit PathPlannerNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
 
+    void onCostmap(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg);
+
+    /**
+     * @brief A* グリッド座標列を平滑化する。
+     *
+     * @param grid_path A* グリッド座標列
+     * @param exact_start グリッド量子化前の正確なスタートワールド座標
+     * @param exact_goal グリッド量子化前の正確なゴールワールド座標
+     * @return std::vector<std::pair<double, double>> 平滑化されたワールド座標列
+     */
+    std::vector<std::pair<double, double>> smoothPath(
+        const std::vector<std::pair<int, int>>& grid_path,
+        const std::pair<double, double>& exact_start,
+        const std::pair<double, double>& exact_goal
+    ) const;
+
+    /**
+     * @brief 幾何学的コーナーフィレット (直線 + 安全大円弧) により、決定論的かつ滑らかな経路を生成する。
+     *
+     * @param grid_path A* グリッド座標列
+     * @param exact_start グリッド量子化前の正確なスタートワールド座標
+     * @param exact_goal グリッド量子化前の正確なゴールワールド座標
+     * @return std::vector<std::pair<double, double>> 平滑化されたワールド座標列
+     */
+    std::vector<std::pair<double, double>> smoothPathFillet(
+        const std::vector<std::pair<int, int>>& grid_path,
+        const std::pair<double, double>& exact_start,
+        const std::pair<double, double>& exact_goal
+    ) const;
+
 private:
     void declareAndGetParameters();
-    void onCostmap(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg);
     void onGoalPose(const geometry_msgs::msg::PoseStamped::ConstSharedPtr msg);
 
     /**
@@ -125,21 +154,6 @@ private:
      * @return std::vector<std::pair<int, int>> (x, y)の組の配列で経路
      */
     std::vector<std::pair<int, int>> aStarSearch(int start_x, int start_y, int goal_x, int goal_y);
-
-    /**
-     * @brief A* の格子経路を動的適応型 B-spline (障害物に干渉しない最大平滑化度合い) で平滑化する。
-     *        始点と終点にはグリッド量子化前の正確なワールド座標を保持する。
-     *
-     * @param grid_path A* が生成した格子経路
-     * @param exact_start 正確な始点ワールド座標
-     * @param exact_goal 正確な終点ワールド座標
-     * @return 平滑化後のワールド座標列
-     */
-    std::vector<std::pair<double, double>> smoothPath(
-        const std::vector<std::pair<int, int>>& grid_path,
-        const std::pair<double, double>& exact_start,
-        const std::pair<double, double>& exact_goal
-    ) const;
 
     /**
      * @brief 与えられた制御点列と平滑化設定から 3 次 clamped B-spline 経路を生成する
@@ -236,6 +250,15 @@ private:
     std::string base_frame_{"base_link"};
     double planning_cost_factor_{0.5};  // a_star.planning_cost (コストマップ潜在コストの重み)
     double snap_distance_{0.4};  // a_star.snap_distance [m] (障害物からのスナップ探索半径)
+
+    // 平滑化パラメータ
+    std::string smoothing_algorithm_{"fillet"};  // smoothing.algorithm: "fillet" または "bspline"
+    double fillet_target_radius_{1.3};          // smoothing.fillet.target_radius [m] (2.4m/s 対応大弧)
+    double fillet_min_radius_{0.2};             // smoothing.fillet.min_radius [m]
+    int fillet_max_cost_{35};                   // smoothing.fillet.max_cost (0〜99)
+    double fillet_path_resolution_{0.05};       // smoothing.fillet.path_resolution [m]
+
+    // 従来の B-spline パラメータ (互換性維持)
     int bspline_samples_per_segment_{10};
     double bspline_smoothing_strength_{1.0};
     int bspline_smoothing_iterations_{8};  // 反復ラプラシアン平滑化の回数

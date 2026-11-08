@@ -37,6 +37,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <queue>
 #include <stdexcept>
@@ -126,8 +127,19 @@ void PathPlannerNode::declareAndGetParameters()
     this->declare_parameter("a_star.snap_distance", 0.4);
 
     // ==========================================
-    // 3. 動的適応型 B-spline 平滑化パラメータ
+    // 3. 平滑化パラメータ (幾何フィレット方式 & 従来のB-spline方式)
     // ==========================================
+    // smoothing.algorithm: 平滑化方式 ("fillet": 決定論的幾何円弧フィレット, "bspline": 従来のBスプライン)
+    this->declare_parameter("smoothing.algorithm", "fillet");
+    // smoothing.fillet.target_radius [m]: 目標旋回半径 (2.4m/s で横G 4.5m/s^2 以内を維持する大弧: R >= 1.28m)
+    this->declare_parameter("smoothing.fillet.target_radius", 1.3);
+    // smoothing.fillet.min_radius [m]: 狭所・障害物近傍での最小許容旋回半径
+    this->declare_parameter("smoothing.fillet.min_radius", 0.2);
+    // smoothing.fillet.max_cost: コーナー円弧が許容する最大セルコスト (0〜99)
+    this->declare_parameter("smoothing.fillet.max_cost", 35);
+    // smoothing.fillet.path_resolution [m]: 出力経路のサンプリング解像度
+    this->declare_parameter("smoothing.fillet.path_resolution", 0.05);
+
     // bspline.samples_per_segment: B-spline 制御点間の補間サンプル数。
     this->declare_parameter("bspline.samples_per_segment", 10);
     // bspline.smoothing_strength: 1反復あたりの内部制御点を隣接点の中点へ寄せる割合 (0.0〜1.0)。
@@ -167,6 +179,15 @@ void PathPlannerNode::declareAndGetParameters()
     base_frame_           = this->get_parameter("map_configs.base_frame").as_string();
     planning_cost_factor_ = this->get_parameter("a_star.planning_cost").as_double();
     snap_distance_        = this->get_parameter("a_star.snap_distance").as_double();
+
+    smoothing_algorithm_   = this->get_parameter("smoothing.algorithm").as_string();
+    fillet_target_radius_  = this->get_parameter("smoothing.fillet.target_radius").as_double();
+    fillet_min_radius_     = this->get_parameter("smoothing.fillet.min_radius").as_double();
+    fillet_max_cost_       = std::clamp(
+        static_cast<int>(this->get_parameter("smoothing.fillet.max_cost").as_int()), 0, 99
+    );
+    fillet_path_resolution_ = this->get_parameter("smoothing.fillet.path_resolution").as_double();
+
     bspline_samples_per_segment_ =
         std::max(1, static_cast<int>(this->get_parameter("bspline.samples_per_segment").as_int()));
     bspline_smoothing_strength_   = this->get_parameter("bspline.smoothing_strength").as_double();
@@ -183,6 +204,16 @@ void PathPlannerNode::declareAndGetParameters()
     );
     line_approx_min_distance_ = this->get_parameter("line_approximation.min_distance").as_double();
 
+    if (fillet_target_radius_ <= 0.0 || !std::isfinite(fillet_target_radius_)) {
+        throw std::invalid_argument("smoothing.fillet.target_radius must be positive and finite");
+    }
+    if (fillet_min_radius_ < 0.0 || !std::isfinite(fillet_min_radius_) ||
+        fillet_min_radius_ > fillet_target_radius_) {
+        throw std::invalid_argument("smoothing.fillet.min_radius must be in [0, target_radius]");
+    }
+    if (fillet_path_resolution_ <= 0.0 || !std::isfinite(fillet_path_resolution_)) {
+        throw std::invalid_argument("smoothing.fillet.path_resolution must be positive and finite");
+    }
     if (!std::isfinite(bspline_smoothing_strength_) || bspline_smoothing_strength_ < 0.0 ||
         bspline_smoothing_strength_ > 1.0) {
         throw std::invalid_argument("bspline.smoothing_strength must be in [0.0, 1.0]");
@@ -214,11 +245,17 @@ void PathPlannerNode::declareAndGetParameters()
     RCLCPP_INFO(
         this->get_logger(),
         "Parameters loaded: planning_cost=%.2f, snap_distance=%.3f, "
+        "smoothing=[algo=%s, target_R=%.2f, min_R=%.2f, max_cost=%d, res=%.3f], "
         "bspline=[samples=%d, strength=%.2f, iters=%d, max_stride=%d, max_cost=%d], "
         "line_approx=[max_cost=%d, min_dist=%.2f], "
         "rotation=[turn_max_cost=%d, angle_step=%.2f, turn_dist=%.2f]",
         planning_cost_factor_,
         snap_distance_,
+        smoothing_algorithm_.c_str(),
+        fillet_target_radius_,
+        fillet_min_radius_,
+        fillet_max_cost_,
+        fillet_path_resolution_,
         bspline_samples_per_segment_,
         bspline_smoothing_strength_,
         bspline_smoothing_iterations_,
@@ -258,6 +295,51 @@ rcl_interfaces::msg::SetParametersResult PathPlannerNode::onSetParameters(
             } else {
                 result.successful = false;
                 result.reason     = "snap_distance must be positive";
+                return result;
+            }
+        } else if (name == "smoothing.algorithm") {
+            std::string val = param.as_string();
+            if (val == "fillet" || val == "bspline") {
+                smoothing_algorithm_ = val;
+            } else {
+                result.successful = false;
+                result.reason     = "smoothing.algorithm must be 'fillet' or 'bspline'";
+                return result;
+            }
+        } else if (name == "smoothing.fillet.target_radius") {
+            double val = param.as_double();
+            if (std::isfinite(val) && val > 0.0) {
+                fillet_target_radius_ = val;
+            } else {
+                result.successful = false;
+                result.reason     = "smoothing.fillet.target_radius must be positive";
+                return result;
+            }
+        } else if (name == "smoothing.fillet.min_radius") {
+            double val = param.as_double();
+            if (std::isfinite(val) && val >= 0.0) {
+                fillet_min_radius_ = val;
+            } else {
+                result.successful = false;
+                result.reason     = "smoothing.fillet.min_radius must be non-negative";
+                return result;
+            }
+        } else if (name == "smoothing.fillet.max_cost") {
+            int val = static_cast<int>(param.as_int());
+            if (val >= 0 && val <= 99) {
+                fillet_max_cost_ = val;
+            } else {
+                result.successful = false;
+                result.reason     = "smoothing.fillet.max_cost must be in [0, 99]";
+                return result;
+            }
+        } else if (name == "smoothing.fillet.path_resolution") {
+            double val = param.as_double();
+            if (std::isfinite(val) && val > 0.0) {
+                fillet_path_resolution_ = val;
+            } else {
+                result.successful = false;
+                result.reason     = "smoothing.fillet.path_resolution must be positive";
                 return result;
             }
         } else if (name == "bspline.samples_per_segment") {
@@ -729,6 +811,352 @@ std::vector<std::pair<double, double>> PathPlannerNode::evaluateBspline(
     return smoothed_path;
 }
 
+std::vector<std::pair<double, double>> PathPlannerNode::smoothPathFillet(
+    const std::vector<std::pair<int, int>>& grid_path,
+    const std::pair<double, double>& exact_start,
+    const std::pair<double, double>& exact_goal
+) const
+{
+    using Point = std::pair<double, double>;
+    if (grid_path.empty()) {
+        return {};
+    }
+
+    const double point_resolution = std::max(0.01, fillet_path_resolution_);
+    const double check_step = (latest_costmap_.info.resolution > 0.0)
+                                  ? latest_costmap_.info.resolution * 0.5
+                                  : 0.025;
+
+    if (grid_path.size() <= 2) {
+        const double dist =
+            std::hypot(exact_goal.first - exact_start.first, exact_goal.second - exact_start.second);
+        const int steps = std::max(1, static_cast<int>(std::ceil(dist / point_resolution)));
+        std::vector<Point> pts;
+        pts.reserve(steps + 1);
+        for (int s = 0; s <= steps; ++s) {
+            const double t = static_cast<double>(s) / steps;
+            pts.emplace_back(
+                exact_start.first + t * (exact_goal.first - exact_start.first),
+                exact_start.second + t * (exact_goal.second - exact_start.second)
+            );
+        }
+        return pts;
+    }
+
+    // 1. グリッドパスからワールド座標列を生成し、始点・終点を正確な連続座標に置換
+    std::vector<Point> raw_points;
+    raw_points.reserve(grid_path.size());
+    for (const auto& cell : grid_path) {
+        raw_points.push_back(gridToWorld(cell.first, cell.second));
+    }
+    raw_points.front() = exact_start;
+    raw_points.back()  = exact_goal;
+
+    // 重複・微小セグメント（1mm未満）の除去
+    std::vector<Point> unique_pts;
+    unique_pts.reserve(raw_points.size());
+    for (const auto& p : raw_points) {
+        if (unique_pts.empty() ||
+            std::hypot(p.first - unique_pts.back().first, p.second - unique_pts.back().second) >
+                1e-3) {
+            unique_pts.push_back(p);
+        }
+    }
+    if (unique_pts.size() <= 2) {
+        unique_pts = {exact_start, exact_goal};
+    } else {
+        unique_pts.front() = exact_start;
+        unique_pts.back()  = exact_goal;
+    }
+
+    // 始点・終点の折り返し除去
+    if (unique_pts.size() >= 3) {
+        const double v0x = unique_pts[1].first - unique_pts[0].first;
+        const double v0y = unique_pts[1].second - unique_pts[0].second;
+        const double v1x = unique_pts[2].first - unique_pts[1].first;
+        const double v1y = unique_pts[2].second - unique_pts[1].second;
+        if (v0x * v1x + v0y * v1y <= 0.0) {
+            unique_pts.erase(unique_pts.begin() + 1);
+        }
+    }
+    if (unique_pts.size() >= 3) {
+        const std::size_t m = unique_pts.size();
+        const double v0x    = unique_pts[m - 2].first - unique_pts[m - 3].first;
+        const double v0y    = unique_pts[m - 2].second - unique_pts[m - 3].second;
+        const double v1x    = unique_pts[m - 1].first - unique_pts[m - 2].first;
+        const double v1y    = unique_pts[m - 1].second - unique_pts[m - 2].second;
+        if (v0x * v1x + v0y * v1y <= 0.0) {
+            unique_pts.erase(unique_pts.begin() + static_cast<std::ptrdiff_t>(m - 2));
+        }
+    }
+
+    // 2. Ramer-Douglas-Peucker (RDP) 法によるグリッド量子化階段ノイズの除去
+    const double rdp_epsilon = 0.04;  // グリッド解像度(0.05m)未満の階段ジグザグを除去
+    std::vector<bool> keep_mask(unique_pts.size(), false);
+    keep_mask.front() = true;
+    keep_mask.back()  = true;
+
+    auto perpDist = [](const Point& pt, const Point& line_start, const Point& line_end) -> double {
+        const double dx  = line_end.first - line_start.first;
+        const double dy  = line_end.second - line_start.second;
+        const double len = std::hypot(dx, dy);
+        if (len < 1e-9) {
+            return std::hypot(pt.first - line_start.first, pt.second - line_start.second);
+        }
+        return std::abs(
+                   dy * pt.first - dx * pt.second + line_end.first * line_start.second -
+                   line_end.second * line_start.first
+               ) /
+               len;
+    };
+
+    std::function<void(std::size_t, std::size_t)> rdpFunc = [&](std::size_t s, std::size_t e) {
+        if (e <= s + 1) {
+            return;
+        }
+        double max_d    = 0.0;
+        std::size_t idx = s;
+        for (std::size_t i = s + 1; i < e; ++i) {
+            const double d = perpDist(unique_pts[i], unique_pts[s], unique_pts[e]);
+            if (d > max_d) {
+                max_d = d;
+                idx   = i;
+            }
+        }
+        if (max_d > rdp_epsilon) {
+            keep_mask[idx] = true;
+            rdpFunc(s, idx);
+            rdpFunc(idx, e);
+        }
+    };
+    rdpFunc(0, unique_pts.size() - 1);
+
+    std::vector<Point> waypoints;
+    waypoints.reserve(unique_pts.size());
+    for (std::size_t i = 0; i < unique_pts.size(); ++i) {
+        if (keep_mask[i]) {
+            waypoints.push_back(unique_pts[i]);
+        }
+    }
+
+    // ほぼ一直線上に並ぶ連続微小屈曲 (偏角 約5度未満) の整理
+    if (waypoints.size() >= 3) {
+        std::vector<Point> filtered;
+        filtered.reserve(waypoints.size());
+        filtered.push_back(waypoints.front());
+        for (std::size_t i = 1; i + 1 < waypoints.size(); ++i) {
+            const double d1x = waypoints[i].first - filtered.back().first;
+            const double d1y = waypoints[i].second - filtered.back().second;
+            const double d2x = waypoints[i + 1].first - waypoints[i].first;
+            const double d2y = waypoints[i + 1].second - waypoints[i].second;
+            const double l1  = std::hypot(d1x, d1y);
+            const double l2  = std::hypot(d2x, d2y);
+            if (l1 > 1e-4 && l2 > 1e-4) {
+                const double dot = (d1x * d2x + d1y * d2y) / (l1 * l2);
+                if (dot > 0.996) {
+                    continue;
+                }
+            }
+            filtered.push_back(waypoints[i]);
+        }
+        filtered.push_back(waypoints.back());
+        waypoints = std::move(filtered);
+    }
+
+    if (waypoints.size() <= 2) {
+        const double dist =
+            std::hypot(exact_goal.first - exact_start.first, exact_goal.second - exact_start.second);
+        const int steps = std::max(1, static_cast<int>(std::ceil(dist / point_resolution)));
+        std::vector<Point> pts;
+        pts.reserve(steps + 1);
+        for (int s = 0; s <= steps; ++s) {
+            const double t = static_cast<double>(s) / steps;
+            pts.emplace_back(
+                exact_start.first + t * (exact_goal.first - exact_start.first),
+                exact_start.second + t * (exact_goal.second - exact_start.second)
+            );
+        }
+        return pts;
+    }
+
+    // 4. 各コーナーへの幾何学的円弧フィレット（直線＋円弧＋直線）のフィッティング
+    struct CornerFillet {
+        Point t1;                 // 進入接点
+        Point t2;                 // 退出接点
+        Point center;             // 円弧中心
+        double radius{0.0};       // 安全旋回半径
+        double angle_start{0.0};  // 始点角度
+        double angle_sweep{0.0};  // 符号付き開角 (正: 左回り, 負: 右回り)
+        bool has_arc{false};
+    };
+
+    std::vector<CornerFillet> fillets(waypoints.size());
+
+    for (std::size_t i = 1; i + 1 < waypoints.size(); ++i) {
+        const auto& p_prev = waypoints[i - 1];
+        const auto& p_curr = waypoints[i];
+        const auto& p_next = waypoints[i + 1];
+
+        const double d1x  = p_curr.first - p_prev.first;
+        const double d1y  = p_curr.second - p_prev.second;
+        const double d2x  = p_next.first - p_curr.first;
+        const double d2y  = p_next.second - p_curr.second;
+        const double len1 = std::hypot(d1x, d1y);
+        const double len2 = std::hypot(d2x, d2y);
+
+        if (len1 < 1e-4 || len2 < 1e-4) {
+            continue;
+        }
+
+        const double u1x = d1x / len1;
+        const double u1y = d1y / len1;
+        const double u2x = d2x / len2;
+        const double u2y = d2y / len2;
+
+        const double dot   = std::clamp(u1x * u2x + u1y * u2y, -1.0, 1.0);
+        const double cross = u1x * u2y - u1y * u2x;  // 正: 左旋回, 負: 右旋回
+        const double theta = std::atan2(cross, dot);
+
+        // ほぼ直線 (約 2.5 度未満) または 178度以上の急反転折り返しはフィレット対象外
+        if (std::abs(theta) < 0.045 || std::abs(theta) > 3.10) {
+            continue;
+        }
+
+        const double half_theta = std::abs(theta) * 0.5;
+        const double tan_half   = std::tan(half_theta);
+        if (tan_half < 1e-6) {
+            continue;
+        }
+
+        // セグメント長を侵食しない最大接線長
+        const double max_tangent = 0.45 * std::min(len1, len2);
+        const double geom_max_r  = max_tangent / tan_half;
+        const double target_r    = std::min(fillet_target_radius_, geom_max_r);
+
+        // 円弧上の安全性を検証するヘルパー
+        auto checkArcSafety = [&](double r, CornerFillet& out_fillet) -> bool {
+            if (r < 1e-3) {
+                return false;
+            }
+            const double t = r * tan_half;
+            const Point pt_t1{p_curr.first - t * u1x, p_curr.second - t * u1y};
+            const Point pt_t2{p_curr.first + t * u2x, p_curr.second + t * u2y};
+
+            // 円弧の向き: theta > 0 (左旋回) -> 進入ベクトルの左法線 (-u1y, u1x)
+            //             theta < 0 (右旋回) -> 進入ベクトルの右法線 (u1y, -u1x)
+            const double nx = (theta > 0.0) ? -u1y : u1y;
+            const double ny = (theta > 0.0) ? u1x : -u1x;
+
+            const Point center{pt_t1.first + r * nx, pt_t1.second + r * ny};
+
+            const double phi1  = std::atan2(pt_t1.second - center.second, pt_t1.first - center.first);
+            const double sweep = theta;  // 符号付き回転角
+
+            const double arc_len = r * std::abs(theta);
+            const int samples    = std::max(4, static_cast<int>(std::ceil(arc_len / check_step)));
+
+            for (int s = 0; s <= samples; ++s) {
+                const double ratio = static_cast<double>(s) / samples;
+                const double ang   = phi1 + ratio * sweep;
+                const double wx    = center.first + r * std::cos(ang);
+                const double wy    = center.second + r * std::sin(ang);
+                const int cost     = getCellCostWorld(wx, wy);
+                if (cost < 0 || cost > fillet_max_cost_ || cost >= 100) {
+                    return false;
+                }
+            }
+
+            out_fillet.t1          = pt_t1;
+            out_fillet.t2          = pt_t2;
+            out_fillet.center      = center;
+            out_fillet.radius      = r;
+            out_fillet.angle_start = phi1;
+            out_fillet.angle_sweep = sweep;
+            out_fillet.has_arc     = true;
+            return true;
+        };
+
+        CornerFillet cand_fillet;
+        if (checkArcSafety(target_r, cand_fillet)) {
+            // 目標大半径で安全に通過
+            fillets[i] = cand_fillet;
+        } else {
+            // 障害物近傍での安全半径を決定論的二分探索 (7反復で約 1cm の分解能)
+            double r_low  = std::min(target_r, fillet_min_radius_);
+            double r_high = target_r;
+            CornerFillet best_fillet;
+            bool found_safe = false;
+
+            if (checkArcSafety(r_low, best_fillet)) {
+                found_safe = true;
+                for (int iter = 0; iter < 7; ++iter) {
+                    const double r_mid = 0.5 * (r_low + r_high);
+                    CornerFillet mid_fillet;
+                    if (checkArcSafety(r_mid, mid_fillet)) {
+                        best_fillet = mid_fillet;
+                        r_low       = r_mid;
+                    } else {
+                        r_high = r_mid;
+                    }
+                }
+            }
+            if (found_safe) {
+                fillets[i] = best_fillet;
+            }
+        }
+    }
+
+    // 5. 直線と円弧を高解像度等間隔にサンプリングして経路を合成
+    std::vector<Point> smoothed_result;
+    smoothed_result.reserve(waypoints.size() * 50);
+    smoothed_result.push_back(waypoints.front());
+
+    auto addLine = [&](const Point& p_from, const Point& p_to) {
+        const double d = std::hypot(p_to.first - p_from.first, p_to.second - p_from.second);
+        if (d < 1e-4) {
+            return;
+        }
+        const int steps = std::max(1, static_cast<int>(std::ceil(d / point_resolution)));
+        for (int s = 1; s <= steps; ++s) {
+            const double t = static_cast<double>(s) / steps;
+            smoothed_result.emplace_back(
+                p_from.first + t * (p_to.first - p_from.first),
+                p_from.second + t * (p_to.second - p_from.second)
+            );
+        }
+    };
+
+    for (std::size_t i = 1; i + 1 < waypoints.size(); ++i) {
+        if (fillets[i].has_arc) {
+            // 直線: 直前の終点から円弧進入接点 T1 まで
+            addLine(smoothed_result.back(), fillets[i].t1);
+
+            // 円弧: T1 から T2 まで
+            const auto& fil      = fillets[i];
+            const double arc_len = fil.radius * std::abs(fil.angle_sweep);
+            const int arc_steps =
+                std::max(2, static_cast<int>(std::ceil(arc_len / point_resolution)));
+            for (int s = 1; s <= arc_steps; ++s) {
+                const double ratio = static_cast<double>(s) / arc_steps;
+                const double ang   = fil.angle_start + ratio * fil.angle_sweep;
+                smoothed_result.emplace_back(
+                    fil.center.first + fil.radius * std::cos(ang),
+                    fil.center.second + fil.radius * std::sin(ang)
+                );
+            }
+        } else {
+            // 円弧なし (直進折れ線)
+            addLine(smoothed_result.back(), waypoints[i]);
+        }
+    }
+    // 最後のウェイポイント (ゴール) への直線
+    addLine(smoothed_result.back(), waypoints.back());
+
+    smoothed_result.front() = exact_start;
+    smoothed_result.back()  = exact_goal;
+    return smoothed_result;
+}
+
 std::vector<std::pair<double, double>> PathPlannerNode::smoothPath(
     const std::vector<std::pair<int, int>>& grid_path,
     const std::pair<double, double>& exact_start,
@@ -738,6 +1166,10 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPath(
     using Point = std::pair<double, double>;
     if (grid_path.empty()) {
         return {};
+    }
+
+    if (smoothing_algorithm_ == "fillet") {
+        return smoothPathFillet(grid_path, exact_start, exact_goal);
     }
 
     // 全グリッド点のワールド座標を生成し、始点・終点はグリッド量子化前の正確なワールド座標に置換
@@ -1479,6 +1911,7 @@ void PathPlannerNode::onGoalPose(const geometry_msgs::msg::PoseStamped::ConstSha
 
 }  // namespace gn10_navigation
 
+#ifndef GN10_NAVIGATION_PATH_PLANNER_NO_MAIN
 int main(int argc, char** argv)
 {
     rclcpp::init(argc, argv);
@@ -1487,3 +1920,4 @@ int main(int argc, char** argv)
     rclcpp::shutdown();
     return 0;
 }
+#endif
