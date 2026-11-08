@@ -43,11 +43,13 @@ std::string TargetRepository::resolveFilePath(const std::string& path) const
 
     fs::path target_path(path);
     std::string target_filename = target_path.filename().string();
-    bool is_red = (path.find("red") != std::string::npos || target_filename.find("red") != std::string::npos);
+    bool is_red =
+        (path.find("red") != std::string::npos || target_filename.find("red") != std::string::npos);
 
     // 候補ファイル名の決定
     std::vector<std::string> search_filenames;
-    if (!target_filename.empty() && target_filename != "." && target_filename != "shooting_points.yaml") {
+    if (!target_filename.empty() && target_filename != "." &&
+        target_filename != "shooting_points.yaml") {
         search_filenames.push_back(target_filename);
     } else if (is_red) {
         search_filenames.push_back("shooting_points_red.yaml");
@@ -63,14 +65,19 @@ std::string TargetRepository::resolveFilePath(const std::string& path) const
     std::vector<fs::path> candidate_data_paths;
     for (const auto& fn : search_filenames) {
         if (!home_dir.empty()) {
-            candidate_data_paths.push_back(fs::path(home_dir) / "ros2_ws/data/shooting-points" / fn);
-            candidate_data_paths.push_back(fs::path(home_dir) / "ros2_ws/data/shooting-point-config" / fn);
+            candidate_data_paths.push_back(
+                fs::path(home_dir) / "ros2_ws/data/shooting-points" / fn
+            );
+            candidate_data_paths.push_back(
+                fs::path(home_dir) / "ros2_ws/data/shooting-point-config" / fn
+            );
         }
         candidate_data_paths.push_back(fs::path("data/shooting-points") / fn);
         candidate_data_paths.push_back(fs::path("../data/shooting-points") / fn);
     }
 
-    // 3. 指定された path が明示的かつ直接存在し、かつ install/share や旧 src/config ではない場合はそれを尊重
+    // 3. 指定された path が明示的かつ直接存在し、かつ install/share や旧 src/config
+    // ではない場合はそれを尊重
     bool is_share_or_install_path =
         (path.find("install/") != std::string::npos ||
          path.find("share/gn10_navigation") != std::string::npos);
@@ -92,7 +99,8 @@ std::string TargetRepository::resolveFilePath(const std::string& path) const
     if (!source_dir.empty() && fs::exists(source_dir)) {
         // ソースディレクトリ基準で data/shooting-points を探索
         for (const auto& fn : search_filenames) {
-            fs::path sibling_data = fs::path(source_dir).parent_path().parent_path() / "data" / "shooting-points" / fn;
+            fs::path sibling_data =
+                fs::path(source_dir).parent_path().parent_path() / "data" / "shooting-points" / fn;
             if (fs::exists(sibling_data)) {
                 return fs::absolute(sibling_data).string();
             }

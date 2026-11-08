@@ -1,5 +1,29 @@
 #pragma once
 
+/**
+ * @file costmap_generator_node.hpp
+ * @brief NHKロボコン2026向けコストマップ生成ノード (JSONマップ読込 + Multi-Source BFS
+ * インフレーション)
+ *
+ * 【コストマップ生成アルゴリズムの概要】
+ * 1. JSONマップ読込と幾何干渉判定:
+ *    - nhk2026_map.json からフィールド上の障害物 (BOX, CYLINDER) およびペナルティ領域を読込。
+ *    - ロボットの高さ範囲 [robot_clearance.z_min, robot_clearance.z_max]
+ * と交差するオブジェクトのみ抽出。
+ *
+ * 2. Multi-Source BFS によるインフレーション (膨張) 計算:
+ *    - 障害物境界セルを初期シードとして多始点幅優先探索 (BFS)
+ * を実行し、各セルへの最短ユークリッド距離 d を算出。
+ *    - 不可侵領域 (d <= inflation.robot_radius = 0.45m):
+ *      機体中心が侵入すると物理接触するため、コスト 254 (OccupancyGrid: 100) を付与。
+ *    - 減衰マージン領域 (robot_radius < d <= robot_radius + inflation.margin = 0.45 + 0.40 =
+ * 0.85m): 距離に応じて線形に減衰する回避コスト (253〜1 / OccupancyGrid: 99〜1) を付与。
+ *    - 自由空間 (d > robot_radius + margin): コスト 0。
+ *
+ * 3. ペナルティ領域の重ね合わせと正規化配信:
+ *    - 旗の前などの通過可能ペナルティ領域を合成し、OccupancyGrid 形式で /costmap に定期配信。
+ */
+
 #include <chrono>
 #include <memory>
 #include <string>

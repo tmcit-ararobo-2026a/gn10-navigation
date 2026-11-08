@@ -1,3 +1,42 @@
+/**
+ * @file path_follower_node.cpp
+ * @brief NHKロボコン2026向け高精度・高速経路追従制御実装
+ *
+ * 【自動移動アルゴリズムの詳細】
+ * 本ノードは二次元平面上の全方向移動ロボットに対し、幾何学的拘束および物理ダイナミクスを
+ * 考慮した速度プロファイル計画と、フィードフォワード(FF)＋フィードバック(FB)統合制御器により
+ * 高速追従とミリメートル精度の停止を実現する。
+ *
+ * 1. 速度プロファイル計画 (onPlannedPath):
+ *    - 幾何曲率制限: 経路の曲率半径 R = 1/|kappa| において、許容最大横加速度
+ * max_lateral_acceleration_ を超えないよう v_lat = sqrt(a_lat / |kappa|) で速度上限を算出。
+ *    - 旋回角速度要求制限: 運動連鎖則 omega = (dtheta/ds) * v より、旋回角速度上限 omega_max
+ *      にヘッドルーム turn_yaw_rate_ratio_ を乗じた許容値から並進速度上限
+ *      v_turn = (omega_max * ratio) / |dtheta/ds| を算出。急旋回時に並進速度が先行するのを防止。
+ *    - S字プロファイル (makeSCurve): 躍度 (max_jerk_) 制限付きで加加速度を抑制。
+ *    - 前方加減速走査: v_i <= sqrt(v_{i-1}^2 + 2 * a_acc * ds)
+ *    - 後方加減速走査: v_{i-1} <= sqrt(v_i^2 + 2 * (a_dec * ratio) * ds)
+ * により、コーナーやゴール手前から安全に減速。
+ *
+ * 2. 統合制御則 (controlLoop):
+ *    - 巡航中:
+ *      v_cmd = v_ff + v_fb
+ *      v_ff = ref_pt.speed * ref_pt.tangent (通信・制御遅延 total_delay を先読み補償した参照点)
+ *      v_fb = position_kp_ * (proj_pt - robot_pos) (直交横偏差のPD補正、max_cruise_fb_speed_
+ * でクランプ)
+ *    - ゴール近傍 (settle_zone_distance_ 以内):
+ *      ゴール直接PID制御 (position_kp_, position_ki_, position_kd_) + 最小起動速度リフト
+ * (min_docking_speed_) により、静止摩擦に打ち勝ちつつ±20mm, ±1.0度以内へ確実に収束。
+ *    - 1次加速度リミッタ: 周期あたりの速度変化量を accel_limit * dt 以内にクランプ。
+ *
+ * 3. 移動バケツ追従 (Tracking):
+ *    - TF (map -> bucket_bottom) に指数平滑化 (EMA) LPF (alpha=0.25) を適用してジッターを低減。
+ *    - 目標Yaw角誤差に対し不感帯 tracking_deadband_ (0.015 rad)
+ * を適用し、モータ鳴き・車輪ハンチングを防止。
+ *    - 追従専用PID (tracking_kp_, tracking_kd_) と角加速度リミッタで正対追従。TF一時瞬断時は
+ * tracking_timeout_ まで猶予。
+ */
+
 #include "gn10_navigation/path_follower_node.hpp"
 
 #include <tf2/LinearMath/Matrix3x3.h>
@@ -111,9 +150,10 @@ std::vector<MotionSample> makeSCurve(
 double sCurveSpeed(const std::vector<MotionSample>& samples, double distance)
 {
     const auto iterator = std::lower_bound(
-        samples.begin(), samples.end(), distance, [](const MotionSample& point, double value) {
-            return point.distance < value;
-        }
+        samples.begin(),
+        samples.end(),
+        distance,
+        [](const MotionSample& point, double value) { return point.distance < value; }
     );
     if (iterator == samples.begin()) {
         return iterator->speed;
@@ -203,59 +243,135 @@ PathFollowerNode::PathFollowerNode(const rclcpp::NodeOptions& options)
 
 void PathFollowerNode::declareAndGetParameters()
 {
+    // ==========================================
+    // 1. 周期および物理制限パラメータ (前処理および1次リミッタ)
+    // ==========================================
+    // control_rate [Hz]: 制御ループ (controlLoop) の呼び出し周波数
     this->declare_parameter("control_rate", 50.0);
-    this->declare_parameter("max_speed", 2.0);
-    this->declare_parameter("max_acceleration", 3.0);
-    this->declare_parameter("max_deceleration", 3.0);
-    this->declare_parameter("max_jerk", 50.0);
-    this->declare_parameter("max_lateral_acceleration", 2.0);
-    this->declare_parameter("curvature_window", 0.10);
-    this->declare_parameter("max_angular_velocity", 2.5);
-    this->declare_parameter("max_angular_acceleration", 5.0);
+    // max_speed [m/s]: ロボットの最高許容並進速度。直線区間での巡航速度上限。
+    this->declare_parameter("max_speed", 3.0);
+    // max_acceleration [m/s^2]:
+    // 最大並進加速度。発進時や加速時のプロファイルおよび1次加速度リミッタに適用。
+    this->declare_parameter("max_acceleration", 5.4);
+    // max_deceleration [m/s^2]: 最大並進減速度。減速走査および1次減速度リミッタに適用。
+    this->declare_parameter("max_deceleration", 8.0);
+    // max_jerk [m/s^3]: 前処理S字速度プロファイル生成時の最大躍度 (加加速度)。
+    // 小さいほど加減速が滑らかになり車輪スリップを防止。大きいほど応答が機敏に。
+    this->declare_parameter("max_jerk", 60.0);
+    // max_lateral_acceleration [m/s^2]: カーブ通過時の遠心力 (v^2 * |kappa|) 許容上限。
+    // 小さいほどカーブ進入時に手前から速度を落とし、横滑りを防止。
+    this->declare_parameter("max_lateral_acceleration", 3.0);
+    // curvature_window [m]: 経路上の曲率 kappa 計算に用いる前後サンプル点探索窓幅。
+    // 長くとるほど局所ノイズに強くなり、滑らかな曲率制限が得られる。
+    this->declare_parameter("curvature_window", 0.50);
+    // max_angular_velocity [rad/s]: 最大旋回角速度。
+    this->declare_parameter("max_angular_velocity", 3.0);
+    // max_angular_acceleration [rad/s^2]: 最大旋回角加速度。旋回指令値の1次加速度リミッタに適用。
+    this->declare_parameter("max_angular_acceleration", 24.0);
+    // turn_yaw_rate_ratio: 運動連鎖則 (omega = |dtheta/ds| * v)
+    // に基づく並進速度制限時の許容角速度比率。 フィードバック補正用の余裕を残すため 0.75
+    // 程度に設定し、急旋回区間での直進先行を抑制。
     this->declare_parameter("turn_yaw_rate_ratio", 0.75);
+    // min_turn_speed [m/s]: 旋回角速度要求制限による並進速度低下の下限値
+    // (完全停止デッドロック防止)。
     this->declare_parameter("min_turn_speed", 0.3);
+    // path_interpolation_step [m]: 計画経路の等間隔リサンプリング刻み幅。
     this->declare_parameter("path_interpolation_step", 0.02);
-    this->declare_parameter("decel_effective_ratio", 0.85);
+    // decel_effective_ratio: 後方減速走査時の実効減速度比率 (0.0〜1.0)。
+    // 減速度リミットに対しマージンを持たせ、目標手前で確実に減速を完了させる。
+    this->declare_parameter("decel_effective_ratio", 0.60);
 
-    this->declare_parameter("position_kp", 4.0);
-    this->declare_parameter("position_ki", 0.5);
+    // ==========================================
+    // 2. 位置フィードバック制御パラメータ (Moving)
+    // ==========================================
+    // position_kp:
+    // 位置フィードバックPゲイン。直交射影点への引き戻しおよびゴール直接PIDの比例ゲイン。
+    this->declare_parameter("position_kp", 8.0);
+    // position_ki: ゴール近傍での位置積分ゲイン (定常偏差解消)。
+    this->declare_parameter("position_ki", 0.0);
+    // position_kd: 位置フィードバックDゲイン。急峻な位置偏差変化時のダンピング。
     this->declare_parameter("position_kd", 0.0);
+    // position_d_filter_alpha: 位置D項の1次EMAローパスフィルタ係数 (0.0〜1.0)。ノイズ抑制用。
     this->declare_parameter("position_d_filter_alpha", 0.4);
-    this->declare_parameter("max_fb_speed", 0.60);
-    this->declare_parameter("max_cruise_fb_speed", 1.50);
-    this->declare_parameter("min_docking_speed", 0.02);
-    this->declare_parameter("settle_zone_distance", 0.10);
+    // max_fb_speed [m/s]: ゴール近傍 (in_settle_zone) における位置FB速度上限 (微振動防止)。
+    this->declare_parameter("max_fb_speed", 0.70);
+    // max_cruise_fb_speed [m/s]: 巡航中 (!in_settle_zone) における直交横ズレFB速度上限。
+    this->declare_parameter("max_cruise_fb_speed", 3.00);
+    // min_docking_speed [m/s]: ゴール近傍で静止摩擦に負けて停止するのを防ぐ最小起動速度リフト。
+    this->declare_parameter("min_docking_speed", 0.20);
+    // settle_zone_distance [m]:
+    // ゴール直接PID・積分有効化および精密停止モードへ切り替える残距離閾値。
+    this->declare_parameter("settle_zone_distance", 0.50);
 
-    this->declare_parameter("heading_kp", 3.0);
-    this->declare_parameter("heading_ki", 0.2);
-    this->declare_parameter("heading_kd", 0.1);
+    // ==========================================
+    // 3. 姿勢フィードバック制御パラメータ (Moving)
+    // ==========================================
+    // heading_kp: 姿勢 (Yaw) 制御の比例ゲイン。
+    this->declare_parameter("heading_kp", 5.0);
+    // heading_ki: 姿勢 (Yaw) 制御の積分ゲイン。
+    this->declare_parameter("heading_ki", 0.0);
+    // heading_kd: 姿勢 (Yaw) 制御の微分ゲイン。旋回のオーバーシュート抑制。
+    this->declare_parameter("heading_kd", 1.0);
+    // heading_integral_max: 姿勢I項のアンチワインドアップ上限 [rad/s]。
     this->declare_parameter("heading_integral_max", 0.3);
-    this->declare_parameter("heading_d_filter_alpha", 0.4);
+    // heading_d_filter_alpha: 姿勢D項の1次EMAローパスフィルタ係数。
+    this->declare_parameter("heading_d_filter_alpha", 0.6);
+    // min_docking_yaw_rate [rad/s]:
+    // 目標角度付近での静止摩擦による微小残留偏差を解消する最小角速度リフト。
     this->declare_parameter("min_docking_yaw_rate", 0.03);
 
-    this->declare_parameter("goal_tolerance", 0.005);
+    // ==========================================
+    // 4. ゴール完了判定および安全監視パラメータ
+    // ==========================================
+    // goal_tolerance [m]: ゴール到達とみなす位置許容誤差 (±20mm)。
+    this->declare_parameter("goal_tolerance", 0.02);
+    // goal_yaw_tolerance [rad]: ゴール到達とみなす姿勢許容誤差 (±0.0175 rad = 約1.0度)。
     this->declare_parameter("goal_yaw_tolerance", 0.0175);
+    // goal_settle_count: 許容誤差内を維持し続けなければならない連続制御周期数 (チャタリング防止)。
     this->declare_parameter("goal_settle_count", 5);
+    // max_path_error [m]: 巡航中に許容する最大経路横偏差。超過時は非常停止 (FAIL)。
     this->declare_parameter("max_path_error", 0.30);
+    // max_initial_path_error [m]: 発進直後 (progress==0) に許容する初期横偏差。
     this->declare_parameter("max_initial_path_error", 0.45);
-    this->declare_parameter("max_pose_age", 0.2);
-    this->declare_parameter("control_comm_delay", 0.025);
+    // max_pose_age [s]: 自己位置TF (map->base_link) の許容最大遅延時間。超過時は安全停止。
+    this->declare_parameter("max_pose_age", 0.3);
+    // control_comm_delay [s]: 制御通信遅延時間。参照点先読み補償に使用。
+    this->declare_parameter("control_comm_delay", 0.02);
+    // max_delay_compensation [s]: 遅延補償先読み時間の安全上限値。
     this->declare_parameter("max_delay_compensation", 0.15);
 
+    // ==========================================
+    // 5. 座標フレーム定義
+    // ==========================================
     this->declare_parameter("map_frame", "map");
     this->declare_parameter("base_frame", "base_link");
     this->declare_parameter("bucket_frame", "bucket_bottom");
     this->declare_parameter("max_bucket_age", 0.5);
 
+    // ==========================================
+    // 6. 移動バケツ追従制御パラメータ (Tracking)
+    // ==========================================
+    // tracking_kp: 移動バケツ追従専用Yaw比例ゲイン。
     this->declare_parameter("tracking_kp", 3.5);
+    // tracking_ki: 移動バケツ追従専用Yaw積分ゲイン。
     this->declare_parameter("tracking_ki", 0.0);
-    this->declare_parameter("tracking_kd", 0.15);
+    // tracking_kd: 移動バケツ追従専用Yaw微分ゲイン。
+    this->declare_parameter("tracking_kd", 0.0);
+    // tracking_integral_max: 移動バケツ追従I項上限。
     this->declare_parameter("tracking_integral_max", 0.2);
+    // tracking_d_filter_alpha: 移動バケツ追従D項の1次LPF係数。
     this->declare_parameter("tracking_d_filter_alpha", 0.2);
+    // tracking_deadband [rad]: 追従目標角度誤差の不感帯 (0.015 rad = 約0.86度)。
+    // 目標正対時の微小ノイズによるモータ鳴き・車輪小刻み振動を解消。
     this->declare_parameter("tracking_deadband", 0.015);
+    // tracking_pos_filter_alpha: map座標系での目標バケツ位置EMA平滑化係数。
+    // LiDARの重心計測ジッターを除去。
     this->declare_parameter("tracking_pos_filter_alpha", 0.25);
+    // max_tracking_angular_velocity [rad/s]: 追従時の最大角速度リミット。
     this->declare_parameter("max_tracking_angular_velocity", 2.0);
+    // max_tracking_angular_acceleration [rad/s^2]: 追従時の最大角加速度リミット。
     this->declare_parameter("max_tracking_angular_acceleration", 12.0);
+    // tracking_timeout [s]: バケツTF一時ロスト時の追従猶予時間。超過時にFAIL遷移。
     this->declare_parameter("tracking_timeout", 1.0);
 
     control_rate_             = this->get_parameter("control_rate").as_double();
@@ -682,14 +798,14 @@ void PathFollowerNode::onPlannedPath(const nav_msgs::msg::Path::ConstSharedPtr m
     }
 
     for (std::size_t index = 1; index + 1 < path_.size(); ++index) {
-        const auto previous      = sample(path_[index].distance - curvature_window_);
-        const auto& current      = path_[index];
-        const auto next          = sample(path_[index].distance + curvature_window_);
-        const double ab          = std::hypot(current.x - previous.x, current.y - previous.y);
-        const double bc          = std::hypot(next.x - current.x, next.y - current.y);
-        const double ac          = std::hypot(next.x - previous.x, next.y - previous.y);
-        const double cross       = (current.x - previous.x) * (next.y - current.y) -
-                                   (current.y - previous.y) * (next.x - current.x);
+        const auto previous = sample(path_[index].distance - curvature_window_);
+        const auto& current = path_[index];
+        const auto next     = sample(path_[index].distance + curvature_window_);
+        const double ab     = std::hypot(current.x - previous.x, current.y - previous.y);
+        const double bc     = std::hypot(next.x - current.x, next.y - current.y);
+        const double ac     = std::hypot(next.x - previous.x, next.y - previous.y);
+        const double cross  = (current.x - previous.x) * (next.y - current.y) -
+                             (current.y - previous.y) * (next.x - current.x);
         const double denominator = ab * bc * ac;
 
         // 局所3点での曲率も評価し、急カーブ頂点での曲率過小評価を防止する
@@ -698,8 +814,8 @@ void PathFollowerNode::onPlannedPath(const nav_msgs::msg::Path::ConstSharedPtr m
         const double ab_loc    = std::hypot(current.x - prev_local.x, current.y - prev_local.y);
         const double bc_loc    = std::hypot(next_local.x - current.x, next_local.y - current.y);
         const double ac_loc = std::hypot(next_local.x - prev_local.x, next_local.y - prev_local.y);
-        const double cross_loc  = (current.x - prev_local.x) * (next_local.y - current.y) -
-                                  (current.y - prev_local.y) * (next_local.x - current.x);
+        const double cross_loc = (current.x - prev_local.x) * (next_local.y - current.y) -
+                                 (current.y - prev_local.y) * (next_local.x - current.x);
         const double denom_loc  = ab_loc * bc_loc * ac_loc;
         const double local_curv = (denom_loc > kEpsilon) ? (2.0 * cross_loc / denom_loc) : 0.0;
 
@@ -878,9 +994,10 @@ PathFollowerNode::SpeedPoint PathFollowerNode::sample(double distance) const
 {
     distance            = std::clamp(distance, 0.0, path_.back().distance);
     const auto iterator = std::lower_bound(
-        path_.begin(), path_.end(), distance, [](const SpeedPoint& point, double value) {
-            return point.distance < value;
-        }
+        path_.begin(),
+        path_.end(),
+        distance,
+        [](const SpeedPoint& point, double value) { return point.distance < value; }
     );
     if (iterator == path_.begin()) {
         return *iterator;
@@ -908,8 +1025,7 @@ PathFollowerNode::SpeedPoint PathFollowerNode::sample(double distance) const
         0.0,
         previous.curvature + fraction * (iterator->curvature - previous.curvature),
         cur_tx,
-        cur_ty
-    };
+        cur_ty};
 }
 
 void PathFollowerNode::controlLoop()
@@ -1156,11 +1272,11 @@ void PathFollowerNode::controlLoop()
                         const double raw_dx = (dx_goal - prev_pos_error_x_) / delta_time;
                         const double raw_dy = (dy_goal - prev_pos_error_y_) / delta_time;
                         pos_d_filtered_x_   = (1.0 - position_d_filter_alpha_) * pos_d_filtered_x_ +
-                                              position_d_filter_alpha_ * raw_dx;
-                        pos_d_filtered_y_   = (1.0 - position_d_filter_alpha_) * pos_d_filtered_y_ +
-                                              position_d_filter_alpha_ * raw_dy;
-                        d_term_x            = position_kd_ * pos_d_filtered_x_;
-                        d_term_y            = position_kd_ * pos_d_filtered_y_;
+                                            position_d_filter_alpha_ * raw_dx;
+                        pos_d_filtered_y_ = (1.0 - position_d_filter_alpha_) * pos_d_filtered_y_ +
+                                            position_d_filter_alpha_ * raw_dy;
+                        d_term_x = position_kd_ * pos_d_filtered_x_;
+                        d_term_y = position_kd_ * pos_d_filtered_y_;
                     }
                     prev_pos_error_x_   = dx_goal;
                     prev_pos_error_y_   = dy_goal;
@@ -1212,11 +1328,11 @@ void PathFollowerNode::controlLoop()
                     const double raw_dx = (ex - prev_pos_error_x_) / delta_time;
                     const double raw_dy = (ey - prev_pos_error_y_) / delta_time;
                     pos_d_filtered_x_   = (1.0 - position_d_filter_alpha_) * pos_d_filtered_x_ +
-                                          position_d_filter_alpha_ * raw_dx;
-                    pos_d_filtered_y_   = (1.0 - position_d_filter_alpha_) * pos_d_filtered_y_ +
-                                          position_d_filter_alpha_ * raw_dy;
-                    d_term_x            = position_kd_ * pos_d_filtered_x_;
-                    d_term_y            = position_kd_ * pos_d_filtered_y_;
+                                        position_d_filter_alpha_ * raw_dx;
+                    pos_d_filtered_y_ = (1.0 - position_d_filter_alpha_) * pos_d_filtered_y_ +
+                                        position_d_filter_alpha_ * raw_dy;
+                    d_term_x = position_kd_ * pos_d_filtered_x_;
+                    d_term_y = position_kd_ * pos_d_filtered_y_;
                 }
                 prev_pos_error_x_   = ex;
                 prev_pos_error_y_   = ey;

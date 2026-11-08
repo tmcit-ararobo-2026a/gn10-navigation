@@ -68,27 +68,34 @@ end note
 
 note right of CostmapGen
   <b>主要パラメータ:</b>
-  - publish_rate, resolution, map_bounds.*
-  - robot_clearance.z_min / z_max
-  - inflation.robot_radius, inflation.margin
+  - publish_rate (1.0 Hz), resolution (0.05 m)
+  - map_bounds (-6.0~6.0, -6.5~6.5 m)
+  - robot_clearance (0.0~1.4 m)
+  - inflation.robot_radius (0.45 m: 不可侵254)
+  - inflation.margin (0.40 m: 線形減衰マージン)
 end note
 
 note right of Planner
   <b>主要パラメータ:</b>
-  - a_star.planning_cost, snap_distance
-  - bspline.smoothing_strength, smoothing_iterations
-  - bspline.max_stride, smooth_max_cost
-  - rotation_planning.turn_max_cost, turn_distance
-  - footprint.polygon
+  - a_star.planning_cost (0.5), snap_distance (0.4 m)
+  - bspline.smoothing_strength (1.0), smoothing_iterations (8)
+  - bspline.max_stride (10), smooth_max_cost (40)
+  - line_approximation.max_cost (-1: 無効), min_distance (1.2 m)
+  - rotation_planning.turn_max_cost (20), turn_distance (0.6 m)
+  - rotation_planning.angle_step (0.15 rad)
+  - footprint.polygon (8頂点機体外形)
 end note
 
 note right of Follower
   <b>主要パラメータ:</b>
-  - max_speed, max_acceleration, max_deceleration
-  - position_kp, position_ki, max_fb_speed
-  - settle_zone_distance, min_docking_speed
-  - heading_kp, ki, kd, min_docking_yaw_rate
-  - goal_tolerance, goal_yaw_tolerance, goal_settle_count
+  - max_speed (3.0 m/s), max_accel (5.4 m/s²), max_decel (8.0 m/s²)
+  - max_jerk (60 m/s³), max_lateral_accel (3.0 m/s²)
+  - position_kp (8.0), position_ki/kd (0.0), max_cruise_fb_speed (3.0 m/s)
+  - settle_zone_distance (0.5 m), max_fb_speed (0.7 m/s), min_docking_speed (0.2 m/s)
+  - heading_kp (5.0), heading_kd (1.0), heading_ki (0.0)
+  - tracking_kp (3.5), tracking_kd (0.0), tracking_deadband (0.015 rad)
+  - tracking_pos_filter_alpha (0.25), tracking_timeout (1.0 s)
+  - goal_tolerance (0.02 m = ±20mm), goal_yaw_tolerance (0.0175 rad)
 end note
 
 @enduml
