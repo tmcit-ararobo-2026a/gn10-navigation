@@ -257,6 +257,7 @@ private:
     double fillet_min_radius_{0.2};             // smoothing.fillet.min_radius [m]
     int fillet_max_cost_{35};                   // smoothing.fillet.max_cost (0〜99)
     double fillet_path_resolution_{0.05};       // smoothing.fillet.path_resolution [m]
+    int fillet_curvature_blend_iterations_{3};  // smoothing.fillet.curvature_blend_iterations (0〜10)
 
     // 従来の B-spline パラメータ (互換性維持)
     int bspline_samples_per_segment_{10};

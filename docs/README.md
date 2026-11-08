@@ -104,6 +104,7 @@ NHKロボコン2026向け自動移動パッケージ `gn10_navigation` の各処
 | `smoothing.fillet.target_radius` | 1.3 | m | 目標旋回半径。2.4 m/s 走行時に許容横加速度（4.5 m/s²）以内で滑らかに曲がれる大弧を形成。 |
 | `smoothing.fillet.min_radius` | 0.2 | m | 狭所・障害物近傍での最小許容旋回半径。 |
 | `smoothing.fillet.max_cost` | 35 | コスト | コーナー円弧が許容する最大セルコスト。このコスト以下となるよう安全半径を自動調停。 |
+| `smoothing.fillet.curvature_blend_iterations` | 3 | 回 | 直線と円弧の接続部を滑らかにブレンドするイージング反復回数。接続部の曲率急変（ジャーク）を防止。 |
 | `bspline.samples_per_segment` | 10 | 点 | B-spline 制御点間の補間サンプル密度。 |
 | `bspline.smoothing_strength` | 0.5 | - | 1反復あたりの内部制御点を隣接点の中点へ寄せる割合（0.0〜1.0）。 |
 | `bspline.smoothing_iterations` | 20 | 回 | 内部制御点の反復ラプラシアン平滑化回数。増やすと平滑化が進みます。 |

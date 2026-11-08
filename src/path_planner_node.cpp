@@ -139,6 +139,8 @@ void PathPlannerNode::declareAndGetParameters()
     this->declare_parameter("smoothing.fillet.max_cost", 35);
     // smoothing.fillet.path_resolution [m]: 出力経路のサンプリング解像度
     this->declare_parameter("smoothing.fillet.path_resolution", 0.05);
+    // smoothing.fillet.curvature_blend_iterations: 直線と円弧の接続部を滑らかに連続曲率化するイージング反復回数 (0〜10)
+    this->declare_parameter("smoothing.fillet.curvature_blend_iterations", 3);
 
     // bspline.samples_per_segment: B-spline 制御点間の補間サンプル数。
     this->declare_parameter("bspline.samples_per_segment", 10);
@@ -187,6 +189,9 @@ void PathPlannerNode::declareAndGetParameters()
         static_cast<int>(this->get_parameter("smoothing.fillet.max_cost").as_int()), 0, 99
     );
     fillet_path_resolution_ = this->get_parameter("smoothing.fillet.path_resolution").as_double();
+    fillet_curvature_blend_iterations_ = std::clamp(
+        static_cast<int>(this->get_parameter("smoothing.fillet.curvature_blend_iterations").as_int()), 0, 10
+    );
 
     bspline_samples_per_segment_ =
         std::max(1, static_cast<int>(this->get_parameter("bspline.samples_per_segment").as_int()));
@@ -245,7 +250,7 @@ void PathPlannerNode::declareAndGetParameters()
     RCLCPP_INFO(
         this->get_logger(),
         "Parameters loaded: planning_cost=%.2f, snap_distance=%.3f, "
-        "smoothing=[algo=%s, target_R=%.2f, min_R=%.2f, max_cost=%d, res=%.3f], "
+        "smoothing=[algo=%s, target_R=%.2f, min_R=%.2f, max_cost=%d, res=%.3f, blend_iters=%d], "
         "bspline=[samples=%d, strength=%.2f, iters=%d, max_stride=%d, max_cost=%d], "
         "line_approx=[max_cost=%d, min_dist=%.2f], "
         "rotation=[turn_max_cost=%d, angle_step=%.2f, turn_dist=%.2f]",
@@ -256,6 +261,7 @@ void PathPlannerNode::declareAndGetParameters()
         fillet_min_radius_,
         fillet_max_cost_,
         fillet_path_resolution_,
+        fillet_curvature_blend_iterations_,
         bspline_samples_per_segment_,
         bspline_smoothing_strength_,
         bspline_smoothing_iterations_,
@@ -340,6 +346,15 @@ rcl_interfaces::msg::SetParametersResult PathPlannerNode::onSetParameters(
             } else {
                 result.successful = false;
                 result.reason     = "smoothing.fillet.path_resolution must be positive";
+                return result;
+            }
+        } else if (name == "smoothing.fillet.curvature_blend_iterations") {
+            int val = static_cast<int>(param.as_int());
+            if (val >= 0 && val <= 10) {
+                fillet_curvature_blend_iterations_ = val;
+            } else {
+                result.successful = false;
+                result.reason     = "smoothing.fillet.curvature_blend_iterations must be in [0, 10]";
                 return result;
             }
         } else if (name == "bspline.samples_per_segment") {
@@ -1126,10 +1141,13 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPathFillet(
         }
     };
 
+    std::vector<std::size_t> junction_indices;
+
     for (std::size_t i = 1; i + 1 < waypoints.size(); ++i) {
         if (fillets[i].has_arc) {
             // 直線: 直前の終点から円弧進入接点 T1 まで
             addLine(smoothed_result.back(), fillets[i].t1);
+            junction_indices.push_back(smoothed_result.size() - 1);
 
             // 円弧: T1 から T2 まで
             const auto& fil      = fillets[i];
@@ -1144,13 +1162,51 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPathFillet(
                     fil.center.second + fil.radius * std::sin(ang)
                 );
             }
+            junction_indices.push_back(smoothed_result.size() - 1);
         } else {
             // 円弧なし (直進折れ線)
             addLine(smoothed_result.back(), waypoints[i]);
+            junction_indices.push_back(smoothed_result.size() - 1);
         }
     }
     // 最後のウェイポイント (ゴール) への直線
     addLine(smoothed_result.back(), waypoints.back());
+
+    // 6. 直線と円弧の接続部 (Junction) の局所連続曲率化ブレンド
+    // 接点での曲率不連続 (0 -> 1/R) による操舵・横加速度ジャークを防ぎ、滑らかな過渡曲率を形成
+    if (fillet_curvature_blend_iterations_ > 0 && !junction_indices.empty() &&
+        smoothed_result.size() >= 5) {
+        std::vector<bool> blend_mask(smoothed_result.size(), false);
+        // 接続点周辺の前後の影響幅 (約 0.15m 区間)
+        const int blend_window =
+            std::max(2, static_cast<int>(std::round(0.15 / point_resolution)));
+        for (std::size_t j_idx : junction_indices) {
+            const std::size_t start_k = (j_idx > static_cast<std::size_t>(blend_window))
+                                            ? (j_idx - blend_window)
+                                            : 1;
+            const std::size_t end_k =
+                std::min(smoothed_result.size() - 2, j_idx + blend_window);
+            for (std::size_t k = start_k; k <= end_k; ++k) {
+                blend_mask[k] = true;
+            }
+        }
+
+        for (int iter = 0; iter < fillet_curvature_blend_iterations_; ++iter) {
+            const auto prev = smoothed_result;
+            for (std::size_t k = 1; k + 1 < smoothed_result.size(); ++k) {
+                if (!blend_mask[k]) {
+                    continue;
+                }
+                const Point candidate{
+                    0.25 * prev[k - 1].first + 0.50 * prev[k].first + 0.25 * prev[k + 1].first,
+                    0.25 * prev[k - 1].second + 0.50 * prev[k].second + 0.25 * prev[k + 1].second};
+                const int cost = getCellCostWorld(candidate.first, candidate.second);
+                if (cost >= 0 && cost <= fillet_max_cost_ && cost < 100) {
+                    smoothed_result[k] = candidate;
+                }
+            }
+        }
+    }
 
     smoothed_result.front() = exact_start;
     smoothed_result.back()  = exact_goal;

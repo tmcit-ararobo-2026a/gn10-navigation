@@ -148,3 +148,63 @@ TEST_F(PathSmoothingFilletTest, SafelyShrinksRadiusNearObstacles)
         }
     }
 }
+
+TEST_F(PathSmoothingFilletTest, SmoothlyBlendsCurvatureAtJunctions)
+{
+    rclcpp::NodeOptions options;
+    options.append_parameter_override("smoothing.algorithm", "fillet");
+    options.append_parameter_override("smoothing.fillet.target_radius", 1.3);
+    options.append_parameter_override("smoothing.fillet.min_radius", 0.2);
+    options.append_parameter_override("smoothing.fillet.max_cost", 35);
+    options.append_parameter_override("smoothing.fillet.path_resolution", 0.05);
+    options.append_parameter_override("smoothing.fillet.curvature_blend_iterations", 3);
+
+    auto planner = std::make_shared<gn10_navigation::PathPlannerNode>(options);
+    auto costmap = createMockCostmap(200, 200, 0.05, 0);
+    planner->onCostmap(std::make_shared<nav_msgs::msg::OccupancyGrid>(costmap));
+
+    std::vector<std::pair<int, int>> grid_path;
+    for (int x = 20; x <= 100; ++x) {
+        grid_path.push_back({x, 20});
+    }
+    for (int y = 21; y <= 100; ++y) {
+        grid_path.push_back({100, y});
+    }
+
+    const std::pair<double, double> exact_start = {1.0, 1.0};
+    const std::pair<double, double> exact_goal  = {5.0, 5.0};
+
+    auto blended_path = planner->smoothPathFillet(grid_path, exact_start, exact_goal);
+    ASSERT_FALSE(blended_path.empty());
+
+    // 始点・終点が正確に保持されていること
+    EXPECT_NEAR(blended_path.front().first, 1.0, 1e-4);
+    EXPECT_NEAR(blended_path.front().second, 1.0, 1e-4);
+    EXPECT_NEAR(blended_path.back().first, 5.0, 1e-4);
+    EXPECT_NEAR(blended_path.back().second, 5.0, 1e-4);
+
+    // 点間のステップ距離が過度に離れておらず、滑らかに連続していること
+    for (std::size_t i = 0; i + 1 < blended_path.size(); ++i) {
+        double d = std::hypot(
+            blended_path[i + 1].first - blended_path[i].first,
+            blended_path[i + 1].second - blended_path[i].second
+        );
+        EXPECT_LE(d, 0.08); // resolution 0.05m + マージン
+    }
+
+    // 隣接3点の内角変化 (ヘディング角の変化) が急峻にスパイクしていないこと
+    for (std::size_t i = 1; i + 1 < blended_path.size(); ++i) {
+        double d1x = blended_path[i].first - blended_path[i - 1].first;
+        double d1y = blended_path[i].second - blended_path[i - 1].second;
+        double d2x = blended_path[i + 1].first - blended_path[i].first;
+        double d2y = blended_path[i + 1].second - blended_path[i].second;
+        double l1 = std::hypot(d1x, d1y);
+        double l2 = std::hypot(d2x, d2y);
+        if (l1 > 1e-3 && l2 > 1e-3) {
+            double dot = std::clamp((d1x * d2x + d1y * d2y) / (l1 * l2), -1.0, 1.0);
+            double angle_change = std::acos(dot);
+            // 0.05m 刻みにおいて、急角度の屈曲 (約 15 度以上) がないこと
+            EXPECT_LE(angle_change, 0.25);
+        }
+    }
+}
