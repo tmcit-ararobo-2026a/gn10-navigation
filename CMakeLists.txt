@@ -145,7 +145,9 @@ install(DIRECTORY launch config rviz
   DESTINATION share/${PROJECT_NAME}
 )
 
-install(PROGRAMS scripts/tracking_debugger_gui.py
+install(PROGRAMS
+  scripts/tracking_debugger_gui.py
+  scripts/debug_shooting_points_planner.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
