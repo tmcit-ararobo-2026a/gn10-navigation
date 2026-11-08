@@ -9,15 +9,15 @@ path_planner_node:
       snap_distance: 0.4
     elastic_band:
       # 反復緩和回数 (多いほど滑らかに収束, 10〜100, 既定値: 30)
-      iterations: 30
+      iterations: 50
       # 内部張力ゲイン (直線化・曲率最小化の強さ, 0.0〜1.0, 既定値: 0.5)
       elastic_strength: 1.0
       # コスト反発ゲイン (障害物・ポテンシャル勾配から押し離す強さ, 既定値: 0.05)
-      repulsive_strength: 0.05
+      repulsive_strength: 0.01
       # 反発力が働き始めるコスト閾値 (このコスト以下では直線化を優先, 0〜99, 既定値: 15)
-      repulsive_cost_threshold: 40
+      repulsive_cost_threshold: 60
       # 平滑化経路が通過を許容する最大セルコスト (0〜99: このコスト以下で平滑化を維持, 既定値: 40)
-      max_cost: 60
+      max_cost: 80
       # 出力経路サンプリング解像度 [m] (既定値: 0.05)
       path_resolution: 0.05
     footprint:
