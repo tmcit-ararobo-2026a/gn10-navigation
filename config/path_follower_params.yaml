@@ -5,7 +5,7 @@ path_follower_node:
     control_comm_delay: 0.02
     control_rate: 50.0
     curvature_window: 0.3
-    decel_effective_ratio: 1.0
+    decel_effective_ratio: 0.7
     goal_settle_count: 5
     goal_tolerance: 0.01
     goal_yaw_tolerance: 0.0175
