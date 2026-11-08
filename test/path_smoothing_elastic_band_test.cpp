@@ -192,3 +192,61 @@ TEST_F(PathSmoothingElasticBandTest, DeterministicConsistency)
         EXPECT_NEAR(path1[i].second, path2[i].second, 1e-9);
     }
 }
+
+TEST_F(PathSmoothingElasticBandTest, HybridReducesCurvatureWithFillet)
+{
+    rclcpp::NodeOptions options;
+    options.append_parameter_override("elastic_band.iterations", 30);
+    options.append_parameter_override("elastic_band.elastic_strength", 1.0);
+    options.append_parameter_override("elastic_band.repulsive_strength", 0.05);
+    options.append_parameter_override("elastic_band.repulsive_cost_threshold", 40);
+    options.append_parameter_override("elastic_band.max_cost", 60);
+    options.append_parameter_override("elastic_band.path_resolution", 0.05);
+
+    options.append_parameter_override("fillet.rdp_epsilon", 0.15);
+    options.append_parameter_override("fillet.target_radius", 2.0);
+    options.append_parameter_override("fillet.min_radius", 0.2);
+    options.append_parameter_override("fillet.max_cost", 60);
+    options.append_parameter_override("fillet.path_resolution", 0.05);
+    options.append_parameter_override("fillet.curvature_blend_iterations", 3);
+
+    auto planner = std::make_shared<gn10_navigation::PathPlannerNode>(options);
+    auto costmap = createMockCostmap(200, 200, 0.05, 0);
+    planner->onCostmap(std::make_shared<nav_msgs::msg::OccupancyGrid>(costmap));
+
+    // (1.0, 1.0) -> (5.0, 1.0) -> (5.0, 5.0) の直角 90 度コーナー
+    std::vector<std::pair<int, int>> grid_path;
+    for (int x = 20; x <= 100; ++x) {
+        grid_path.push_back({x, 20});
+    }
+    for (int y = 21; y <= 100; ++y) {
+        grid_path.push_back({100, y});
+    }
+
+    const std::pair<double, double> exact_start = {1.0, 1.0};
+    const std::pair<double, double> exact_goal  = {5.0, 5.0};
+
+    // Elastic Band 単体
+    auto eb_only = planner->smoothPathElasticBand(grid_path, exact_start, exact_goal);
+    // ハイブリッド (EB + Fillet)
+    auto hybrid = planner->smoothPath(grid_path, exact_start, exact_goal);
+
+    ASSERT_FALSE(eb_only.empty());
+    ASSERT_FALSE(hybrid.empty());
+
+    // コーナー頂点 (5.0, 1.0) への最近傍距離
+    double dist_eb = 1e9;
+    for (const auto& pt : eb_only) {
+        dist_eb = std::min(dist_eb, std::hypot(pt.first - 5.0, pt.second - 1.0));
+    }
+
+    double dist_hybrid = 1e9;
+    for (const auto& pt : hybrid) {
+        dist_hybrid = std::min(dist_hybrid, std::hypot(pt.first - 5.0, pt.second - 1.0));
+    }
+
+    // Fillet により大きな円弧 (R=2.0m) が入るため、頂点からのクリアランスが大幅に拡大
+    // (＝旋回半径が大きくなり、最大曲率が低減されている)
+    EXPECT_GT(dist_hybrid, dist_eb + 0.2);
+    EXPECT_GT(dist_hybrid, 0.4);
+}

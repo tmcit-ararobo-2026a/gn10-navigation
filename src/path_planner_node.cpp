@@ -141,7 +141,23 @@ void PathPlannerNode::declareAndGetParameters()
     this->declare_parameter("elastic_band.path_resolution", 0.05);
 
     // ==========================================
-    // 4. フットプリントおよび旋回計画パラメータ
+    // 4. 決定論的幾何コーナーフィレット平滑化パラメータ
+    // ==========================================
+    // fillet.rdp_epsilon [m]: RDP法で大域的コーナー頂点を抽出する許容誤差 (既定値: 0.15)
+    this->declare_parameter("fillet.rdp_epsilon", 0.15);
+    // fillet.target_radius [m]: 目標旋回半径 (既定値: 2.0, 2.4m/sで横G抑制)
+    this->declare_parameter("fillet.target_radius", 2.0);
+    // fillet.min_radius [m]: 狭所・障害物近傍での最小許容旋回半径 (既定値: 0.2)
+    this->declare_parameter("fillet.min_radius", 0.2);
+    // fillet.max_cost: コーナー円弧が許容する最大セルコスト (0〜99, 既定値: 60)
+    this->declare_parameter("fillet.max_cost", 60);
+    // fillet.path_resolution [m]: 出力経路サンプリング解像度 (既定値: 0.05)
+    this->declare_parameter("fillet.path_resolution", 0.05);
+    // fillet.curvature_blend_iterations: 直線と円弧の接続部を滑らかにブレンドするイージング回数 (既定値: 3)
+    this->declare_parameter("fillet.curvature_blend_iterations", 3);
+
+    // ==========================================
+    // 5. フットプリントおよび旋回計画パラメータ
     // ==========================================
     // footprint.polygon: 機体の外形ポリゴン頂点列 (8頂点 [m])。原点は機体幾何中心。
     this->declare_parameter("footprint.polygon", kDefaultFootprint);
@@ -170,6 +186,17 @@ void PathPlannerNode::declareAndGetParameters()
     );
     eband_path_resolution_ = this->get_parameter("elastic_band.path_resolution").as_double();
 
+    fillet_rdp_epsilon_   = this->get_parameter("fillet.rdp_epsilon").as_double();
+    fillet_target_radius_ = this->get_parameter("fillet.target_radius").as_double();
+    fillet_min_radius_    = this->get_parameter("fillet.min_radius").as_double();
+    fillet_max_cost_      = std::clamp(
+        static_cast<int>(this->get_parameter("fillet.max_cost").as_int()), 0, 99
+    );
+    fillet_path_resolution_ = this->get_parameter("fillet.path_resolution").as_double();
+    fillet_curvature_blend_iterations_ = std::clamp(
+        static_cast<int>(this->get_parameter("fillet.curvature_blend_iterations").as_int()), 0, 20
+    );
+
     if (!std::isfinite(eband_elastic_strength_) || eband_elastic_strength_ < 0.0 ||
         eband_elastic_strength_ > 1.0) {
         throw std::invalid_argument("elastic_band.elastic_strength must be in [0.0, 1.0]");
@@ -179,6 +206,21 @@ void PathPlannerNode::declareAndGetParameters()
     }
     if (!std::isfinite(eband_path_resolution_) || eband_path_resolution_ <= 0.0) {
         throw std::invalid_argument("elastic_band.path_resolution must be finite and positive");
+    }
+    if (!std::isfinite(fillet_rdp_epsilon_) || fillet_rdp_epsilon_ <= 0.0) {
+        throw std::invalid_argument("fillet.rdp_epsilon must be finite and positive");
+    }
+    if (!std::isfinite(fillet_target_radius_) || fillet_target_radius_ <= 0.0) {
+        throw std::invalid_argument("fillet.target_radius must be finite and positive");
+    }
+    if (!std::isfinite(fillet_min_radius_) || fillet_min_radius_ <= 0.0) {
+        throw std::invalid_argument("fillet.min_radius must be finite and positive");
+    }
+    if (fillet_min_radius_ > fillet_target_radius_) {
+        throw std::invalid_argument("fillet.min_radius must not exceed fillet.target_radius");
+    }
+    if (!std::isfinite(fillet_path_resolution_) || fillet_path_resolution_ <= 0.0) {
+        throw std::invalid_argument("fillet.path_resolution must be finite and positive");
     }
     if (!std::isfinite(snap_distance_) || snap_distance_ <= 0.0) {
         throw std::invalid_argument("a_star.snap_distance must be finite and positive");
@@ -205,6 +247,7 @@ void PathPlannerNode::declareAndGetParameters()
         this->get_logger(),
         "Parameters loaded: planning_cost=%.2f, snap_distance=%.3f, "
         "eband=[iters=%d, elastic=%.2f, rep=%.3f, rep_th=%d, max_cost=%d, res=%.3f], "
+        "fillet=[rdp_eps=%.3f, target_r=%.2f, min_r=%.2f, max_cost=%d, res=%.3f, blend_iters=%d], "
         "rotation=[turn_max_cost=%d, angle_step=%.2f, turn_dist=%.2f]",
         planning_cost_factor_,
         snap_distance_,
@@ -214,6 +257,12 @@ void PathPlannerNode::declareAndGetParameters()
         eband_repulsive_cost_threshold_,
         eband_max_cost_,
         eband_path_resolution_,
+        fillet_rdp_epsilon_,
+        fillet_target_radius_,
+        fillet_min_radius_,
+        fillet_max_cost_,
+        fillet_path_resolution_,
+        fillet_curvature_blend_iterations_,
         turn_max_cost_,
         angle_step_,
         turn_distance_
@@ -300,6 +349,60 @@ rcl_interfaces::msg::SetParametersResult PathPlannerNode::onSetParameters(
             } else {
                 result.successful = false;
                 result.reason     = "elastic_band.path_resolution must be positive";
+                return result;
+            }
+        } else if (name == "fillet.rdp_epsilon") {
+            double val = param.as_double();
+            if (std::isfinite(val) && val > 0.0) {
+                fillet_rdp_epsilon_ = val;
+            } else {
+                result.successful = false;
+                result.reason     = "fillet.rdp_epsilon must be positive";
+                return result;
+            }
+        } else if (name == "fillet.target_radius") {
+            double val = param.as_double();
+            if (std::isfinite(val) && val > 0.0 && val >= fillet_min_radius_) {
+                fillet_target_radius_ = val;
+            } else {
+                result.successful = false;
+                result.reason     = "fillet.target_radius must be positive and >= min_radius";
+                return result;
+            }
+        } else if (name == "fillet.min_radius") {
+            double val = param.as_double();
+            if (std::isfinite(val) && val > 0.0 && val <= fillet_target_radius_) {
+                fillet_min_radius_ = val;
+            } else {
+                result.successful = false;
+                result.reason     = "fillet.min_radius must be positive and <= target_radius";
+                return result;
+            }
+        } else if (name == "fillet.max_cost") {
+            int val = static_cast<int>(param.as_int());
+            if (val >= 0 && val <= 99) {
+                fillet_max_cost_ = val;
+            } else {
+                result.successful = false;
+                result.reason     = "fillet.max_cost must be in [0, 99]";
+                return result;
+            }
+        } else if (name == "fillet.path_resolution") {
+            double val = param.as_double();
+            if (std::isfinite(val) && val > 0.0) {
+                fillet_path_resolution_ = val;
+            } else {
+                result.successful = false;
+                result.reason     = "fillet.path_resolution must be positive";
+                return result;
+            }
+        } else if (name == "fillet.curvature_blend_iterations") {
+            int val = static_cast<int>(param.as_int());
+            if (val >= 0 && val <= 20) {
+                fillet_curvature_blend_iterations_ = val;
+            } else {
+                result.successful = false;
+                result.reason     = "fillet.curvature_blend_iterations must be in [0, 20]";
                 return result;
             }
         } else if (name == "rotation_planning.turn_max_cost") {
@@ -773,13 +876,414 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPathElasticBand(
     return smoothed_result;
 }
 
+std::vector<std::pair<double, double>> PathPlannerNode::smoothPathFillet(
+    const std::vector<std::pair<double, double>>& raw_points,
+    const std::pair<double, double>& exact_start,
+    const std::pair<double, double>& exact_goal
+) const
+{
+    using Point = std::pair<double, double>;
+    if (raw_points.empty()) {
+        return {};
+    }
+
+    const double point_resolution = std::max(0.01, fillet_path_resolution_);
+    const double check_step = (latest_costmap_.info.resolution > 0.0)
+                                  ? latest_costmap_.info.resolution * 0.5
+                                  : 0.025;
+
+    if (raw_points.size() <= 2) {
+        const double dist =
+            std::hypot(exact_goal.first - exact_start.first, exact_goal.second - exact_start.second);
+        const int steps = std::max(1, static_cast<int>(std::ceil(dist / point_resolution)));
+        std::vector<Point> pts;
+        pts.reserve(steps + 1);
+        for (int s = 0; s <= steps; ++s) {
+            const double t = static_cast<double>(s) / steps;
+            pts.emplace_back(
+                exact_start.first + t * (exact_goal.first - exact_start.first),
+                exact_start.second + t * (exact_goal.second - exact_start.second)
+            );
+        }
+        return pts;
+    }
+
+    // 1. 重複・微小セグメント（1mm未満）の除去
+    std::vector<Point> unique_pts;
+    unique_pts.reserve(raw_points.size());
+    for (const auto& p : raw_points) {
+        if (unique_pts.empty() ||
+            std::hypot(p.first - unique_pts.back().first, p.second - unique_pts.back().second) >
+                1e-3) {
+            unique_pts.push_back(p);
+        }
+    }
+    if (unique_pts.size() <= 2) {
+        unique_pts = {exact_start, exact_goal};
+    } else {
+        unique_pts.front() = exact_start;
+        unique_pts.back()  = exact_goal;
+    }
+
+    // 始点・終点の折り返し除去
+    if (unique_pts.size() >= 3) {
+        const double v0x = unique_pts[1].first - unique_pts[0].first;
+        const double v0y = unique_pts[1].second - unique_pts[0].second;
+        const double v1x = unique_pts[2].first - unique_pts[1].first;
+        const double v1y = unique_pts[2].second - unique_pts[1].second;
+        if (v0x * v1x + v0y * v1y <= 0.0) {
+            unique_pts.erase(unique_pts.begin() + 1);
+        }
+    }
+    if (unique_pts.size() >= 3) {
+        const std::size_t m = unique_pts.size();
+        const double v0x    = unique_pts[m - 2].first - unique_pts[m - 3].first;
+        const double v0y    = unique_pts[m - 2].second - unique_pts[m - 3].second;
+        const double v1x    = unique_pts[m - 1].first - unique_pts[m - 2].first;
+        const double v1y    = unique_pts[m - 1].second - unique_pts[m - 2].second;
+        if (v0x * v1x + v0y * v1y <= 0.0) {
+            unique_pts.erase(unique_pts.begin() + static_cast<std::ptrdiff_t>(m - 2));
+        }
+    }
+
+    // 2. コストマップ制約付き Ramer-Douglas-Peucker (RDP) 法による大域的コーナー抽出
+    // Elastic Band により微細な階段ノイズは除去されているため、真の大域コーナーのみを抽出
+    const double rdp_epsilon = fillet_rdp_epsilon_;
+    std::vector<bool> keep_mask(unique_pts.size(), false);
+    keep_mask.front() = true;
+    keep_mask.back()  = true;
+
+    auto isSegmentSafe = [&](const Point& p1, const Point& p2) -> bool {
+        const double dist = std::hypot(p2.first - p1.first, p2.second - p1.second);
+        if (dist < 1e-4) {
+            return true;
+        }
+        const int steps = std::max(1, static_cast<int>(std::ceil(dist / check_step)));
+        for (int s = 0; s <= steps; ++s) {
+            const double t  = static_cast<double>(s) / steps;
+            const double wx = p1.first + t * (p2.first - p1.first);
+            const double wy = p1.second + t * (p2.second - p1.second);
+            const int cost  = getCellCostWorld(wx, wy);
+            if (cost < 0 || cost > fillet_max_cost_ || cost >= 100) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    auto perpDist = [](const Point& pt, const Point& line_start, const Point& line_end) -> double {
+        const double dx  = line_end.first - line_start.first;
+        const double dy  = line_end.second - line_start.second;
+        const double len = std::hypot(dx, dy);
+        if (len < 1e-9) {
+            return std::hypot(pt.first - line_start.first, pt.second - line_start.second);
+        }
+        return std::abs(
+                   dy * pt.first - dx * pt.second + line_end.first * line_start.second -
+                   line_end.second * line_start.first
+               ) /
+               len;
+    };
+
+    std::function<void(std::size_t, std::size_t)> rdpFunc = [&](std::size_t s, std::size_t e) {
+        if (e <= s + 1) {
+            return;
+        }
+        double max_d    = 0.0;
+        std::size_t idx = s;
+        for (std::size_t i = s + 1; i < e; ++i) {
+            const double d = perpDist(unique_pts[i], unique_pts[s], unique_pts[e]);
+            if (d > max_d) {
+                max_d = d;
+                idx   = i;
+            }
+        }
+        if (max_d > rdp_epsilon || !isSegmentSafe(unique_pts[s], unique_pts[e])) {
+            if (idx == s) {
+                idx = s + (e - s) / 2;
+            }
+            keep_mask[idx] = true;
+            rdpFunc(s, idx);
+            rdpFunc(idx, e);
+        }
+    };
+    rdpFunc(0, unique_pts.size() - 1);
+
+    std::vector<Point> waypoints;
+    waypoints.reserve(unique_pts.size());
+    for (std::size_t i = 0; i < unique_pts.size(); ++i) {
+        if (keep_mask[i]) {
+            waypoints.push_back(unique_pts[i]);
+        }
+    }
+
+    // ほぼ一直線上に並ぶ連続微小屈曲 (偏角 約5度未満) の整理
+    if (waypoints.size() >= 3) {
+        std::vector<Point> filtered;
+        filtered.reserve(waypoints.size());
+        filtered.push_back(waypoints.front());
+        for (std::size_t i = 1; i + 1 < waypoints.size(); ++i) {
+            const double d1x = waypoints[i].first - filtered.back().first;
+            const double d1y = waypoints[i].second - filtered.back().second;
+            const double d2x = waypoints[i + 1].first - waypoints[i].first;
+            const double d2y = waypoints[i + 1].second - waypoints[i].second;
+            const double l1  = std::hypot(d1x, d1y);
+            const double l2  = std::hypot(d2x, d2y);
+            if (l1 > 1e-4 && l2 > 1e-4) {
+                const double dot = (d1x * d2x + d1y * d2y) / (l1 * l2);
+                if (dot > 0.996 && isSegmentSafe(filtered.back(), waypoints[i + 1])) {
+                    continue;
+                }
+            }
+            filtered.push_back(waypoints[i]);
+        }
+        filtered.push_back(waypoints.back());
+        waypoints = std::move(filtered);
+    }
+
+    if (waypoints.size() <= 2) {
+        const double dist =
+            std::hypot(exact_goal.first - exact_start.first, exact_goal.second - exact_start.second);
+        const int steps = std::max(1, static_cast<int>(std::ceil(dist / point_resolution)));
+        std::vector<Point> pts;
+        pts.reserve(steps + 1);
+        for (int s = 0; s <= steps; ++s) {
+            const double t = static_cast<double>(s) / steps;
+            pts.emplace_back(
+                exact_start.first + t * (exact_goal.first - exact_start.first),
+                exact_start.second + t * (exact_goal.second - exact_start.second)
+            );
+        }
+        return pts;
+    }
+
+    // 3. 各コーナーへの幾何学的円弧フィレット（大円弧化による曲率低減）
+    struct CornerFillet {
+        Point t1;                 // 進入接点
+        Point t2;                 // 退出接点
+        Point center;             // 円弧中心
+        double radius{0.0};       // 旋回半径
+        double angle_start{0.0};  // 始点角度
+        double angle_sweep{0.0};  // 符号付き開角 (正: 左回り, 負: 右回り)
+        bool has_arc{false};
+    };
+
+    std::vector<CornerFillet> fillets(waypoints.size());
+
+    for (std::size_t i = 1; i + 1 < waypoints.size(); ++i) {
+        const auto& p_prev = waypoints[i - 1];
+        const auto& p_curr = waypoints[i];
+        const auto& p_next = waypoints[i + 1];
+
+        const double d1x  = p_curr.first - p_prev.first;
+        const double d1y  = p_curr.second - p_prev.second;
+        const double d2x  = p_next.first - p_curr.first;
+        const double d2y  = p_next.second - p_curr.second;
+        const double len1 = std::hypot(d1x, d1y);
+        const double len2 = std::hypot(d2x, d2y);
+
+        if (len1 < 1e-4 || len2 < 1e-4) {
+            continue;
+        }
+
+        const double u1x = d1x / len1;
+        const double u1y = d1y / len1;
+        const double u2x = d2x / len2;
+        const double u2y = d2y / len2;
+
+        const double dot   = std::clamp(u1x * u2x + u1y * u2y, -1.0, 1.0);
+        const double cross = u1x * u2y - u1y * u2x;  // 正: 左旋回, 負: 右旋回
+        const double theta = std::atan2(cross, dot);
+
+        // ほぼ直線 (約 2.5 度未満) または 178度以上の急反転折り返しはフィレット対象外
+        if (std::abs(theta) < 0.045 || std::abs(theta) > 3.10) {
+            continue;
+        }
+
+        const double half_theta = std::abs(theta) * 0.5;
+        const double tan_half   = std::tan(half_theta);
+        if (tan_half < 1e-6) {
+            continue;
+        }
+
+        // セグメント長を侵食しない最大接線長
+        const double max_tangent = 0.45 * std::min(len1, len2);
+        const double geom_max_r  = max_tangent / tan_half;
+        const double target_r    = std::min(fillet_target_radius_, geom_max_r);
+
+        // 円弧上の安全性を検証するヘルパー
+        auto checkArcSafety = [&](double r, CornerFillet& out_fillet) -> bool {
+            if (r < 1e-3) {
+                return false;
+            }
+            const double t = r * tan_half;
+            const Point pt_t1{p_curr.first - t * u1x, p_curr.second - t * u1y};
+            const Point pt_t2{p_curr.first + t * u2x, p_curr.second + t * u2y};
+
+            const double nx = (theta > 0.0) ? -u1y : u1y;
+            const double ny = (theta > 0.0) ? u1x : -u1x;
+
+            const Point center{pt_t1.first + r * nx, pt_t1.second + r * ny};
+
+            const double phi1  = std::atan2(pt_t1.second - center.second, pt_t1.first - center.first);
+            const double sweep = theta;
+
+            const double arc_len = r * std::abs(theta);
+            const int samples    = std::max(4, static_cast<int>(std::ceil(arc_len / check_step)));
+
+            for (int s = 0; s <= samples; ++s) {
+                const double ratio = static_cast<double>(s) / samples;
+                const double ang   = phi1 + ratio * sweep;
+                const double wx    = center.first + r * std::cos(ang);
+                const double wy    = center.second + r * std::sin(ang);
+                const int cost     = getCellCostWorld(wx, wy);
+                if (cost < 0 || cost > fillet_max_cost_ || cost >= 100) {
+                    return false;
+                }
+            }
+
+            out_fillet.t1          = pt_t1;
+            out_fillet.t2          = pt_t2;
+            out_fillet.center      = center;
+            out_fillet.radius      = r;
+            out_fillet.angle_start = phi1;
+            out_fillet.angle_sweep = sweep;
+            out_fillet.has_arc     = true;
+            return true;
+        };
+
+        CornerFillet cand_fillet;
+        if (checkArcSafety(target_r, cand_fillet)) {
+            fillets[i] = cand_fillet;
+        } else {
+            // 障害物近傍での安全半径を決定論的二分探索
+            double r_low  = std::min(target_r, fillet_min_radius_);
+            double r_high = target_r;
+            CornerFillet best_fillet;
+            bool found_safe = false;
+
+            if (checkArcSafety(r_low, best_fillet)) {
+                found_safe = true;
+                for (int iter = 0; iter < 7; ++iter) {
+                    const double r_mid = 0.5 * (r_low + r_high);
+                    CornerFillet mid_fillet;
+                    if (checkArcSafety(r_mid, mid_fillet)) {
+                        best_fillet = mid_fillet;
+                        r_low       = r_mid;
+                    } else {
+                        r_high = r_mid;
+                    }
+                }
+            }
+            if (found_safe) {
+                fillets[i] = best_fillet;
+            }
+        }
+    }
+
+    // 4. 直線セグメントと円弧セグメントを結合
+    std::vector<Point> smoothed_result;
+    std::vector<std::size_t> junction_indices;
+
+    auto addLine = [&](const Point& p1, const Point& p2) {
+        const double dist = std::hypot(p2.first - p1.first, p2.second - p1.second);
+        if (dist < 1e-4) {
+            return;
+        }
+        const int steps = std::max(1, static_cast<int>(std::ceil(dist / point_resolution)));
+        for (int s = 1; s <= steps; ++s) {
+            const double frac = static_cast<double>(s) / steps;
+            smoothed_result.emplace_back(
+                p1.first + frac * (p2.first - p1.first), p1.second + frac * (p2.second - p1.second)
+            );
+        }
+    };
+
+    auto addArc = [&](const CornerFillet& f) {
+        const double arc_len = f.radius * std::abs(f.angle_sweep);
+        const int steps      = std::max(1, static_cast<int>(std::ceil(arc_len / point_resolution)));
+        for (int s = 1; s <= steps; ++s) {
+            const double frac = static_cast<double>(s) / steps;
+            const double ang  = f.angle_start + frac * f.angle_sweep;
+            smoothed_result.emplace_back(
+                f.center.first + f.radius * std::cos(ang),
+                f.center.second + f.radius * std::sin(ang)
+            );
+        }
+    };
+
+    smoothed_result.push_back(waypoints.front());
+
+    for (std::size_t i = 1; i + 1 < waypoints.size(); ++i) {
+        const auto& f = fillets[i];
+        if (f.has_arc) {
+            addLine(smoothed_result.back(), f.t1);
+            junction_indices.push_back(smoothed_result.size() - 1);
+
+            addArc(f);
+            junction_indices.push_back(smoothed_result.size() - 1);
+        } else {
+            addLine(smoothed_result.back(), waypoints[i]);
+            junction_indices.push_back(smoothed_result.size() - 1);
+        }
+    }
+    addLine(smoothed_result.back(), waypoints.back());
+
+    // 5. 直線と円弧の接続部 (Junction) の局所連続曲率化ブレンド
+    if (fillet_curvature_blend_iterations_ > 0 && !junction_indices.empty() &&
+        smoothed_result.size() >= 5) {
+        std::vector<bool> blend_mask(smoothed_result.size(), false);
+        const int blend_window =
+            std::max(2, static_cast<int>(std::round(0.15 / point_resolution)));
+        for (std::size_t j_idx : junction_indices) {
+            const std::size_t start_k = (j_idx > static_cast<std::size_t>(blend_window))
+                                            ? (j_idx - blend_window)
+                                            : 1;
+            const std::size_t end_k =
+                std::min(smoothed_result.size() - 2, j_idx + blend_window);
+            for (std::size_t k = start_k; k <= end_k; ++k) {
+                blend_mask[k] = true;
+            }
+        }
+
+        for (int iter = 0; iter < fillet_curvature_blend_iterations_; ++iter) {
+            const auto prev = smoothed_result;
+            for (std::size_t k = 1; k + 1 < smoothed_result.size(); ++k) {
+                if (!blend_mask[k]) {
+                    continue;
+                }
+                const Point candidate{
+                    0.25 * prev[k - 1].first + 0.50 * prev[k].first + 0.25 * prev[k + 1].first,
+                    0.25 * prev[k - 1].second + 0.50 * prev[k].second + 0.25 * prev[k + 1].second};
+                const int cost = getCellCostWorld(candidate.first, candidate.second);
+                if (cost >= 0 && cost <= fillet_max_cost_ && cost < 100) {
+                    smoothed_result[k] = candidate;
+                }
+            }
+        }
+    }
+
+    smoothed_result.front() = exact_start;
+    smoothed_result.back()  = exact_goal;
+    return smoothed_result;
+}
+
 std::vector<std::pair<double, double>> PathPlannerNode::smoothPath(
     const std::vector<std::pair<int, int>>& grid_path,
     const std::pair<double, double>& exact_start,
     const std::pair<double, double>& exact_goal
 ) const
 {
-    return smoothPathElasticBand(grid_path, exact_start, exact_goal);
+    // 第1段: コスト勾配による連続緩和 (Elastic Band)
+    // 5cm格子の階段ノイズを除去し、障害物ポテンシャルに沿った滑らかな大局経路を生成
+    const auto eb_path = smoothPathElasticBand(grid_path, exact_start, exact_goal);
+    if (eb_path.size() <= 2) {
+        return eb_path;
+    }
+
+    // 第2段: 決定論的幾何コーナーフィレット
+    // 滑らかになった実座標経路から大域コーナーを抽出し、目標半径 target_radius の円弧で曲率を低減
+    return smoothPathFillet(eb_path, exact_start, exact_goal);
 }
 
 int PathPlannerNode::getFootprintMaxCost(double wx, double wy, double yaw, int cutoff_cost) const
