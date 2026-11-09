@@ -145,7 +145,9 @@ install(DIRECTORY launch config rviz
   DESTINATION share/${PROJECT_NAME}
 )
 
-install(PROGRAMS scripts/tracking_debugger_gui.py
+install(PROGRAMS
+  scripts/tracking_debugger_gui.py
+  scripts/debug_shooting_points_planner.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -191,6 +193,23 @@ if(BUILD_TESTING)
       visualization_msgs
     )
     target_include_directories(tracking_stability_test PRIVATE include)
+  endif()
+
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/path_smoothing_elastic_band_test.cpp")
+    ament_add_gtest(path_smoothing_elastic_band_test
+      test/path_smoothing_elastic_band_test.cpp
+      src/path_planner_node.cpp
+    )
+    target_compile_definitions(path_smoothing_elastic_band_test PRIVATE GN10_NAVIGATION_PATH_PLANNER_NO_MAIN)
+    ament_target_dependencies(path_smoothing_elastic_band_test
+      rclcpp
+      nav_msgs
+      geometry_msgs
+      tf2
+      tf2_ros
+      tf2_geometry_msgs
+    )
+    target_include_directories(path_smoothing_elastic_band_test PRIVATE include)
   endif()
 endif()
 

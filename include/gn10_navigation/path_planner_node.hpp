@@ -18,13 +18,15 @@
  *    - コスト関数: cost = step_distance + costmap_val * a_star.planning_cost
  *    - ユークリッド距離ヒューリスティックによる最短・低コスト格子経路探索。
  *
- * 3. 動的適応型 B-spline 平滑化 & 直線近似:
- *    - 制御点の間引きステップ (stride を max_stride: 10 から 1 まで順次試行) と、
- *      反復ラプラシアン平滑化 (隣接点の中点ブレンドを smoothing_iterations: 8 回実行)
- * を組み合わせる。
- *    - 経路上の全サンプルの最大セルコストが smooth_max_cost (40) 以下で干渉のない最大の stride
- * を動的に採択。
- *    - 低コストかつ十分な長さの直線区間を直線近似 (line_approximation.max_cost: -1 で無効化可能)。
+ * 3. 2段ハイブリッド平滑化 (Elastic Band + 決定論的幾何フィレット):
+ *    - 第1段 (smoothPathElasticBand):
+ *      A* 格子経路に対し、内部張力 (曲率最小化) とコスト勾配反発 (-∇Cost) による連続緩和を実施。
+ *      5cm 格子の離散階段ノイズを解消し、障害物ポテンシャルに沿った安全で有機的な大局経路を形成。
+ *    - 第2段 (smoothPathFillet):
+ *      第1段で滑らかになった実座標経路から RDP 法で主要コーナー頂点を抽出。
+ *      各コーナーに目標旋回半径 (target_radius: 2.0m) の大円弧フィレットを幾何学的に接続し、曲率を大幅に低減。
+ *      障害物近傍では max_cost (60) を満たす安全半径 (R >= min_radius: 0.2m) へ二分探索で自動調停。
+ *      直線部と円弧の接点にはイージングブレンド (curvature_blend_iterations: 3) を施し、連続曲率化を実現。
  *
  * 4. 安全領域での旋回・姿勢計画 (planOrientations):
  *    - 機体外形ポリゴン (footprint.polygon) を経路上の各点で 360度 (angle_step: 0.15 rad 刻み)
@@ -56,9 +58,54 @@ class PathPlannerNode : public rclcpp::Node
 public:
     explicit PathPlannerNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions());
 
+    /**
+     * @brief コストマップコールバック (テストからも利用可能)
+     */
+    void onCostmap(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg);
+
+    /**
+     * @brief A* の格子経路をコスト勾配による連続緩和 (Elastic Band) で平滑化する。
+     *        内部張力 (曲率最小化・直線化) とコストマップ反発力 (-∇Cost) の釣り合いにより、
+     *        障害物を安全に回避しつつ 5cm 格子階段ノイズを連続的かつ滑らかに緩和する。
+     *
+     * @param grid_path A* が生成した格子経路
+     * @param exact_start 正確な始点ワールド座標
+     * @param exact_goal 正確な終点ワールド座標
+     * @return 平滑化後のワールド座標列
+     */
+    std::vector<std::pair<double, double>> smoothPathElasticBand(
+        const std::vector<std::pair<int, int>>& grid_path,
+        const std::pair<double, double>& exact_start,
+        const std::pair<double, double>& exact_goal
+    ) const;
+
+    /**
+     * @brief 実座標経路に対して決定論的幾何コーナーフィレットを適用し、大円弧化による曲率低減を行う。
+     *        RDP法で大域コーナーを抽出し、目標旋回半径 target_radius の円弧フィレットと
+     *        局所イージングブレンドにより、曲率を劇的に低減しつつ滑らかに接続する。
+     *
+     * @param raw_points 第1段(Elastic Band)を通過した実座標経路
+     * @param exact_start 正確な始点ワールド座標
+     * @param exact_goal 正確な終点ワールド座標
+     * @return フィレット平滑化後のワールド座標列
+     */
+    std::vector<std::pair<double, double>> smoothPathFillet(
+        const std::vector<std::pair<double, double>>& raw_points,
+        const std::pair<double, double>& exact_start,
+        const std::pair<double, double>& exact_goal
+    ) const;
+
+    /**
+     * @brief 2段ハイブリッド平滑化エントリーポイント (Elastic Band -> 幾何コーナーフィレット)
+     */
+    std::vector<std::pair<double, double>> smoothPath(
+        const std::vector<std::pair<int, int>>& grid_path,
+        const std::pair<double, double>& exact_start,
+        const std::pair<double, double>& exact_goal
+    ) const;
+
 private:
     void declareAndGetParameters();
-    void onCostmap(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg);
     void onGoalPose(const geometry_msgs::msg::PoseStamped::ConstSharedPtr msg);
 
     /**
@@ -127,59 +174,6 @@ private:
     std::vector<std::pair<int, int>> aStarSearch(int start_x, int start_y, int goal_x, int goal_y);
 
     /**
-     * @brief A* の格子経路を動的適応型 B-spline (障害物に干渉しない最大平滑化度合い) で平滑化する。
-     *        始点と終点にはグリッド量子化前の正確なワールド座標を保持する。
-     *
-     * @param grid_path A* が生成した格子経路
-     * @param exact_start 正確な始点ワールド座標
-     * @param exact_goal 正確な終点ワールド座標
-     * @return 平滑化後のワールド座標列
-     */
-    std::vector<std::pair<double, double>> smoothPath(
-        const std::vector<std::pair<int, int>>& grid_path,
-        const std::pair<double, double>& exact_start,
-        const std::pair<double, double>& exact_goal
-    ) const;
-
-    /**
-     * @brief 与えられた制御点列と平滑化設定から 3 次 clamped B-spline 経路を生成する
-     *
-     * @param control_points 制御点列 (ワールド座標)
-     * @param smoothing_strength 1反復あたりの内部制御点の平滑化強度 (0.0〜1.0)
-     * @param smoothing_iterations 反復ラプラシアン平滑化の回数
-     * @param allowed_max_cost 制御点移動時に許容する最大セルコスト
-     * @return std::vector<std::pair<double, double>> 生成された B-spline 補間点列
-     */
-    std::vector<std::pair<double, double>> evaluateBspline(
-        const std::vector<std::pair<double, double>>& control_points,
-        double smoothing_strength,
-        int smoothing_iterations,
-        int allowed_max_cost
-    ) const;
-
-    /**
-     * @brief ワールド座標列がすべて許容コスト以下の通行可能セル上にあるか確認する。
-     *
-     * @param path ワールド座標列
-     * @param max_allowed_cost 許容する最大コスト (1〜99)
-     * @return true すべて許容コスト以下で通行可能
-     * @return false 障害物またはコスト超過セルと干渉している
-     */
-    bool isSmoothPathValid(
-        const std::vector<std::pair<double, double>>& path, int max_allowed_cost = 99
-    ) const;
-
-    /**
-     * @brief 許容コスト以下の領域を通過し、かつ最小距離以上の区間を直線近似する。
-     *
-     * @param path 平滑化後のワールド座標列
-     * @return std::vector<std::pair<double, double>> 直線近似適用後のワールド座標列
-     */
-    std::vector<std::pair<double, double>> approximateStraightLines(
-        const std::vector<std::pair<double, double>>& path
-    ) const;
-
-    /**
      * @brief 指定した位置 (wx, wy) および姿勢 (yaw)
      * におけるロボットフットプリントの最大コストを算出する。
      *
@@ -236,15 +230,21 @@ private:
     std::string base_frame_{"base_link"};
     double planning_cost_factor_{0.5};  // a_star.planning_cost (コストマップ潜在コストの重み)
     double snap_distance_{0.4};  // a_star.snap_distance [m] (障害物からのスナップ探索半径)
-    int bspline_samples_per_segment_{10};
-    double bspline_smoothing_strength_{1.0};
-    int bspline_smoothing_iterations_{8};  // 反復ラプラシアン平滑化の回数
-    int bspline_max_stride_{20};           // 制御点間引きステップの最大試行値
-    int bspline_smooth_max_cost_{40};      // 平滑化経路が許容する最大セルコスト
+    // コスト勾配による連続緩和 (Elastic Band) パラメータ
+    int eband_iterations_{30};                  // elastic_band.iterations (反復緩和回数)
+    double eband_elastic_strength_{1.0};        // elastic_band.elastic_strength (内部張力ゲイン 0.0〜1.0)
+    double eband_repulsive_strength_{0.05};     // elastic_band.repulsive_strength (コスト反発ゲイン)
+    int eband_repulsive_cost_threshold_{40};    // elastic_band.repulsive_cost_threshold (反発力発生閾値 0〜99)
+    int eband_max_cost_{60};                    // elastic_band.max_cost (許容最大セルコスト 0〜99)
+    double eband_path_resolution_{0.05};        // elastic_band.path_resolution [m] (サンプリング解像度)
 
-    // パス直線近似パラメータ
-    int line_approx_max_cost_{-1};          // -1 で無効化
-    double line_approx_min_distance_{1.2};  // 直線化を適用する最小セグメント距離 [m]
+    // 幾何コーナーフィレット (Fillet) パラメータ
+    double fillet_rdp_epsilon_{0.15};           // fillet.rdp_epsilon [m] (RDP許容誤差)
+    double fillet_target_radius_{2.0};          // fillet.target_radius [m] (目標大旋回半径)
+    double fillet_min_radius_{0.2};             // fillet.min_radius [m] (最小許容旋回半径)
+    int fillet_max_cost_{60};                   // fillet.max_cost (許容最大セルコスト 0〜99)
+    double fillet_path_resolution_{0.05};       // fillet.path_resolution [m] (サンプリング解像度)
+    int fillet_curvature_blend_iterations_{3};  // fillet.curvature_blend_iterations (イージング反復回数)
 
     // フットプリントおよび旋回計画パラメータ
     std::vector<std::pair<double, double>> footprint_polygon_;

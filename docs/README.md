@@ -85,10 +85,15 @@ NHKロボコン2026向け自動移動パッケージ `gn10_navigation` の各処
      $$g(n) = g(\mathrm{parent}) + \Delta s + c \cdot w$$
 
    - ヒューリスティック $h(n)$: ゴールまでのユークリッド距離。
-3. **動的適応型 B-spline 平滑化 & 直線近似**:
-   - A*の折れ線経路に対し、制御点間引きステップ幅 `stride` を `max_stride`（20）から 1 へ低減しながら、反復ラプラシアン平滑化（隣接点の中点ブレンドを `smoothing_iterations` 回反復）を適用します。
-   - 経路上の全サンプルのセルコストが `smooth_max_cost`（40）以下となる最大の `stride` を自動採用します。障害物のない空間では大きな `stride` で軌道を平滑化し、障害物近傍では小さな `stride` を選択してマージンを維持します。A* 経路自体が高コスト領域を通過する狭路では、A* 実績コストに限定した安全許容範囲内で小さめの `stride`（最大10）により平滑化を行い、不要なフォールバック落ちを防ぎます。
-   - 直線近似（`line_approximation.max_cost`）: 低コスト領域かつ最小距離以上の区間を直線化（設定 `-1` で無効化）。
+3. **2段ハイブリッド平滑化 (Elastic Band + 決定論的幾何フィレット)**:
+   - **第1段 (smoothPathElasticBand)**:
+     - 内部張力 $\vec{F}_{\mathrm{elastic}}$（曲率最小化・平滑化）とコストマップ反発力 $\vec{F}_{\mathrm{rep}}$（$-\nabla \mathrm{Cost}$）の釣り合いにより、障害物を安全に回避しつつ A* 格子の 5cm 階段ノイズを連続的かつ滑らかに緩和します。
+     - 二値（0/1）のハードしきい値判定によるジグザグや試行錯誤フォールバックを排除し、開けた場所では直線化、障害物近傍では滑らかに膨らむ決定論的軌道を生成します。
+   - **第2段 (smoothPathFillet)**:
+     - 第1段を通過した滑らかな経路から RDP 法（許容誤差 `fillet.rdp_epsilon`: 0.15m）により大域的なコーナー頂点（交差点）を抽出。
+     - 各コーナーに対して目標旋回半径 `fillet.target_radius`（2.0m）の幾何学的円弧フィレットを直接接続し、**経路の曲率を劇的に低減（大円弧化）** します。
+     - 障害物近傍では安全許容最大コスト `fillet.max_cost`（60）を満たす安全半径（$R \ge$ `fillet.min_radius`: 0.2m）へ二分探索で自動調停します。
+     - 直線部と円弧部の接続点にはイージングブレンド（`fillet.curvature_blend_iterations`: 3）を適用し、連続曲率化を実現します。
 4. **安全領域での旋回・姿勢計画 (planOrientations)**:
    - 機体の8頂点外形ポリゴン（`footprint.polygon`）を経路上の各点で 360 度（`angle_step`: 0.15 rad 刻み）回転させた際の最大フットプリントコストを算出。
    - 長さ `turn_distance`（0.6m）の移動区間ウィンドウを走査し、区間全域で全方位のフットプリントコストが `turn_max_cost`（20）以下かつ最小となる安全領域を選定。
@@ -99,13 +104,18 @@ NHKロボコン2026向け自動移動パッケージ `gn10_navigation` の各処
 |---|---|---|---|
 | `a_star.planning_cost` | 0.5 | - | コストマップ値に対する重み係数。大きくすると障害物のインフレーションマージンを避けて遠回りし、小さくすると幾何学的な最短経路を優先。 |
 | `a_star.snap_distance` | 0.40 | m | 障害物内セルから通行可能セルを探す最大探索半径。 |
-| `bspline.samples_per_segment` | 10 | 点 | B-spline 制御点間の補間サンプル密度。 |
-| `bspline.smoothing_strength` | 0.5 | - | 1反復あたりの内部制御点を隣接点の中点へ寄せる割合（0.0〜1.0）。 |
-| `bspline.smoothing_iterations` | 20 | 回 | 内部制御点の反復ラプラシアン平滑化回数。増やすと平滑化が進みます。 |
-| `bspline.max_stride` | 20 | ステップ | 動的適応平滑化で試行する制御点間引き幅の最大値。直線空間で滑らかな軌道を生成。 |
-| `bspline.smooth_max_cost` | 40 | コスト | 平滑化経路が通過を許容する最大セルコスト。この値を超えるショートカットは棄却され安全マージンが確保されます。 |
-| `line_approximation.max_cost` | -1 | コスト | 直線近似を許容する最大コスト（`-1` は無効）。 |
-| `line_approximation.min_distance` | 1.2 | m | 直線化を適用する最小セグメント長。 |
+| `elastic_band.iterations` | 30 | 回 | 連続緩和の反復回数。増やすほど滑らかに収束（10〜100 推奨）。 |
+| `elastic_band.elastic_strength` | 1.0 | - | 内部張力ゲイン（0.0〜1.0）。大きくすると直線化・グリッド段差解消が強力になる。 |
+| `elastic_band.repulsive_strength` | 0.05 | - | コスト反発ゲイン。障害物・ポテンシャル勾配から押し離す強さ。 |
+| `elastic_band.repulsive_cost_threshold` | 40 | コスト | 反発力が働き始めるコスト閾値（0〜99）。このコスト以下では直線化を優先。 |
+| `elastic_band.max_cost` | 60 | コスト | 平滑化経路が通過を許容する最大セルコスト。このコスト以下での平滑化を厳格維持。 |
+| `elastic_band.path_resolution` | 0.05 | m | 出力経路のサンプリング解像度。 |
+| `fillet.rdp_epsilon` | 0.15 | m | RDP法で大域的コーナー頂点を抽出する幾何許容誤差。 |
+| `fillet.target_radius` | 2.0 | m | 目標大旋回半径。2.4 m/s 走行時に横加速度を低く抑えるための円弧半径。 |
+| `fillet.min_radius` | 0.2 | m | 狭所・障害物近傍での最小許容旋回半径（障害物回避時の縮小下限）。 |
+| `fillet.max_cost` | 60 | コスト | コーナー円弧が許容する最大セルコスト（このコスト以下へ半径を自動調停）。 |
+| `fillet.path_resolution` | 0.05 | m | フィレット出力経路のサンプリング解像度。 |
+| `fillet.curvature_blend_iterations` | 3 | 回 | 直線と円弧の接続部を滑らかにブレンドするイージング反復回数。 |
 | `footprint.polygon` | 8頂点 | m | 機体の外形ポリゴン（全長約0.985m、全幅約1.120m）。 |
 | `rotation_planning.turn_max_cost` | 20 | コスト | 旋回区間全域で許容する最大フットプリントコスト。狭路での旋回を制限し広い空間で旋回させます。 |
 | `rotation_planning.angle_step` | 0.15 | rad | 旋回干渉判定の角度ステップ（約8.6度）。細かくすると判定精度向上、粗くすると計算時間短縮。 |
