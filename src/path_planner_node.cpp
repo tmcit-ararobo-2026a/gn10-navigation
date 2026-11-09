@@ -1185,8 +1185,12 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPathFillet(
     std::vector<Point> smoothed_result;
     std::vector<std::size_t> junction_indices;
 
-    auto addLine = [&](const Point& p1, const Point& p2) {
-        const double dist = std::hypot(p2.first - p1.first, p2.second - p1.second);
+    auto addLine = [&](Point p1, Point p2) {
+        const double x1   = p1.first;
+        const double y1   = p1.second;
+        const double x2   = p2.first;
+        const double y2   = p2.second;
+        const double dist = std::hypot(x2 - x1, y2 - y1);
         if (dist < 1e-4) {
             return;
         }
@@ -1194,7 +1198,7 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPathFillet(
         for (int s = 1; s <= steps; ++s) {
             const double frac = static_cast<double>(s) / steps;
             smoothed_result.emplace_back(
-                p1.first + frac * (p2.first - p1.first), p1.second + frac * (p2.second - p1.second)
+                x1 + frac * (x2 - x1), y1 + frac * (y2 - y1)
             );
         }
     };
