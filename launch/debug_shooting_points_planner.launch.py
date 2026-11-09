@@ -14,7 +14,7 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, Shutdown
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -64,6 +64,12 @@ def generate_launch_description():
         description='Whether to launch RViz2 for visualization'
     )
 
+    auto_exit_arg = DeclareLaunchArgument(
+        'auto_exit',
+        default_value='false',
+        description='Whether to auto-exit after completing all path planning calculations'
+    )
+
     # 1. コストマップ生成ノード (静的マップ nhk2026_map.json から /costmap を生成)
     costmap_node = Node(
         package='gn10_navigation',
@@ -93,8 +99,10 @@ def generate_launch_description():
             'mode': LaunchConfiguration('mode'),
             'shooting_points_file': LaunchConfiguration('shooting_points_file'),
             'map_frame': 'map',
-            'base_frame': 'base_link'
-        }]
+            'base_frame': 'base_link',
+            'auto_exit': LaunchConfiguration('auto_exit')
+        }],
+        on_exit=Shutdown()
     )
 
     # 4. RViz2 (可視化)
@@ -114,6 +122,7 @@ def generate_launch_description():
         costmap_params_arg,
         planner_params_arg,
         rviz_arg,
+        auto_exit_arg,
         costmap_node,
         path_planner_node,
         debugger_node,

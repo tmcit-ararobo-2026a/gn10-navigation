@@ -153,12 +153,14 @@ class DebugShootingPointsPlannerNode(Node):
         self.declare_parameter('mode', 'tour')  # 'tour', 'from_start', 'all_pairs', 'both'
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('base_frame', 'base_link')
+        self.declare_parameter('auto_exit', False)
 
         self.zone = self.get_parameter('zone').get_parameter_value().string_value.strip().lower()
         custom_file = self.get_parameter('shooting_points_file').get_parameter_value().string_value.strip()
         self.mode = self.get_parameter('mode').get_parameter_value().string_value.strip().lower()
         self.map_frame = self.get_parameter('map_frame').get_parameter_value().string_value
         self.base_frame = self.get_parameter('base_frame').get_parameter_value().string_value
+        self.auto_exit = self.get_parameter('auto_exit').get_parameter_value().bool_value
 
         # 目標地点 YAML ファイルの読み込み
         try:
@@ -416,6 +418,11 @@ class DebugShootingPointsPlannerNode(Node):
         print(summary_text, flush=True)
         self.get_logger().info(summary_text)
 
+        if self.auto_exit:
+            self.get_logger().info("Planning complete. Auto-exiting debugger node as requested.")
+            time.sleep(0.5)
+            rclpy.try_shutdown()
+
     def publish_target_markers(self):
         """目標地点のマーカー (円柱 + 矢印 + 名前テキスト) を生成してパブリッシュ"""
         ma = MarkerArray()
@@ -604,11 +611,18 @@ def main(args=None):
     node = DebugShootingPointsPlannerNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
         pass
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        try:
+            node.destroy_node()
+        except Exception:
+            pass
+        if rclpy.ok():
+            try:
+                rclpy.shutdown()
+            except Exception:
+                pass
 
 
 if __name__ == '__main__':
