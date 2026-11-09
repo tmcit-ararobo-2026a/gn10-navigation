@@ -7,7 +7,7 @@ NHKロボコン2026向けの自動走行ナビゲーションパッケージで�
 
 - **`target_manager_node`**: Target IDに応じた目標座標（`/goal_pose`）および射出ベルト速度（`/robot/operation/belt_launcher_speed`）を発行します（移動バケツ追従時は射出速度発行をスキップ）。
 - **`costmap_generator_node`**: フィールド定義（`nhk2026_map.json`）からMulti-Source BFSを用いてインフレーション付きコストマップ（`/costmap`）を生成します。
-- **`path_planner_node`**: 8方向A*探索、B-spline平滑化、および旋回区間のフットプリント安全判定を行い、計画経路（`/planned_path`）を発行します。
+- **`path_planner_node`**: 8方向A*探索、2段ハイブリッド平滑化（コスト勾配連続緩和 Elastic Band + 決定論的幾何コーナーフィレット）、および安全領域での旋回・姿勢計画を行い、計画経路（`/planned_path`）を発行します。
 - **`path_follower_node`**: 速度プロファイル計画、接線フィードフォワード＋直交位置フィードバック制御、1次最大加速度リミッタ、および停止判定に基づき経路追従制御を行います。また、移動バケツ追従（Tracking）時はTF基準の目標位置EMA平滑化、PID制御、不感帯およびタイムアウト処理により追従姿勢制御を行います。
 - **`moving_bucket_launcher_node`**: 移動バケツ（Target ID 7: `MovingBucket`）追従かつ動作命令 `Move` 時に、TF（既定: `bucket_bottom` + `bucket_height`）またはLiDAR Perceptionトピックから `base_link` 基準で弾道射出速度を計算し、EMA平滑化を経て `/robot/operation/belt_launcher_speed` へ発行します（固定ターゲット時や `Sleep`/`Stanby` 時は配信停止）。
 
@@ -75,6 +75,10 @@ ros2 launch gn10_navigation navigation.launch.py
 
 # RViz2付きで起動
 ros2 launch gn10_navigation navigation.launch.py use_rviz:=true
+
+# シューティングポイント経路計画デバッグ (自己位置推定等の外部ノード不要)
+ros2 launch gn10_navigation debug_shooting_points_planner.launch.py zone:=blue mode:=tour
+ros2 launch gn10_navigation debug_shooting_points_planner.launch.py zone:=red mode:=from_start
 ```
 
 ---
@@ -82,7 +86,7 @@ ros2 launch gn10_navigation navigation.launch.py use_rviz:=true
 ## 5. 設定ファイル
 
 - [`config/costmap_params.yaml`](config/costmap_params.yaml): 解像度、マップ範囲、インフレーション設定
-- [`config/path_planner_params.yaml`](config/path_planner_params.yaml): A*重み、Elastic Band平滑化設定、機体外形、安全旋回設定
+- [`config/path_planner_params.yaml`](config/path_planner_params.yaml): A*重み、Elastic Band平滑化 + 幾何フィレット平滑化設定、機体外形、安全旋回設定
 - [`config/path_follower_params.yaml`](config/path_follower_params.yaml): 物理速度・加速度制限、位置・姿勢フィードバックゲイン、ゴール許容誤差
 - [`config/moving_bucket_launcher_params.yaml`](config/moving_bucket_launcher_params.yaml): 移動バケツの高さ・上部開口部弾道計算パラメータ
 - [`config/shooting_points_blue.yaml`](config/shooting_points_blue.yaml) / [`config/shooting_points_red.yaml`](config/shooting_points_red.yaml): 各Target IDの目標座標

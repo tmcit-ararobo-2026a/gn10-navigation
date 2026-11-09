@@ -26,7 +26,7 @@ NHKロボコン2026向け自動移動パッケージ `gn10_navigation` の各処
 ### ノードの責務とデータフロー
 - **`target_manager_node`**: Target IDに応じた目標ポーズ（`/goal_pose`）を発行します。固定ターゲット時は設定ファイルに定義された射出速度を発行し、移動バケツ追従（Target ID 7: `MovingBucket`）時は射出速度発行を行わず `moving_bucket_launcher_node` に委ねます。
 - **`costmap_generator_node`**: フィールド障害物定義（`nhk2026_map.json`）から Multi-Source BFS を用いてインフレーション付きコストマップ（`/costmap`）を定期配信します。
-- **`path_planner_node`**: 8方向A*探索、始点終点の連続座標スナップ、B-spline平滑化、および安全領域での旋回・姿勢計画により、計画経路（`/planned_path`）を生成します。
+- **`path_planner_node`**: 8方向A*探索、始点終点の安全スナップ、2段ハイブリッド平滑化（コスト勾配連続緩和 Elastic Band + 決定論的幾何コーナーフィレット）、および安全領域での旋回・姿勢計画により、計画経路（`/planned_path`）を生成します。
 - **`path_follower_node`**: 速度プロファイル計画、遅延補償付き接線フィードフォワード＋直交位置フィードバック制御、1次加速度リミッタ、および停止判定に基づき、経路追従制御を行います。また移動バケツ追従（Tracking）時はEMA平滑化と不感帯を適用して正対制御を行います。
 - **`moving_bucket_launcher_node`**: 移動バケツ追従（Target ID 7）かつ動作命令 `Move` の間、TF（既定: `bucket_bottom`）から得られる相対座標に基づき3次元弾道方程式から目標速度を算出し、指数平滑化（EMA）を経て `/robot/operation/belt_launcher_speed` へ配信します。
 
@@ -42,7 +42,7 @@ NHKロボコン2026向け自動移動パッケージ `gn10_navigation` の各処
    - ロボットの鉛直通過クリアランス `robot_clearance.z_min` 〜 `z_max`（0.0m 〜 1.4m）と交差しない障害物は干渉対象外として除外します。
 2. **Multi-Source BFS（多始点幅優先探索）によるインフレーション**:
    - 障害物の輪郭セル（`obstacle_costs > 0`）を初期キューに登録し、8近傍グリッド探索により各セルから最寄り障害物までの最短ユークリッド距離 $d$ を計算します。
-   - 機体不可侵半径を $R$（`robot_radius`: 0.45m）、減衰マージン幅を $M$（`margin`: 0.45m）として以下の3領域に区分します：
+   - 機体不可侵半径を $R$（`robot_radius`: 0.45m）、減衰マージン幅を $M$（`margin`: 0.35m）として以下の3領域に区分します：
      - **不可侵領域 ($d \le R$)**:
        コスト 254（OccupancyGrid: 100）を割り当てます。
      - **減衰マージン領域 ($R < d \le R + M$)**:
@@ -64,7 +64,7 @@ NHKロボコン2026向け自動移動パッケージ `gn10_navigation` の各処
 | `map_bounds.min_y / max_y` | -6.5 / 6.5 | m | マップ全体のY軸物理探索境界。 |
 | `robot_clearance.z_min / z_max` | 0.0 / 1.4 | m | 障害物との干渉判定を行う高さ下限・上限。 |
 | `inflation.robot_radius` | 0.45 | m | 機体中心点基準の不可侵半径。外接半径（約0.596m）未満に設定することで、壁際への近接アプローチを許容。 |
-| `inflation.margin` | 0.45 | m | 回避コストを線形波及させるマージン幅。大きくすると障害物から離れた経路を選択し、小さくすると狭路の通過が可能になります。 |
+| `inflation.margin` | 0.35 | m | 回避コストを線形波及させるマージン幅。大きくすると障害物から離れた経路を選択し、小さくすると狭路の通過が可能になります。 |
 
 ---
 
@@ -75,7 +75,7 @@ NHKロボコン2026向け自動移動パッケージ `gn10_navigation` の各処
 ### アルゴリズムの詳細
 1. **自己位置取得と安全スナップ**:
    - TF (`map -> base_link`) より現在位置を取得。
-   - 始点またはゴールが障害物内（コスト 100 以上）にある場合、BFS探索で `a_star.snap_distance`（0.4m）内の最寄り通行可能セルへスナップします。
+   - 始点またはゴールが障害物内（コスト 100 以上）にある場合、BFS探索で `a_star.snap_distance`（0.80m）内の最寄り通行可能セルへスナップします。
    - ゴールが障害物内部にある場合、通行可能セルを中継点としてA*探索を行い、本来の目標地点への直線進入アプローチ区間を末尾に結合します。
    - 格子量子化による段差を防ぐため、始点・終点は元の連続ワールド座標（`exact_start`, `exact_goal`）を保持します。
 2. **8方向 A* 格子探索**:
@@ -92,7 +92,7 @@ NHKロボコン2026向け自動移動パッケージ `gn10_navigation` の各処
    - **第2段 (smoothPathFillet)**:
      - 第1段を通過した滑らかな経路から RDP 法（許容誤差 `fillet.rdp_epsilon`: 0.15m）により大域的なコーナー頂点（交差点）を抽出。
      - 各コーナーに対して目標旋回半径 `fillet.target_radius`（2.0m）の幾何学的円弧フィレットを直接接続し、**経路の曲率を劇的に低減（大円弧化）** します。
-     - 障害物近傍では安全許容最大コスト `fillet.max_cost`（60）を満たす安全半径（$R \ge$ `fillet.min_radius`: 0.2m）へ二分探索で自動調停します。
+     - 障害物近傍では安全許容最大コスト `fillet.max_cost`（80）を満たす安全半径（$R \ge$ `fillet.min_radius`: 0.2m）へ二分探索で自動調停します。
      - 直線部と円弧部の接続点にはイージングブレンド（`fillet.curvature_blend_iterations`: 3）を適用し、連続曲率化を実現します。
 4. **安全領域での旋回・姿勢計画 (planOrientations)**:
    - 機体の8頂点外形ポリゴン（`footprint.polygon`）を経路上の各点で 360 度（`angle_step`: 0.15 rad 刻み）回転させた際の最大フットプリントコストを算出。
@@ -102,18 +102,18 @@ NHKロボコン2026向け自動移動パッケージ `gn10_navigation` の各処
 ### パラメータの作用 (`config/path_planner_params.yaml`)
 | パラメータ名 | 設定値 | 単位 | 作用とチューニング指針 |
 |---|---|---|---|
-| `a_star.planning_cost` | 0.5 | - | コストマップ値に対する重み係数。大きくすると障害物のインフレーションマージンを避けて遠回りし、小さくすると幾何学的な最短経路を優先。 |
-| `a_star.snap_distance` | 0.40 | m | 障害物内セルから通行可能セルを探す最大探索半径。 |
-| `elastic_band.iterations` | 30 | 回 | 連続緩和の反復回数。増やすほど滑らかに収束（10〜100 推奨）。 |
-| `elastic_band.elastic_strength` | 1.0 | - | 内部張力ゲイン（0.0〜1.0）。大きくすると直線化・グリッド段差解消が強力になる。 |
-| `elastic_band.repulsive_strength` | 0.05 | - | コスト反発ゲイン。障害物・ポテンシャル勾配から押し離す強さ。 |
-| `elastic_band.repulsive_cost_threshold` | 40 | コスト | 反発力が働き始めるコスト閾値（0〜99）。このコスト以下では直線化を優先。 |
-| `elastic_band.max_cost` | 60 | コスト | 平滑化経路が通過を許容する最大セルコスト。このコスト以下での平滑化を厳格維持。 |
+| `a_star.planning_cost` | 0.50 | - | コストマップ値に対する重み係数。大きくすると障害物のインフレーションマージンを避けて遠回りし、小さくすると幾何学的な最短経路を優先。 |
+| `a_star.snap_distance` | 0.80 | m | 障害物内セルから通行可能セルを探す最大探索半径。 |
+| `elastic_band.iterations` | 50 | 回 | 連続緩和の反復回数。増やすほど滑らかに収束（10〜100 推奨）。 |
+| `elastic_band.elastic_strength` | 1.00 | - | 内部張力ゲイン（0.0〜1.0）。大きくすると直線化・グリッド段差解消が強力になる。 |
+| `elastic_band.repulsive_strength` | 0.010 | - | コスト反発ゲイン。障害物・ポテンシャル勾配から押し離す強さ。 |
+| `elastic_band.repulsive_cost_threshold` | 60 | コスト | 反発力が働き始めるコスト閾値（0〜99）。このコスト以下では直線化を優先。 |
+| `elastic_band.max_cost` | 80 | コスト | 平滑化経路が通過を許容する最大セルコスト。このコスト以下での平滑化を厳格維持。 |
 | `elastic_band.path_resolution` | 0.05 | m | 出力経路のサンプリング解像度。 |
 | `fillet.rdp_epsilon` | 0.15 | m | RDP法で大域的コーナー頂点を抽出する幾何許容誤差。 |
-| `fillet.target_radius` | 2.0 | m | 目標大旋回半径。2.4 m/s 走行時に横加速度を低く抑えるための円弧半径。 |
-| `fillet.min_radius` | 0.2 | m | 狭所・障害物近傍での最小許容旋回半径（障害物回避時の縮小下限）。 |
-| `fillet.max_cost` | 60 | コスト | コーナー円弧が許容する最大セルコスト（このコスト以下へ半径を自動調停）。 |
+| `fillet.target_radius` | 2.00 | m | 目標大旋回半径。2.4 m/s 走行時に横加速度を低く抑えるための円弧半径。 |
+| `fillet.min_radius` | 0.20 | m | 狭所・障害物近傍での最小許容旋回半径（障害物回避時の縮小下限）。 |
+| `fillet.max_cost` | 80 | コスト | コーナー円弧が許容する最大セルコスト（このコスト以下へ半径を自動調停）。 |
 | `fillet.path_resolution` | 0.05 | m | フィレット出力経路のサンプリング解像度。 |
 | `fillet.curvature_blend_iterations` | 3 | 回 | 直線と円弧の接続部を滑らかにブレンドするイージング反復回数。 |
 | `footprint.polygon` | 8頂点 | m | 機体の外形ポリゴン（全長約0.985m、全幅約1.120m）。 |
@@ -152,7 +152,7 @@ NHKロボコン2026向け自動移動パッケージ `gn10_navigation` の各処
        $$v_{i-1} \le \sqrt{v_i^2 + 2 (a_{\mathrm{dec}} \cdot \eta) \Delta s}$$
 
 2. **周期制御ループ (`controlLoop`: 50Hz)**:
-   - **TF自己位置監視**: `map -> base_link` の遅延時間（`max_pose_age`: 0.5s）を監視し、超過時は安全のため FAIL 状態へ移行。
+   - **TF自己位置監視**: `map -> base_link` の遅延時間（`max_pose_age`: 0.3s）を監視し、超過時は安全のため FAIL 状態へ移行。
    - **移動バケツ追従モード (Tracking)**:
      - TF (`map -> bucket_bottom`) を取得。一時欠損時は `tracking_timeout`（1.0s）まで角速度を減速させつつ待機。
      - 目標座標に指数平滑化（EMA）ローパスフィルタ（`tracking_pos_filter_alpha`: 0.25）を適用し、LiDAR計測ジッターを除去。
@@ -164,9 +164,9 @@ NHKロボコン2026向け自動移動パッケージ `gn10_navigation` の各処
      - **参照点フィードフォワードと直交フィードバック**:
        - 制御・通信遅延時間 $T_{\mathrm{delay}}$（自己位置遅延 `pose_age` + 通信遅延 `control_comm_delay`）分進んだ参照点の接線速度 $\boldsymbol{v}_{\mathrm{ff}} = v_{\mathrm{ref}} \boldsymbol{t}$ を生成。
        - 直交射影点への位置誤差補正 $\boldsymbol{v}_{\mathrm{fb}} = K_p \boldsymbol{e} + K_d \dot{\boldsymbol{e}}$（`max_cruise_fb_speed`: 3.0 m/s でクランプ）を合成。
-       - ゴール近傍（`settle_zone_distance` 以内）では、ゴール座標への直接PID制御（`position_kp`: 8.0, `max_fb_speed`: 0.7 m/s）と最小起動速度リフト（`min_docking_speed`: 0.2 m/s）により収束を補助。
+       - ゴール近傍（`settle_zone_distance` 以内）では、ゴール座標への直接PID制御（`position_kp`: 6.0, `max_fb_speed`: 0.7 m/s）と最小起動速度リフト（`min_docking_speed`: 0.2 m/s）により収束を補助。
      - **1次最大加速度リミッタ**: 1周期あたりの速度変化量を $a_{\mathrm{limit}} \Delta t$ 以内に制限。
-     - **姿勢PID制御**: 目標YawへのPID制御（`heading_kp`: 7.0, `heading_kd`: 0.3）および1次角加速度リミッタ。
+     - **姿勢PID制御**: 目標YawへのPID制御（`heading_kp`: 3.5, `heading_kd`: 0.0）および1次角加速度リミッタ。
 
 ### パラメータの作用 (`config/path_follower_params.yaml`)
 | パラメータ名 | 設定値 | 単位 | 作用とチューニング指針 |
@@ -176,27 +176,27 @@ NHKロボコン2026向け自動移動パッケージ `gn10_navigation` の各処
 | `max_acceleration` | 5.4 | m/s² | 最大並進加速度。加速時の応答性を決定。 |
 | `max_deceleration` | 8.0 | m/s² | 最大並進減速度。減速プロファイルの限界値。 |
 | `max_jerk` | 60.0 | m/s³ | 加減速プロファイル生成時の最大躍度。小さいほど加速度変化が緩やかになります。 |
-| `max_lateral_acceleration` | 4.0 | m/s² | コーナー旋回時の最大許容遠心加速度。カーブ通過速度の上限を決定。 |
+| `max_lateral_acceleration` | 4.5 | m/s² | コーナー旋回時の最大許容遠心加速度。カーブ通過速度の上限を決定。 |
 | `curvature_window` | 0.30 | m | 曲率計算のサンプル窓幅。 |
 | `decel_effective_ratio` | 0.70 | - | 後方減速走査の実効減速度比率。手前から減速を完了させるための安全率。 |
-| `position_kp` | 8.0 | - | 位置フィードバックPゲイン。横偏差の引き戻しおよびゴール直接PIDに作用。 |
+| `position_kp` | 6.0 | - | 位置フィードバックPゲイン。横偏差の引き戻しおよびゴール直接PIDに作用。 |
 | `position_ki / kd` | 0.0 / 0.0 | - | 位置フィードバックI/Dゲイン。 |
 | `max_cruise_fb_speed` | 3.00 | m/s | 巡航中の位置フィードバック速度上限。 |
 | `max_fb_speed` | 0.70 | m/s | ゴール近傍（`settle_zone_distance` 以内）の位置FB速度上限。オーバーシュートを抑止。 |
 | `min_docking_speed` | 0.20 | m/s | ゴール近傍での低速停止を防ぐ最小起動速度。 |
 | `settle_zone_distance` | 0.50 | m | ゴール直接PIDおよび停止判定モードへ切り替える残距離閾値。 |
-| `heading_kp` | 7.0 | - | 姿勢 (Yaw) 制御のPゲイン。目標角度への追従応答性を決定。 |
-| `heading_kd` | 0.3 | - | 姿勢 (Yaw) 制御のDゲイン。旋回のオーバーシュートを抑制。 |
+| `heading_kp` | 3.5 | - | 姿勢 (Yaw) 制御のPゲイン。目標角度への追従応答性を決定。 |
+| `heading_kd` | 0.0 | - | 姿勢 (Yaw) 制御のDゲイン。旋回のオーバーシュートを抑制。 |
 | `heading_ki` | 0.0 | - | 姿勢 (Yaw) 制御のIゲイン。 |
-| `heading_d_filter_alpha` | 0.20 | - | 姿勢D項の1次EMAローパスフィルタ係数。微分ノイズを低減。 |
+| `heading_d_filter_alpha` | 0.0 | - | 姿勢D項の1次EMAローパスフィルタ係数。 |
 | `min_docking_yaw_rate` | 0.03 | rad/s | 目標角度付近での微小残留偏差を解消する最小角速度リフト。 |
 | `max_angular_velocity` | 3.0 | rad/s | 最大旋回角速度（約172 deg/s）。 |
-| `max_angular_acceleration` | 24.0 | rad/s² | 最大旋回角加速度。旋回指令の急峻な変化を制限。 |
+| `max_angular_acceleration` | 16.0 | rad/s² | 最大旋回角加速度。旋回指令の急峻な変化を制限。 |
 | `goal_tolerance` | 0.01 | m | ゴール到達位置許容誤差（10mm）。 |
 | `goal_yaw_tolerance` | 0.0175 | rad | ゴール到達姿勢許容誤差（約1.0度）。 |
 | `goal_settle_count` | 5 | 周期 | 許容誤差内を維持し続けなければならない連続制御周期数（5周期 = 0.1秒）。 |
 | `max_path_error` | 0.30 | m | 巡航中の最大許容経路横偏差。超過時は FAIL 状態へ移行。 |
-| `max_pose_age` | 0.50 | s | 自己位置TF（`map -> base_link`）の許容最大遅延時間。超過時は FAIL 状態へ移行。 |
+| `max_pose_age` | 0.30 | s | 自己位置TF（`map -> base_link`）の許容最大遅延時間。超過時は FAIL 状態へ移行。 |
 | `control_comm_delay` | 0.02 | s | 制御・通信遅延時間。参照点先読み補償に使用。 |
 | `tracking_kp` | 3.5 | - | 移動バケツ追従専用Yaw比例ゲイン。 |
 | `tracking_kd` | 0.0 | - | 移動バケツ追従専用Yaw微分ゲイン。 |
@@ -217,7 +217,7 @@ NHKロボコン2026向け自動移動パッケージ `gn10_navigation` の各処
    - `target_id == MovingBucket (7)` かつ `navigation_command == Move (2)` の時のみ計算およびパブリッシュを実行。固定ターゲット時や `Sleep` / `Stanby` 時は配信を停止し、内部のEMAフィルタ状態をリセットします。
 2. **位置取得方式（TF同期またはトピックコールバック）**:
    - `use_tf == true`（既定）: `calculation_rate`（20Hz）周期タイマーで `bucket_frame`（`bucket_bottom`）の `base_link` 相対座標を TF バッファから直接取得。
-   - `is_bottom_frame == true` の場合は Z 座標にバケツ高さ $h_{\mathrm{bucket}}$（`bucket_height`: 0.255m）を加算して上部開口部中心高さを算出：
+   - `is_bottom_frame == true` の場合は Z 座標にバケツ高さ $h_{\mathrm{bucket}}$（`bucket_height`: 0.35m）を加算して上部開口部中心高さを算出：
 
      $$z_{\mathrm{open}} = z_{\mathrm{bottom}} + h_{\mathrm{bucket}}$$
 
@@ -229,7 +229,7 @@ NHKロボコン2026向け自動移動パッケージ `gn10_navigation` の各処
 
      $$v_0 = \sqrt{\frac{g \Delta x^2}{2 \cos^2\theta (\Delta x \tan\theta - \Delta z)}}$$
 
-     ここで重力加速度 $g = 9.80665\ \mathrm{m/s}^2$、射出仰角 $\theta$（`launch_angle_deg`: 48.09 deg）。
+     ここで重力加速度 $g = 9.80665\ \mathrm{m/s}^2$、射出仰角 $\theta$（`launch_angle_deg`: 45.0 deg）。
    - ベルト目標速度 $v_{\mathrm{belt}}$ への変換（係数 $k_2$: `velocity_quad`, $k_1$: `velocity_scale`, $k_0$: `velocity_offset`）：
 
      $$v_{\mathrm{belt}} = k_2 v_0^2 + k_1 v_0 + k_0$$
@@ -251,14 +251,14 @@ NHKロボコン2026向け自動移動パッケージ `gn10_navigation` の各処
 | `is_bottom_frame` | `true` | - | `bucket_frame` が底面か（`true` の場合 Z 座標に `bucket_height` を自動加算）。 |
 | `calculation_rate` | 20.0 | Hz | TF基準の速度計算・配信タイマー周期。 |
 | `speed_filter_alpha` | 0.25 | - | 射出目標速度の1次EMAローパスフィルタ係数。目標速度の急変を抑制。 |
-| `bucket_height` | 0.255 | m | バケツ底面から上部開口部までの高さ。 |
+| `bucket_height` | 0.35 | m | バケツ底面から上部開口部までの高さ。 |
 | `aim_z_offset` | 0.000 | m | 上部開口部中心に対する狙い高さオフセット。 |
-| `launcher_offset_x` | 0.179 | m | `base_link` 基準の有効リリース位置Xオフセット $x_0$。 |
-| `launcher_offset_z` | 0.837 | m | `base_link` 基準の有効リリース位置Z高さ $z_0$。 |
-| `launch_angle_deg` | 48.09 | deg | 有効リリース仰角 $\theta$。 |
-| `velocity_quad` | 0.005 | - | 弾道初速 $v_0$ からベルトリリース速度への2次補正係数。 |
-| `velocity_scale` | 1.000 | - | 弾道初速 $v_0$ からベルトリリース速度への1次スケーリング係数。 |
-| `velocity_offset` | -1.5000 | m/s | ベルトリリース速度の定数オフセット。 |
+| `launcher_offset_x` | 0.15 | m | `base_link` 基準の有効リリース位置Xオフセット $x_0$。 |
+| `launcher_offset_z` | 0.872 | m | `base_link` 基準の有効リリース位置Z高さ $z_0$。 |
+| `launch_angle_deg` | 45.0 | deg | 有効リリース仰角 $\theta$。 |
+| `velocity_quad` | 0.0000 | - | 弾道初速 $v_0$ からベルトリリース速度への2次補正係数。 |
+| `velocity_scale` | 0.8900 | - | 弾道初速 $v_0$ からベルトリリース速度への1次スケーリング係数。 |
+| `velocity_offset` | -1.2334 | m/s | ベルトリリース速度の定数オフセット。 |
 | `min_velocity / max_velocity` | 2.50 / 7.75 | m/s | 射出ベルトの上下限リミット。 |
 | `min_horizontal_dist / max_horizontal_dist` | 0.6 / 5.5 | m | 弾道計算を許容する有効水平距離範囲。 |
 | `max_tracking_age_sec` | 0.5 | s | バケツTF観測値の許容最大遅延時間。 |
@@ -266,6 +266,37 @@ NHKロボコン2026向け自動移動パッケージ `gn10_navigation` の各処
 ---
 
 ## 6. デバッグツール
+
+### 6.1 シューティングポイント経路計画デバッガー (`debug_shooting_points_planner.launch.py`)
+
+自己位置推定（LPSや点群マッチング）や上位UIなどの外部システムが動いていない単体環境下で、`shooting_points_{blue,red}.yaml` を読み込み、`costmap_generator_node` と `path_planner_node` を起動して目標地点間のパスを一括計算・評価するデバッグツールです。
+
+- **機能**:
+  - 全パスの総距離（m）、幾何最大曲率（1/m）、推定最小旋回半径（m）、最大通過コストを算出して一覧サマリーを表示。
+  - 各パスを HSV 色相環で色分けしたラインマーカー（太さ 5cm）およびルート名・距離・最小Rラベルを RViz2 上に表示。
+  - パス始点にロボット外形モデル TF（`map -> base_link`）を配信。
+  - CIやベンチマーク向けの自動終了オプション（`auto_exit:=true`）に対応。
+
+```bash
+# 青ゾーン・巡回モードで起動 (RViz付き)
+ros2 launch gn10_navigation debug_shooting_points_planner.launch.py zone:=blue mode:=tour
+
+# 赤ゾーン・スタート地点からの全放射パスモード (RViz付き)
+ros2 launch gn10_navigation debug_shooting_points_planner.launch.py zone:=red mode:=from_start
+
+# 全ペア総当たりパス (8x7=56経路) を計算し自動終了
+ros2 launch gn10_navigation debug_shooting_points_planner.launch.py zone:=blue mode:=all_pairs auto_exit:=true rviz:=false
+```
+
+| 引数名 | 既定値 | 選択肢・説明 |
+|---|---|---|
+| `zone` | `blue` | チームゾーン (`blue` または `red`) |
+| `mode` | `tour` | 計画モード (`tour`: 順次巡回ループ, `from_start`: StartZoneから各点へ, `all_pairs`: 全地点間総当たり, `both`: tour + from_start) |
+| `shooting_points_file` | `""` | 任意の YAML ファイルパス（空文字時は自動探索） |
+| `rviz` | `true` | RViz2 を同時起動して可視化するかどうか |
+| `auto_exit` | `false` | 全パス計算およびサマリー出力後に自動終了するかどうか |
+
+### 6.2 軌道追従・制御デバッガー (`tracking_debugger.launch.py`)
 
 速度指令値、ホイール順運動学速度、TF実効速度の比較および軌道追従の可視化には [tracking_debugger.md](tracking_debugger.md) を参照してください。
 

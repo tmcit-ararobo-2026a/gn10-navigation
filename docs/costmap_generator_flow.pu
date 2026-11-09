@@ -51,7 +51,7 @@ partition "Multi-Source BFS インフレーション" {
           * <b>inflation.robot_radius</b> (0.45 m)
             中心点からの距離 <= robot_radius:
             コスト 254 (絶対侵入禁止: 接触確実)
-          * <b>inflation.margin</b> (0.40 m)
+          * <b>inflation.margin</b> (0.35 m)
             robot_radius < 距離 <= robot_radius + margin:
             距離に応じて線形減衰コスト (253〜1) を付与
             (マージンが大きいほどロボットが障害物から離れる)

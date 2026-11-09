@@ -16,7 +16,7 @@ partition "TF自己位置取得 & 始点・終点決定" {
     if (障害物内 (cost >= 100)?) then (はい)
         :findNearestPassable() で最寄り通行可能セルへスナップ;
         note right
-          * <b>a_star.snap_distance</b> (0.40 m)
+          * <b>a_star.snap_distance</b> (0.80 m)
         end note
         if (発見?) then (失敗)
             :空Path配信 & 終了;
@@ -39,35 +39,54 @@ partition "8方向 A* グリッド探索" {
     endif
 }
 
-partition "動的適応型 B-spline 平滑化" {
+partition "2段ハイブリッド平滑化 (Elastic Band + 決定論的幾何フィレット)" {
     :始点・終点を exact_start / approach_goal に置換;
-    :stride (max_stride..1) と反復ラプラシアン平滑化を段階的に試行;
-    note right
-      * <b>bspline.max_stride</b> (10)
-      * <b>bspline.smoothing_strength</b> (1.0)
-      * <b>bspline.smoothing_iterations</b> (8)
-      * <b>bspline.smooth_max_cost</b> (40)
-      * <b>bspline.samples_per_segment</b> (10)
-    end note
-    :許容コスト以下で障害物に干渉しない最も滑らかな経路を採用;
-    :低コスト領域かつ最小距離以上の区間を直線近似 (設定時のみ);
-    note right
-      * <b>line_approximation.max_cost</b> (-1: 無効)
-      * <b>line_approximation.min_distance</b> (1.2 m)
-    end note
+    
+    partition "第1段: コスト勾配連続緩和 (Elastic Band)" {
+        :A* 格子経路を path_resolution 刻みで等間隔リサンプリング;
+        :内部張力 F_elastic とコスト反発力 F_rep (-∇Cost) の釣り合いにより\nグリッド階段ノイズを除去し滑らかな大局経路を生成;
+        note right
+          * <b>elastic_band.iterations</b> (50)
+          * <b>elastic_band.elastic_strength</b> (1.00)
+          * <b>elastic_band.repulsive_strength</b> (0.010)
+          * <b>elastic_band.repulsive_cost_threshold</b> (60)
+          * <b>elastic_band.max_cost</b> (80)
+          * <b>elastic_band.path_resolution</b> (0.050 m)
+        end note
+    }
+
+    partition "第2段: 決定論的幾何コーナーフィレット" {
+        :RDP法 (Ramer-Douglas-Peucker) で大域的コーナー頂点を抽出;
+        note right
+          * <b>fillet.rdp_epsilon</b> (0.150 m)
+        end note
+        :各コーナーに目標旋回半径 target_radius の円弧を接続し曲率を大幅低減;
+        :障害物接近時は二分探索で安全半径 (min_radius 以上) に自動調停;
+        note right
+          * <b>fillet.target_radius</b> (2.00 m)
+          * <b>fillet.min_radius</b> (0.20 m)
+          * <b>fillet.max_cost</b> (80)
+          * <b>fillet.path_resolution</b> (0.050 m)
+        end note
+        :直線と円弧の接続部にイージングブレンドを適用し連続曲率化;
+        note right
+          * <b>fillet.curvature_blend_iterations</b> (3)
+        end note
+    }
+
     if (ゴールが障害物内にめり込んでいる?) then (スナップあり)
         :アプローチ中継点から本来の目標地点への\n直線進入アプローチ区間を末尾に付加;
     endif
 }
 
-partition "安全領域での旋回・姿勢計画" {
+partition "安全領域での旋回・姿勢計画 (planOrientations)" {
     :各点での全回転角度の最大フットプリントコストを算出;
     :長さ turn_distance の区間ウィンドウを走査し、\n区間全域が最も安全な旋回領域を選定;
     note right
       * <b>footprint.polygon</b> (8頂点外形)
       * <b>rotation_planning.turn_max_cost</b> (20)
       * <b>rotation_planning.angle_step</b> (0.15 rad)
-      * <b>rotation_planning.turn_distance</b> (0.6 m)
+      * <b>rotation_planning.turn_distance</b> (0.60 m)
     end note
     :Smoothstep (S字補間) で目標Yaw角を割り当て;
 }
