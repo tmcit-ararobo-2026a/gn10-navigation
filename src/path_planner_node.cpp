@@ -892,8 +892,12 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPathFillet(
     smoothed_result.reserve(waypoints.size() * 50);
     smoothed_result.push_back(waypoints.front());
 
-    auto addLine = [&](const Point& p_from, const Point& p_to) {
-        const double d = std::hypot(p_to.first - p_from.first, p_to.second - p_from.second);
+    auto addLine = [&](Point p_from, Point p_to) {
+        const double x1 = p_from.first;
+        const double y1 = p_from.second;
+        const double x2 = p_to.first;
+        const double y2 = p_to.second;
+        const double d  = std::hypot(x2 - x1, y2 - y1);
         if (d < 1e-4) {
             return;
         }
@@ -901,8 +905,8 @@ std::vector<std::pair<double, double>> PathPlannerNode::smoothPathFillet(
         for (int s = 1; s <= steps; ++s) {
             const double t = static_cast<double>(s) / steps;
             smoothed_result.emplace_back(
-                p_from.first + t * (p_to.first - p_from.first),
-                p_from.second + t * (p_to.second - p_from.second)
+                x1 + t * (x2 - x1),
+                y1 + t * (y2 - y1)
             );
         }
     };
